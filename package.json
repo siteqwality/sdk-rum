@@ -1,0 +1,46 @@
+{
+  "name": "@siteqwality/rum",
+  "version": "0.1.0",
+  "description": "SiteQwality Real User Monitoring SDK",
+  "main": "dist/cjs/index.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/types/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "build:types": "tsc --emitDeclarationOnly",
+    "dev": "rollup -c -w",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "rum",
+    "monitoring",
+    "web-vitals",
+    "session-replay",
+    "error-tracking"
+  ],
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^29.0.2",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-terser": "^1.0.0",
+    "@rollup/plugin-typescript": "^12.3.0",
+    "@vitest/coverage-v8": "^4.0.18",
+    "jsdom": "^27.0.1",
+    "rollup": "^4.59.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "dependencies": {
+    "rrweb": "^2.0.0-alpha.4",
+    "tslib": "^2.8.1",
+    "web-vitals": "^5.1.0"
+  }
+}
