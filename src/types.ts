@@ -4,7 +4,10 @@ export interface RumConfig {
   service?: string;
   version?: string;
   env?: string;
-  /** Override the default API base URL */
+  /**
+   * @deprecated No longer used. Remote config is fetched from `ingestBase`
+   * (`GET {ingestBase}/v1/config`); kept only for backwards compatibility.
+   */
   apiBase?: string;
   /** Override the default ingestion base URL */
   ingestBase?: string;
