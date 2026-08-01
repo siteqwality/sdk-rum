@@ -32,7 +32,6 @@ import {
   type SessionState,
 } from './sampling/evaluator';
 
-const DEFAULT_API_BASE = 'https://api.siteqwality.com';
 const DEFAULT_INGEST_BASE = 'https://rum.siteqwality.com';
 const DEFAULT_REPLAY_BASE = 'https://replay.siteqwality.com';
 const FLUSH_INTERVAL_MS = 10_000;
@@ -66,7 +65,12 @@ export class SiteQwalityRUM {
   static async init(options: RumConfig): Promise<void> {
     if (SiteQwalityRUM.instance) return;
     SiteQwalityRUM.instance = new SiteQwalityRUM();
-    await SiteQwalityRUM.instance.start(options);
+    try {
+      await SiteQwalityRUM.instance.start(options);
+    } catch (err) {
+      // Monitoring must never break the host page.
+      console.warn('[SiteQwality RUM] init failed', err);
+    }
   }
 
   static setUser(user: UserContext): void {
@@ -97,7 +101,6 @@ export class SiteQwalityRUM {
 
   private async start(options: RumConfig): Promise<void> {
     this.options = options;
-    const apiBase = options.apiBase || DEFAULT_API_BASE;
     const ingestBase = options.ingestBase || DEFAULT_INGEST_BASE;
     const replayBase = options.replayBase || DEFAULT_REPLAY_BASE;
 
@@ -105,11 +108,13 @@ export class SiteQwalityRUM {
     this.config = new ConfigManager();
     this.context = new ContextManager(options);
 
-    // Fetch server-side config (filters, privacy settings)
-    const sdkConfig = await this.config.init(
+    // Fetch server-side config (filters, privacy settings) from the ingest
+    // host; the client token authorizes it. Falls back to safe defaults
+    // internally and never throws.
+    await this.config.init(
       options.applicationId,
       options.clientToken,
-      apiBase,
+      ingestBase,
     );
 
     // Set up transports

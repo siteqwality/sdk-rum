@@ -1,32 +1,57 @@
 {
   "name": "@siteqwality/rum",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "SiteQwality Real User Monitoring SDK",
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
-    "dist"
+    "dist/esm",
+    "dist/cjs",
+    "dist/types"
   ],
   "scripts": {
     "build": "rollup -c",
-    "build:types": "tsc --emitDeclarationOnly",
+    "build:types": "tsc --emitDeclarationOnly --declaration --declarationDir dist/types",
     "dev": "rollup -c -w",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run clean && npm run build && npm run build:types && npm run test"
   },
   "keywords": [
     "rum",
+    "real-user-monitoring",
     "monitoring",
     "web-vitals",
     "session-replay",
-    "error-tracking"
+    "error-tracking",
+    "performance",
+    "siteqwality"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/siteqwality/sdk-rum.git"
+  },
+  "homepage": "https://siteqwality.com",
+  "bugs": {
+    "url": "https://github.com/siteqwality/sdk-rum/issues"
+  },
+  "author": "SiteQwality",
   "type": "module",
   "license": "UNLICENSED",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^29.0.2",
     "@rollup/plugin-node-resolve": "^16.0.3",
