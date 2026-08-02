@@ -32,7 +32,6 @@ import {
   type SessionState,
 } from './sampling/evaluator';
 
-const DEFAULT_API_BASE = 'https://api.siteqwality.com';
 const DEFAULT_INGEST_BASE = 'https://rum.siteqwality.com';
 const DEFAULT_REPLAY_BASE = 'https://replay.siteqwality.com';
 const FLUSH_INTERVAL_MS = 10_000;
@@ -66,7 +65,12 @@ export class SiteQwalityRUM {
   static async init(options: RumConfig): Promise<void> {
     if (SiteQwalityRUM.instance) return;
     SiteQwalityRUM.instance = new SiteQwalityRUM();
-    await SiteQwalityRUM.instance.start(options);
+    try {
+      await SiteQwalityRUM.instance.start(options);
+    } catch (err) {
+      // Monitoring must never break the host page.
+      console.warn('[SiteQwality RUM] init failed', err);
+    }
   }
 
   static setUser(user: UserContext): void {
@@ -76,28 +80,43 @@ export class SiteQwalityRUM {
     inst.sessionState.userId = user.id;
   }
 
+  /**
+   * Report a handcaught error. `context` is attached to the event's
+   * custom_attributes; on key collision the per-call context wins over
+   * ambient global attributes.
+   */
   static addError(error: Error, context?: Record<string, string>): void {
     const inst = SiteQwalityRUM.instance;
     if (!inst) return;
-    inst.handleError({
-      message: error.message,
-      source: 'custom',
-      stack: error.stack || '',
-    });
+    inst.handleError(
+      {
+        message: error.message,
+        source: 'custom',
+        stack: error.stack || '',
+      },
+      context,
+    );
   }
 
+  /**
+   * Record a custom user action. `context` is attached to the event's
+   * custom_attributes; on key collision the per-call context wins over
+   * ambient global attributes.
+   */
   static addAction(name: string, context?: Record<string, string>): void {
     const inst = SiteQwalityRUM.instance;
     if (!inst) return;
-    inst.handleAction({
-      action_type: 'custom',
-      action_target: name,
-    });
+    inst.handleAction(
+      {
+        action_type: 'custom',
+        action_target: name,
+      },
+      context,
+    );
   }
 
   private async start(options: RumConfig): Promise<void> {
     this.options = options;
-    const apiBase = options.apiBase || DEFAULT_API_BASE;
     const ingestBase = options.ingestBase || DEFAULT_INGEST_BASE;
     const replayBase = options.replayBase || DEFAULT_REPLAY_BASE;
 
@@ -105,11 +124,13 @@ export class SiteQwalityRUM {
     this.config = new ConfigManager();
     this.context = new ContextManager(options);
 
-    // Fetch server-side config (filters, privacy settings)
-    const sdkConfig = await this.config.init(
+    // Fetch server-side config (filters, privacy settings) from the ingest
+    // host; the client token authorizes it. Falls back to safe defaults
+    // internally and never throws.
+    await this.config.init(
       options.applicationId,
       options.clientToken,
-      apiBase,
+      ingestBase,
     );
 
     // Set up transports
@@ -200,7 +221,10 @@ export class SiteQwalityRUM {
     startLongTaskCollector((durationMs) => this.handleLongTask(durationMs));
   }
 
-  private handleError(error: CollectedError): void {
+  private handleError(
+    error: CollectedError,
+    context?: Record<string, string>,
+  ): void {
     this.sessionState.hasError = true;
     this.sessionState.errorCount++;
 
@@ -217,7 +241,8 @@ export class SiteQwalityRUM {
       version: this.options.version,
       user_id: this.context.getUser().id,
       user_email: this.context.getUser().email,
-      custom_attributes: this.context.getGlobalAttributes(),
+      // Per-call context wins over ambient global attributes on collision
+      custom_attributes: { ...this.context.getGlobalAttributes(), ...context },
     };
     this.errorTransport.enqueue(errorEvent);
   }
@@ -243,7 +268,10 @@ export class SiteQwalityRUM {
     this.eventTransport.enqueue(event);
   }
 
-  private handleAction(action: CollectedAction): void {
+  private handleAction(
+    action: CollectedAction,
+    context?: Record<string, string>,
+  ): void {
     this.sessionState.actionCount++;
 
     if (!this.detailActive) return;
@@ -260,7 +288,8 @@ export class SiteQwalityRUM {
       frustration: action.frustration,
       user_id: this.context.getUser().id,
       user_email: this.context.getUser().email,
-      custom_attributes: this.context.getGlobalAttributes(),
+      // Per-call context wins over ambient global attributes on collision
+      custom_attributes: { ...this.context.getGlobalAttributes(), ...context },
     };
     this.eventTransport.enqueue(event);
   }
