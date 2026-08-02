@@ -80,23 +80,39 @@ export class SiteQwalityRUM {
     inst.sessionState.userId = user.id;
   }
 
+  /**
+   * Report a handcaught error. `context` is attached to the event's
+   * custom_attributes; on key collision the per-call context wins over
+   * ambient global attributes.
+   */
   static addError(error: Error, context?: Record<string, string>): void {
     const inst = SiteQwalityRUM.instance;
     if (!inst) return;
-    inst.handleError({
-      message: error.message,
-      source: 'custom',
-      stack: error.stack || '',
-    });
+    inst.handleError(
+      {
+        message: error.message,
+        source: 'custom',
+        stack: error.stack || '',
+      },
+      context,
+    );
   }
 
+  /**
+   * Record a custom user action. `context` is attached to the event's
+   * custom_attributes; on key collision the per-call context wins over
+   * ambient global attributes.
+   */
   static addAction(name: string, context?: Record<string, string>): void {
     const inst = SiteQwalityRUM.instance;
     if (!inst) return;
-    inst.handleAction({
-      action_type: 'custom',
-      action_target: name,
-    });
+    inst.handleAction(
+      {
+        action_type: 'custom',
+        action_target: name,
+      },
+      context,
+    );
   }
 
   private async start(options: RumConfig): Promise<void> {
@@ -205,7 +221,10 @@ export class SiteQwalityRUM {
     startLongTaskCollector((durationMs) => this.handleLongTask(durationMs));
   }
 
-  private handleError(error: CollectedError): void {
+  private handleError(
+    error: CollectedError,
+    context?: Record<string, string>,
+  ): void {
     this.sessionState.hasError = true;
     this.sessionState.errorCount++;
 
@@ -222,7 +241,8 @@ export class SiteQwalityRUM {
       version: this.options.version,
       user_id: this.context.getUser().id,
       user_email: this.context.getUser().email,
-      custom_attributes: this.context.getGlobalAttributes(),
+      // Per-call context wins over ambient global attributes on collision
+      custom_attributes: { ...this.context.getGlobalAttributes(), ...context },
     };
     this.errorTransport.enqueue(errorEvent);
   }
@@ -248,7 +268,10 @@ export class SiteQwalityRUM {
     this.eventTransport.enqueue(event);
   }
 
-  private handleAction(action: CollectedAction): void {
+  private handleAction(
+    action: CollectedAction,
+    context?: Record<string, string>,
+  ): void {
     this.sessionState.actionCount++;
 
     if (!this.detailActive) return;
@@ -265,7 +288,8 @@ export class SiteQwalityRUM {
       frustration: action.frustration,
       user_id: this.context.getUser().id,
       user_email: this.context.getUser().email,
-      custom_attributes: this.context.getGlobalAttributes(),
+      // Per-call context wins over ambient global attributes on collision
+      custom_attributes: { ...this.context.getGlobalAttributes(), ...context },
     };
     this.eventTransport.enqueue(event);
   }
