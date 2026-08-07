@@ -75,6 +75,43 @@ describe('TransportManager', () => {
     transport.destroy();
   });
 
+  it('beacons immediately when an event is enqueued while the page is hidden', () => {
+    // web-vitals finalizes CLS and INP on the way out, after the transport's own
+    // visibilitychange listener has already flushed. Without this the last
+    // measure of every session waits for an interval tick that never arrives.
+    const beaconSpy = vi.fn().mockReturnValue(true);
+    vi.stubGlobal('navigator', { sendBeacon: beaconSpy });
+    vi.stubGlobal('document', { visibilityState: 'hidden' });
+
+    const transport = new TransportManager(
+      'https://rum.example.com/v1/measure',
+      'ct_test',
+      60000,
+    );
+
+    transport.enqueue({ type: 'vital', cls: 0.12, action_count: 3 });
+
+    expect(beaconSpy).toHaveBeenCalledTimes(1);
+    expect(beaconSpy.mock.calls[0][0]).toContain('token=ct_test');
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not flush early while the page is still visible', () => {
+    vi.stubGlobal('document', { visibilityState: 'visible' });
+
+    const transport = new TransportManager(
+      'https://rum.example.com/v1/measure',
+      'ct_test',
+      60000,
+    );
+
+    transport.enqueue({ type: 'view', url: '/page1' });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    transport.destroy();
+  });
+
   it('uses sendBeacon on destroy/unload', () => {
     const beaconSpy = vi.fn().mockReturnValue(true);
     vi.stubGlobal('navigator', { sendBeacon: beaconSpy });
