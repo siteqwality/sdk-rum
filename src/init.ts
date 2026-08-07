@@ -57,6 +57,13 @@ export class SiteQwalityRUM {
     actionCount: 0,
   };
 
+  // Errors and actions seen since the last measure was emitted. Measures carry a
+  // DELTA, not a running total, because the server sums this column both per
+  // session and across the whole application, so a cumulative value would be
+  // counted once per measure. Read and reset together by takeCountsSinceLastMeasure.
+  private errorsSinceLastMeasure = 0;
+  private actionsSinceLastMeasure = 0;
+
   private detailActive = false;
   private replayActive = false;
   private samplingTimer: ReturnType<typeof setInterval> | null = null;
@@ -166,6 +173,28 @@ export class SiteQwalityRUM {
     }, SAMPLING_EVAL_INTERVAL_MS);
   }
 
+  /**
+   * Drain the errors and actions counted since the previous measure.
+   *
+   * Every measure a session emits carries one of these, so summing the column
+   * over a session yields the session total and summing it over an application
+   * yields the application total. The tail of a session is covered by web-vitals
+   * finalizing CLS and INP when the page is hidden, which emits a last measure
+   * carrying whatever happened after the previous one.
+   */
+  private takeCountsSinceLastMeasure(): {
+    error_count: number;
+    action_count: number;
+  } {
+    const counts = {
+      error_count: this.errorsSinceLastMeasure,
+      action_count: this.actionsSinceLastMeasure,
+    };
+    this.errorsSinceLastMeasure = 0;
+    this.actionsSinceLastMeasure = 0;
+    return counts;
+  }
+
   private startCollectors(): void {
     // Views — always active, updates current view
     startViewCollector((view) => {
@@ -180,8 +209,7 @@ export class SiteQwalityRUM {
         url: view.url,
         load_time_ms: view.load_time_ms,
         dom_ready_ms: view.dom_ready_ms,
-        error_count: 0,
-        action_count: 0,
+        ...this.takeCountsSinceLastMeasure(),
         resource_count: 0,
       };
       this.measureTransport.enqueue(measure);
@@ -201,8 +229,7 @@ export class SiteQwalityRUM {
         timestamp: Date.now(),
         url: window.location.href,
         [name]: value,
-        error_count: 0,
-        action_count: 0,
+        ...this.takeCountsSinceLastMeasure(),
         resource_count: 0,
       };
       this.measureTransport.enqueue(measure);
@@ -227,6 +254,7 @@ export class SiteQwalityRUM {
   ): void {
     this.sessionState.hasError = true;
     this.sessionState.errorCount++;
+    this.errorsSinceLastMeasure++;
 
     // Always send errors to the error endpoint for fingerprinting
     const errorEvent: RumErrorEvent = {
@@ -272,7 +300,11 @@ export class SiteQwalityRUM {
     action: CollectedAction,
     context?: Record<string, string>,
   ): void {
+    // Counted before the detail-sampling gate below: the count belongs on the
+    // measure for every session, while the action's detail row is only recorded
+    // for sessions a filter has latched onto.
     this.sessionState.actionCount++;
+    this.actionsSinceLastMeasure++;
 
     if (!this.detailActive) return;
 

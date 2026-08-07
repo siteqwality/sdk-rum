@@ -19,7 +19,21 @@ export class TransportManager {
 
   enqueue(event: unknown): void {
     this.queue.push(event);
-    if (this.queue.length >= 50) this.flush();
+    if (this.queue.length >= 50) {
+      this.flush();
+      return;
+    }
+    // Anything enqueued while the page is already hidden has to go out now.
+    // This listener is registered in the constructor, before the collectors
+    // exist, so on the way out our flush runs first and web-vitals finalizes
+    // CLS and INP after it: that last measure would otherwise sit in the queue
+    // waiting for an interval tick that never comes.
+    if (
+      typeof document !== 'undefined' &&
+      document.visibilityState === 'hidden'
+    ) {
+      this.flush(true);
+    }
   }
 
   flush(useBeacon = false): void {
