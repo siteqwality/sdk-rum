@@ -12,7 +12,7 @@ const shared = {
 };
 
 export default [
-  // ESM (npm — rrweb and web-vitals are peer deps)
+  // ESM (npm; rrweb and web-vitals are peer deps)
   {
     input: 'src/index.ts',
     output: {
@@ -23,7 +23,7 @@ export default [
     external: ['web-vitals', 'rrweb'],
     ...shared,
   },
-  // CJS (npm — rrweb and web-vitals are peer deps)
+  // CJS (npm; rrweb and web-vitals are peer deps)
   {
     input: 'src/index.ts',
     output: {
@@ -34,11 +34,11 @@ export default [
     external: ['web-vitals', 'rrweb'],
     ...shared,
   },
-  // CDN bundle (ES module with code splitting — rrweb lazy-loaded)
+  // CDN bundle (ES module with code splitting, so rrweb is lazy-loaded)
   //
   // Outputs:
-  //   dist/cdn/sdk.min.js     — core SDK (< 30KB gzipped, no rrweb)
-  //   dist/cdn/rrweb-*.js     — rrweb chunk (loaded on demand when replay activates)
+  //   dist/cdn/sdk.min.js     core SDK (< 30KB gzipped, no rrweb)
+  //   dist/cdn/rrweb-*.js     rrweb chunk (loaded on demand when replay activates)
   //
   // Usage: <script type="module" src="https://cdn.siteqwality.com/rum/v1/sdk.min.js"></script>
   {

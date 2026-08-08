@@ -31,6 +31,12 @@ import {
   evaluateFilters,
   type SessionState,
 } from './sampling/evaluator';
+import {
+  createUrlSanitizer,
+  createTextUrlSanitizer,
+  type UrlSanitizer,
+  type TextUrlSanitizer,
+} from './privacy/url';
 
 const DEFAULT_INGEST_BASE = 'https://rum.siteqwality.com';
 const DEFAULT_REPLAY_BASE = 'https://replay.siteqwality.com';
@@ -64,6 +70,22 @@ export class SiteQwalityRUM {
   private errorsSinceLastMeasure = 0;
   private actionsSinceLastMeasure = 0;
 
+  /**
+   * Strips the fragment, the query string and any credentials from every URL
+   * before it is enqueued. Built as the first statement of `start()` so no
+   * collector can be wired up before it exists.
+   */
+  private sanitizeUrl: UrlSanitizer = createUrlSanitizer();
+
+  /**
+   * The same reduction, applied to the URLs embedded in a free-text field: an
+   * error message, a stack trace, a script filename. Always built from
+   * `sanitizeUrl`, so the two can never apply different rules.
+   */
+  private sanitizeText: TextUrlSanitizer = createTextUrlSanitizer(
+    this.sanitizeUrl,
+  );
+
   private detailActive = false;
   private replayActive = false;
   private samplingTimer: ReturnType<typeof setInterval> | null = null;
@@ -91,15 +113,19 @@ export class SiteQwalityRUM {
    * Report a handcaught error. `context` is attached to the event's
    * custom_attributes; on key collision the per-call context wins over
    * ambient global attributes.
+   *
+   * The message and the stack are URL-minimised here, exactly as
+   * `startErrorCollector` does for browser-raised errors, because this is the
+   * other route that constructs a `CollectedError`.
    */
   static addError(error: Error, context?: Record<string, string>): void {
     const inst = SiteQwalityRUM.instance;
     if (!inst) return;
     inst.handleError(
       {
-        message: error.message,
+        message: inst.sanitizeText(error.message),
         source: 'custom',
-        stack: error.stack || '',
+        stack: inst.sanitizeText(error.stack || ''),
       },
       context,
     );
@@ -124,6 +150,14 @@ export class SiteQwalityRUM {
 
   private async start(options: RumConfig): Promise<void> {
     this.options = options;
+    // Built before anything else in start(): every collector below captures a
+    // URL, and a collector wired up before the sanitiser exists would send raw
+    // hrefs for the life of the page.
+    this.sanitizeUrl = createUrlSanitizer({
+      allowedQueryParams: options.allowedQueryParams,
+      deniedQueryParams: options.deniedQueryParams,
+    });
+    this.sanitizeText = createTextUrlSanitizer(this.sanitizeUrl);
     const ingestBase = options.ingestBase || DEFAULT_INGEST_BASE;
     const replayBase = options.replayBase || DEFAULT_REPLAY_BASE;
 
@@ -196,7 +230,7 @@ export class SiteQwalityRUM {
   }
 
   private startCollectors(): void {
-    // Views — always active, updates current view
+    // Views: always active, updates current view
     startViewCollector((view) => {
       this.currentViewId = view.view_id;
       this.sessionState.pageCount++;
@@ -213,9 +247,9 @@ export class SiteQwalityRUM {
         resource_count: 0,
       };
       this.measureTransport.enqueue(measure);
-    });
+    }, this.sanitizeUrl);
 
-    // Web Vitals — lightweight, always sent as measures
+    // Web Vitals are lightweight, so they are always sent as measures
     startVitalsCollector((name, value) => {
       // Update session state for sampling evaluation
       if (name === 'lcp_ms') this.sessionState.lcpMs = value;
@@ -227,7 +261,7 @@ export class SiteQwalityRUM {
         session_id: this.session.getSessionId(),
         view_id: this.currentViewId,
         timestamp: Date.now(),
-        url: window.location.href,
+        url: this.currentUrl(),
         [name]: value,
         ...this.takeCountsSinceLastMeasure(),
         resource_count: 0,
@@ -235,16 +269,23 @@ export class SiteQwalityRUM {
       this.measureTransport.enqueue(measure);
     });
 
-    // Errors — always tracked (count goes to measures, detail if sampling active)
-    startErrorCollector((error) => this.handleError(error));
+    // Errors are always tracked: the count goes to measures, the detail only if
+    // sampling is active. The collector is handed the text sanitiser because it
+    // constructs the CollectedError, and a CollectedError is minimised by
+    // whoever builds it.
+    startErrorCollector((error) => this.handleError(error), this.sanitizeText);
 
-    // Resources — detail only (activated by sampling)
-    startResourceCollector((resource) => this.handleResource(resource));
+    // Resources are detail only, activated by sampling
+    startResourceCollector(
+      (resource) => this.handleResource(resource),
+      this.sanitizeUrl,
+    );
 
-    // Actions — count always tracked, detail if sampling active
+    // Actions: the count is always tracked, the detail only if sampling is
+    // active
     startActionCollector((action) => this.handleAction(action));
 
-    // Long tasks — detail only
+    // Long tasks are detail only
     startLongTaskCollector((durationMs) => this.handleLongTask(durationMs));
   }
 
@@ -256,13 +297,18 @@ export class SiteQwalityRUM {
     this.sessionState.errorCount++;
     this.errorsSinceLastMeasure++;
 
-    // Always send errors to the error endpoint for fingerprinting
+    // Always send errors to the error endpoint for fingerprinting.
+    //
+    // `error.message` and `error.stack` are already URL-minimised: both routes
+    // that build a CollectedError do it (see `collectors/errors.ts`). They are
+    // not re-sanitised here, so there is exactly one place per route that has to
+    // be right, and `error.filename` is deliberately not part of this payload.
     const errorEvent: RumErrorEvent = {
       session_id: this.session.getSessionId(),
       view_id: this.currentViewId,
       event_id: crypto.randomUUID(),
       timestamp: Date.now(),
-      url: window.location.href,
+      url: this.currentUrl(),
       error_message: error.message,
       error_source: error.source,
       error_stack: error.stack,
@@ -284,7 +330,7 @@ export class SiteQwalityRUM {
       view_id: this.currentViewId,
       event_id: crypto.randomUUID(),
       timestamp: Date.now(),
-      url: window.location.href,
+      url: this.currentUrl(),
       resource_type: resource.resource_type,
       resource_url: resource.resource_url,
       duration_ms: resource.duration_ms,
@@ -314,7 +360,7 @@ export class SiteQwalityRUM {
       view_id: this.currentViewId,
       event_id: crypto.randomUUID(),
       timestamp: Date.now(),
-      url: window.location.href,
+      url: this.currentUrl(),
       action_type: action.action_type,
       action_target: action.action_target,
       frustration: action.frustration,
@@ -335,7 +381,7 @@ export class SiteQwalityRUM {
       view_id: this.currentViewId,
       event_id: crypto.randomUUID(),
       timestamp: Date.now(),
-      url: window.location.href,
+      url: this.currentUrl(),
       long_task_duration_ms: durationMs,
       user_id: this.context.getUser().id,
       user_email: this.context.getUser().email,
@@ -365,6 +411,11 @@ export class SiteQwalityRUM {
     }
   }
 
+  /** The current page URL, minimised. Never the raw `location.href`. */
+  private currentUrl(): string {
+    return this.sanitizeUrl(window.location.href);
+  }
+
   private async startReplay(privacy: {
     mask_inputs: boolean;
     mask_text: boolean;
@@ -377,6 +428,7 @@ export class SiteQwalityRUM {
         this.replayTransport!.sendSegment(sessionId, segment);
       },
       { maskInputs: privacy.mask_inputs, maskText: privacy.mask_text },
+      this.sanitizeUrl,
     );
   }
 }
