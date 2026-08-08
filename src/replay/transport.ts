@@ -28,7 +28,7 @@ export class ReplayTransport {
         keepalive: true,
       },
     ).catch(() => {
-      // silent — replay delivery is best-effort
+      // silent, because replay delivery is best-effort
     });
   }
 }
