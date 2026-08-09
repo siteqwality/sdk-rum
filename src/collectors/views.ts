@@ -1,16 +1,25 @@
 import type { ViewEvent } from '../types';
+import type { UrlSanitizer } from '../privacy/url';
 
+/**
+ * `sanitizeUrl` is a required argument rather than an internal default so this
+ * collector cannot capture a raw `location.href` by omission: every call site
+ * has to name the sanitiser it is using.
+ */
 export function startViewCollector(
   onView: (view: ViewEvent) => void,
+  sanitizeUrl: UrlSanitizer,
 ): void {
+  const currentUrl = () => sanitizeUrl(window.location.href);
+
   // Initial page load
-  onView(createViewEvent(window.location.href));
+  onView(createViewEvent(currentUrl()));
 
   // SPA navigation via pushState
   const originalPushState = history.pushState.bind(history);
   history.pushState = function (...args: Parameters<typeof history.pushState>) {
     originalPushState(...args);
-    onView(createViewEvent(window.location.href));
+    onView(createViewEvent(currentUrl()));
   };
 
   const originalReplaceState = history.replaceState.bind(history);
@@ -18,12 +27,12 @@ export function startViewCollector(
     ...args: Parameters<typeof history.replaceState>
   ) {
     originalReplaceState(...args);
-    onView(createViewEvent(window.location.href));
+    onView(createViewEvent(currentUrl()));
   };
 
   // Back/forward navigation
   window.addEventListener('popstate', () => {
-    onView(createViewEvent(window.location.href));
+    onView(createViewEvent(currentUrl()));
   });
 }
 

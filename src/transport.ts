@@ -57,7 +57,7 @@ export class TransportManager {
         body,
         keepalive: true,
       }).catch(() => {
-        // silent fail — fire and forget
+        // silent fail: fire and forget
       });
     }
   }
