@@ -147,7 +147,7 @@ describe('evaluateFilters', () => {
     expect(result.captureReplay).toBe(false);
   });
 
-  it('matches multiple rules — replay wins if any rule enables it', () => {
+  it('matches multiple rules: replay wins if any rule enables it', () => {
     const rules: SessionFilterRule[] = [
       {
         filter_type: 'error',

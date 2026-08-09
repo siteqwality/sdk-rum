@@ -2,12 +2,20 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SiteQwalityRUM } from '../src/init';
 import { ContextManager } from '../src/context';
 import { SessionManager } from '../src/session';
+import {
+  createUrlSanitizer,
+  createTextUrlSanitizer,
+} from '../src/privacy/url';
 import type { RumErrorEvent, RumDetailEvent } from '../src/types';
 
 /**
  * addError/addAction context handling. A minimal instance is assembled by
  * hand (transports stubbed) instead of running full init, which needs
  * browser APIs (PerformanceObserver, rrweb) jsdom does not provide.
+ *
+ * `Object.create` skips class field initialisers, so every field the handlers
+ * read has to be listed in `installInstance`. `sanitizeUrl` and `sanitizeText`
+ * are two of them: production builds both at the top of `start()`.
  */
 
 const errorEnqueue = vi.fn();
@@ -22,6 +30,7 @@ function installInstance(ambient: Record<string, string>): void {
     context.setGlobalAttribute(k, v);
   }
 
+  const sanitizeUrl = createUrlSanitizer();
   const inst = Object.create(SiteQwalityRUM.prototype);
   Object.assign(inst, {
     session: new SessionManager(),
@@ -35,6 +44,8 @@ function installInstance(ambient: Record<string, string>): void {
       actionCount: 0,
     },
     detailActive: true, // actions only ship detail when sampling is active
+    sanitizeUrl,
+    sanitizeText: createTextUrlSanitizer(sanitizeUrl),
     errorTransport: { enqueue: errorEnqueue },
     eventTransport: { enqueue: eventEnqueue },
   });
@@ -52,6 +63,7 @@ function lastAction(): RumDetailEvent {
 beforeEach(() => {
   errorEnqueue.mockClear();
   eventEnqueue.mockClear();
+  history.replaceState({}, '', '/checkout?token=abc123&q=knee+surgery#step-2');
 });
 
 afterEach(() => {
@@ -113,5 +125,39 @@ describe('addAction context', () => {
     SiteQwalityRUM.addAction('buy-clicked');
 
     expect(lastAction().custom_attributes).toEqual({ plan: 'free' });
+  });
+});
+
+describe('the url stamped on hand-reported events', () => {
+  it('is minimised, not the raw location.href', () => {
+    installInstance({});
+    SiteQwalityRUM.addError(new Error('boom'));
+    SiteQwalityRUM.addAction('buy-clicked');
+
+    // jsdom serves the page from http://localhost:3000/.
+    expect(window.location.href).toContain('token=abc123');
+    expect(lastError().url).toBe('http://localhost:3000/checkout');
+    expect(lastAction().url).toBe('http://localhost:3000/checkout');
+  });
+});
+
+describe('the message and stack of a hand-reported error', () => {
+  it('have their embedded URLs minimised, and keep the rest of the text', () => {
+    installInstance({});
+
+    const err = new Error(
+      'Failed to fetch https://api.example.com/reset?token=tok_9f2',
+    );
+    err.stack =
+      'Error: boom\n    at load (https://cdn.example.com/app.min.js?v=9f2:1:2345)';
+    SiteQwalityRUM.addError(err);
+
+    const event = lastError();
+    expect(event.error_message).toBe(
+      'Failed to fetch https://api.example.com/reset',
+    );
+    expect(event.error_stack).toBe(
+      'Error: boom\n    at load (https://cdn.example.com/app.min.js:1:2345)',
+    );
   });
 });

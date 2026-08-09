@@ -13,6 +13,34 @@ export interface RumConfig {
   ingestBase?: string;
   /** Override the default replay ingestion base URL */
   replayBase?: string;
+  /**
+   * Query parameter names to keep on captured URLs.
+   *
+   * Every URL the SDK sends (page views, subresources, fetch/XHR, the page URL
+   * embedded in a replay segment, and the URLs inside an error message or stack
+   * trace) has its fragment and its whole query string removed by default,
+   * because those are where tokens, session ids, email addresses and search
+   * terms live and the data is retained for months. Name a parameter here to
+   * opt it back in, for example `['plan', 'tab']`.
+   *
+   * A deny list still applies to anything named here: see
+   * `DEFAULT_DENIED_QUERY_PARAMS`. It cannot be switched off.
+   *
+   * **What this changes, precisely.** It changes what leaves the browser. It
+   * does not decide what is stored for most fields: the ingestor re-applies the
+   * strict default with no allow list (it cannot tell an allowed parameter from
+   * a stale bundle sending everything) to the view URL, `resource_url`,
+   * `error_message` and `error_stack`, so a parameter named here is removed
+   * again server-side for those. The one field where an allowed parameter is
+   * stored as sent is the page URL inside a session-replay segment, which the
+   * server stores byte for byte.
+   */
+  allowedQueryParams?: string[];
+  /**
+   * Extra query parameter names to refuse, on top of the built-in deny list.
+   * Only useful alongside `allowedQueryParams`.
+   */
+  deniedQueryParams?: string[];
 }
 
 export interface RumMeasureEvent {
