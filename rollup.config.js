@@ -27,7 +27,9 @@ export default [
   {
     input: 'src/index.ts',
     output: {
-      file: 'dist/cjs/index.js',
+      // .cjs, because package.json says "type": "module" and Node would
+      // otherwise load this CommonJS file as an ES module and export nothing.
+      file: 'dist/cjs/index.cjs',
       format: 'cjs',
       sourcemap: true,
     },
