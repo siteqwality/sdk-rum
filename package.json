@@ -48,7 +48,7 @@
   },
   "author": "SiteQwality",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "publishConfig": {
     "access": "public"
   },
