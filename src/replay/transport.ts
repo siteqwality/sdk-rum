@@ -1,9 +1,16 @@
+import { sendJson } from '../send';
+
 export class ReplayTransport {
   constructor(
     private endpoint: string,
     private clientToken: string,
   ) {}
 
+  /**
+   * Best-effort delivery. A segment is often past the 64 KiB keepalive cap,
+   * where a keepalive request is refused outright; `sendJson` sends those as
+   * plain requests instead of silently dropping them.
+   */
   async sendSegment(
     sessionId: string,
     segment: { events: unknown[]; index: number },
@@ -14,21 +21,10 @@ export class ReplayTransport {
       events: segment.events,
     });
 
-    const blob = new Blob([body], { type: 'application/json' });
-
-    await fetch(
+    await sendJson(
       `${this.endpoint}?session_id=${sessionId}&segment_index=${segment.index}`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.clientToken}`,
-        },
-        body: blob,
-        keepalive: true,
-      },
-    ).catch(() => {
-      // silent, because replay delivery is best-effort
-    });
+      this.clientToken,
+      body,
+    );
   }
 }
