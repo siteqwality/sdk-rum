@@ -156,6 +156,15 @@ describe('SegmentBuffer', () => {
     expect(segments[0].snapshot).toBe(false);
   });
 
+  it('discards the open segment unsent', () => {
+    const { segments, buffer } = collect();
+    buffer.add(meta());
+    buffer.discard();
+    buffer.flush();
+    vi.advanceTimersByTime(60_000);
+    expect(segments).toEqual([]);
+  });
+
   it('numbers segments from the index source it is given', () => {
     const segments: ReplaySegment[] = [];
     let next = 41;
@@ -389,7 +398,7 @@ describe('ReplayRecorder', () => {
     expect(rrweb.state.calls).toHaveLength(2);
   });
 
-  it('stops recording a page whose snapshot is too large, sending only its Meta event', async () => {
+  it('stops recording a page whose snapshot is too large, sending nothing of it', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { emit } = await start();
     emit(meta());
@@ -398,12 +407,27 @@ describe('ReplayRecorder', () => {
     await Promise.resolve();
 
     expect(rrweb.state.calls[0].stopped).toBe(true);
-    expect(segments.map(types)).toEqual([[4]]);
+    expect(segments).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(1);
 
     emit(move(3));
     vi.advanceTimersByTime(CHECKOUT_EVERY_MS);
-    expect(segments).toHaveLength(1);
+    expect(segments).toEqual([]);
+  });
+
+  it('a later checkout too large to send keeps what the page already sent', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emit } = await start();
+    emit(meta());
+    emit(full());
+    emit(move(2));
+    emit(move(CHECKOUT_EVERY_MS + 3));
+    await Promise.resolve();
+    const { emit: emitAgain } = { emit: rrweb.state.calls.at(-1)!.emit };
+    emitAgain(meta('https://example.com/', CHECKOUT_EVERY_MS + 4));
+    emitAgain(full(MAX_SEGMENT_BYTES, CHECKOUT_EVERY_MS + 4));
+    await Promise.resolve();
+    expect(segments.map(types)).toEqual([[4, 2], [3, 3]]);
   });
 
   it('sends nothing from inside an iframe', async () => {

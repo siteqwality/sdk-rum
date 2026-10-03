@@ -176,6 +176,17 @@ export class SegmentBuffer {
     return true;
   }
 
+  /** Drops the open segment unsent. */
+  discard(): void {
+    if (this.ageTimer) {
+      clearTimeout(this.ageTimer);
+      this.ageTimer = null;
+    }
+    this.json = [];
+    this.bytes = 0;
+    this.snapshot = false;
+  }
+
   /** Sends the open segment; `final` when the page is going away. */
   flush(final = false): void {
     if (this.ageTimer) {
@@ -298,6 +309,8 @@ export class ReplayRecorder {
     if (kept === null) return;
     if (!this.buffer.add(sanitizeReplayEvent(kept, this.sanitizeUrl))) {
       // Its later events would replay onto another page, so the page stops here.
+      // The Meta event alone cannot play, so nothing of the page is sent.
+      this.buffer.discard();
       this.generation++;
       console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
       queueMicrotask(() => this.stop());

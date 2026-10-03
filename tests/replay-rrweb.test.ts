@@ -132,7 +132,7 @@ describe('ReplayRecorder with rrweb', () => {
     expect(hits).toHaveLength(1);
   });
 
-  it('sends no later segment of a page whose snapshot is too large', async () => {
+  it('sends nothing at all for a page whose snapshot is too large', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sent: Array<{ segment_index: number; events: Array<{ type: number }> }> = [];
     vi.stubGlobal(
@@ -152,6 +152,7 @@ describe('ReplayRecorder with rrweb', () => {
     await settle();
     vi.unstubAllGlobals();
 
-    expect(sent.map((b) => b.events.map((e) => e.type))).toEqual([[EventType.Meta]]);
+    expect(sent).toEqual([]);
+    expect(sessionStorage.getItem('sq_rum_replay_next:session-1')).toBeNull();
   });
 });
