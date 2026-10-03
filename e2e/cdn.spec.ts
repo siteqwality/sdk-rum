@@ -146,6 +146,43 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
   });
 });
 
+test.describe('CDN core loaded from another origin, as from the CDN', () => {
+  test('imports the recorder cross-origin with the CDN CORS header', async ({ page, intake }) => {
+    intake.config = MATCH_ALL_REPLAY;
+    const requested: string[] = [];
+    page.on('request', (r) => requested.push(r.url()));
+    const url = intake.page(
+      'cross-origin',
+      `<!doctype html><html><head>${snippet(intake, `${intake.crossOrigin}/sdk/sdk.min.js`)}</head><body><p>Shop</p></body></html>`,
+    );
+    await page.goto(url);
+    await sdkLoaded(page);
+    await expect.poll(() => intake.of('segments').length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(requested).toContain(`${intake.crossOrigin}/sdk/recorder-${VERSION}.min.js`);
+  });
+
+  test('without CORS the recorder fails quietly: one warning, no page error, RUM still flows', async ({ page, intake }) => {
+    intake.config = MATCH_ALL_REPLAY;
+    const warnings: string[] = [];
+    const pageErrors: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'warning') warnings.push(m.text());
+    });
+    page.on('pageerror', (e) => pageErrors.push(e.message));
+    const url = intake.page(
+      'no-cors',
+      `<!doctype html><html><head>${snippet(intake, `${intake.crossOrigin}/sdk-nocors/sdk.min.js`)}</head><body></body></html>`,
+    );
+    await page.goto(url);
+    await sdkLoaded(page);
+    await expect.poll(() => warnings.filter((w) => w.includes('session replay recorder')).length).toBe(1);
+    await hide(page);
+    await expect.poll(() => intake.of('measure').length).toBeGreaterThan(0);
+    expect(intake.of('segments')).toHaveLength(0);
+    expect(pageErrors).toEqual([]);
+  });
+});
+
 test.describe('CDN core loaded as type="module"', () => {
   test('works, and finds the recorder at the CDN path without currentScript', async ({ page, intake }) => {
     intake.config = MATCH_ALL_REPLAY;
@@ -229,6 +266,25 @@ test.describe('page views and frustration in a real browser', () => {
     expect(timing[0].load_time_ms as number).toBeGreaterThan(700);
     expect(timing[0].dom_ready_ms as number).toBeGreaterThan(0);
     expect(timing[0].dom_ready_ms as number).toBeLessThanOrEqual(timing[0].load_time_ms as number);
+  });
+
+  test('a hash router gets one view per route; anchors and tokens stay out', async ({ page, intake }) => {
+    const url = intake.page('hash', `<!doctype html><html><head>${snippet(intake)}</head><body><h2 id="reviews">Reviews</h2></body></html>`);
+    await page.goto(url);
+    await sdkLoaded(page);
+    for (const hash of ['#/inbox', '#/inbox/42?token=secret', '#reviews', '#!/settings', '#access_token=abc']) {
+      await page.evaluate((h) => { location.hash = h; }, hash);
+      await page.waitForTimeout(50);
+    }
+    await hide(page);
+    await expect.poll(() => intake.of('measure').filter((m) => m.type === 'view').length).toBeGreaterThanOrEqual(4);
+    expect(intake.of<{ type: string; url: string }>('measure').filter((m) => m.type === 'view').map((m) => m.url)).toEqual([
+      url,
+      `${url}#/inbox`,
+      `${url}#/inbox/42`,
+      `${url}#!/settings`,
+    ]);
+    expect(JSON.stringify(intake.received)).not.toContain('secret');
   });
 
   test('init after load: the view carries its timings', async ({ page, intake }) => {

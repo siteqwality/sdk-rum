@@ -23,6 +23,7 @@ export class Intake {
   config: unknown = { filters: [], settings: { privacy: { mask_inputs: true, mask_text: false } } };
   private server: Server;
   origin = '';
+  crossOrigin = '';
 
   constructor() {
     this.server = createServer((req, res) => {
@@ -41,7 +42,10 @@ export class Intake {
 
   async start(): Promise<void> {
     await new Promise<void>((resolve) => this.server.listen(0, '127.0.0.1', resolve));
-    this.origin = `http://127.0.0.1:${(this.server.address() as AddressInfo).port}`;
+    const { port } = this.server.address() as AddressInfo;
+    this.origin = `http://127.0.0.1:${port}`;
+    // The same server under another origin, to load the SDK cross-origin like the CDN.
+    this.crossOrigin = `http://localhost:${port}`;
   }
 
   stop(): Promise<void> {
@@ -59,24 +63,30 @@ export class Intake {
       .flatMap((r) => (Array.isArray(r.body) ? r.body : [r.body])) as T[];
   }
 
-  private async handle(req: IncomingMessage) {
+  private async handle(
+    req: IncomingMessage,
+  ): Promise<{ status: number; type: string; body: string | Buffer; headers?: Record<string, string> }> {
     const url = new URL(req.url ?? '/', this.origin);
     const delay = Number(url.searchParams.get('delay') ?? 0);
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
 
-    if (url.pathname.startsWith('/sdk/')) {
-      const file = url.pathname.slice('/sdk/'.length);
+    // /sdk/ sends CORS headers as the CDN does; /sdk-nocors/ does not.
+    const sdkPath = url.pathname.match(/^\/(sdk|sdk-nocors)\/(.+)$/);
+    if (sdkPath) {
+      const file = sdkPath[2];
       if (file.includes('..')) return { status: 404, type: 'text/plain', body: '' };
+      const headers: Record<string, string> =
+        sdkPath[1] === 'sdk' ? { 'access-control-allow-origin': '*' } : {};
       try {
         const body = await readFile(join(DIST, file));
-        return { status: 200, type: 'application/javascript', body };
+        return { status: 200, type: 'application/javascript', body, headers };
       } catch {
         return { status: 404, type: 'text/plain', body: '' };
       }
     }
     if (url.pathname.startsWith('/page/')) {
       const html = this.pages.get(url.pathname.slice('/page/'.length).split('/')[0]);
-      return { status: html ? 200 : 404, type: 'text/html', body: html ?? '' };
+      return { status: html ? 200 : 404, type: 'text/html', body: html ?? '', headers: {} };
     }
     if (url.pathname === '/slow.png') {
       const png = Buffer.from(
@@ -112,6 +122,7 @@ export { expect };
 
 /** The dashboard's install snippet, loading the local build. */
 export function snippet(intake: Intake, sdkUrl = '/sdk/sdk.min.js', initExtra = ''): string {
+  const src = /^https?:/.test(sdkUrl) ? sdkUrl : `${intake.origin}${sdkUrl}`;
   return `<script>
   (function(w,d,s,u){var r=w.SiteQwalityRUM=w.SiteQwalityRUM||{_q:[]};if(r._q&&!r._h){
   ['init','setUser','setGlobalAttribute','removeGlobalAttribute','addError','addAction'].forEach(function(m){
@@ -119,7 +130,7 @@ export function snippet(intake: Intake, sdkUrl = '/sdk/sdk.min.js', initExtra = 
   r._h=function(e){r._q.push(['_e',[e]])};w.addEventListener('error',r._h);
   w.addEventListener('unhandledrejection',r._h);
   var e=d.createElement(s);e.async=1;e.src=u;(d.head||d.documentElement).appendChild(e)}
-  })(window,document,'script','${intake.origin}${sdkUrl}');
+  })(window,document,'script','${src}');
 
   SiteQwalityRUM.init({
     applicationId: 'app-1',
