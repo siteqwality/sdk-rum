@@ -1,6 +1,9 @@
 import type { UrlSanitizer } from '../privacy/url';
 import { byteLength } from '../send';
 import { SegmentSequence } from './sequence';
+import { MAX_SEGMENT_BYTES, type ReplaySegment } from './transport';
+
+export type { ReplaySegment } from './transport';
 
 // rrweb discriminants, hardcoded so the lazy rrweb chunk stays out of the core
 // bundle. Pinned against rrweb's own enums by `replay-url.test.ts`.
@@ -27,10 +30,6 @@ export const SEGMENT_MAX_AGE_MS = 30_000;
 /** A fresh full snapshot this often, each one starting a new segment. */
 export const CHECKOUT_EVERY_MS = 60_000;
 
-export interface ReplaySegment {
-  events: unknown[];
-  index: number;
-}
 
 interface MaybeMetaEvent {
   type?: number;
@@ -101,12 +100,15 @@ export function isBlockedFrameDocument(
 }
 
 /**
- * Groups rrweb events into segments: a new one at each checkout, before the
- * byte target or event cap would be passed, and after `SEGMENT_MAX_AGE_MS`.
+ * Groups serialized rrweb events into segments: a Meta event opens one, a full
+ * snapshot, the byte target, the event cap or `SEGMENT_MAX_AGE_MS` closes it.
  */
 export class SegmentBuffer {
-  private events: unknown[] = [];
-  private bytes = ENVELOPE_BYTES;
+  private json: string[] = [];
+  /** Event bytes plus the comma that joins each one. */
+  private bytes = 0;
+  private opensWithMeta = false;
+  private snapshot = false;
   private ageTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
@@ -114,40 +116,57 @@ export class SegmentBuffer {
     private nextIndex: () => number = counter(),
   ) {}
 
-  add(event: unknown, isCheckout = false): void {
+  /** Adds an event. False, and nothing added, for a snapshot too large to send. */
+  add(event: unknown): boolean {
     const type = typeOf(event);
-    if (isCheckout && type === RRWEB_META_EVENT_TYPE) this.flush();
-    // Serialized size plus the comma that joins it in the request body.
-    const size = byteLength(JSON.stringify(event)) + 1;
+    if (type === RRWEB_META_EVENT_TYPE) this.flush();
+    const json = JSON.stringify(event);
+    const size = byteLength(json) + 1;
+    const isSnapshot = type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE;
     // A full snapshot stays with the Meta event just before it.
-    const withMeta =
-      type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE &&
-      this.events.length === 1 &&
-      typeOf(this.events[0]) === RRWEB_META_EVENT_TYPE;
-    if (!withMeta && this.bytes + size > SEGMENT_TARGET_BYTES) this.flush();
-    this.events.push(event);
-    this.bytes += size;
-    if (this.events.length === 1) {
+    const withMeta = isSnapshot && this.opensWithMeta && this.json.length === 1;
+    if (isSnapshot && ENVELOPE_BYTES + (withMeta ? this.bytes : 0) + size > MAX_SEGMENT_BYTES) {
+      return false;
+    }
+    if (!withMeta && ENVELOPE_BYTES + this.bytes + size > SEGMENT_TARGET_BYTES) {
+      this.flush();
+    }
+    if (this.json.length === 0) {
+      this.opensWithMeta = type === RRWEB_META_EVENT_TYPE;
       this.ageTimer = setTimeout(() => this.flush(), SEGMENT_MAX_AGE_MS);
     }
+    this.json.push(json);
+    this.bytes += size;
+    if (isSnapshot) this.snapshot = true;
+    // The snapshot goes at once, so even a short page view has it delivered.
     if (
-      this.events.length >= SEGMENT_MAX_EVENTS ||
-      this.bytes >= SEGMENT_TARGET_BYTES
+      isSnapshot ||
+      this.json.length >= SEGMENT_MAX_EVENTS ||
+      ENVELOPE_BYTES + this.bytes >= SEGMENT_TARGET_BYTES
     ) {
       this.flush();
     }
+    return true;
   }
 
-  flush(): void {
+  /** Sends the open segment; `final` when the page is going away. */
+  flush(final = false): void {
     if (this.ageTimer) {
       clearTimeout(this.ageTimer);
       this.ageTimer = null;
     }
-    if (this.events.length === 0) return;
-    const events = this.events;
-    this.events = [];
-    this.bytes = ENVELOPE_BYTES;
-    this.onSegment({ events, index: this.nextIndex() });
+    if (this.json.length === 0) return;
+    const segment: ReplaySegment = {
+      index: this.nextIndex(),
+      json: this.json,
+      bytes: this.bytes - 1,
+      snapshot: this.snapshot,
+      final,
+    };
+    this.json = [];
+    this.bytes = 0;
+    this.snapshot = false;
+    this.onSegment(segment);
   }
 }
 
@@ -163,7 +182,7 @@ function counter(): () => number {
 export class ReplayRecorder {
   private stopFn: (() => void) | null = null;
   private buffer: SegmentBuffer | null = null;
-  private onPageHide = () => this.buffer?.flush();
+  private onPageHide = () => this.buffer?.flush(true);
   private onVisibilityChange = () => {
     if (document.visibilityState === 'hidden') this.buffer?.flush();
   };
@@ -182,12 +201,18 @@ export class ReplayRecorder {
     const buffer = new SegmentBuffer(onSegment, () => sequence.take());
     this.buffer = buffer;
     const getNode = (id: number) => record.mirror.getNode(id);
+    let halted = false;
 
     this.stopFn =
       record({
-        emit: (event, isCheckout) => {
-          if (isBlockedFrameDocument(event, getNode)) return;
-          buffer.add(sanitizeReplayEvent(event, sanitizeUrl), isCheckout);
+        emit: (event) => {
+          if (halted || isBlockedFrameDocument(event, getNode)) return;
+          if (!buffer.add(sanitizeReplayEvent(event, sanitizeUrl))) {
+            // Its later events would replay onto another page, so the page stops here.
+            halted = true;
+            console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
+            queueMicrotask(() => this.stop());
+          }
         },
         checkoutEveryNms: CHECKOUT_EVERY_MS,
         sampling: { mousemove: 50, scroll: 150, input: 'last' },

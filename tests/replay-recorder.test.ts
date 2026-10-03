@@ -8,6 +8,7 @@ import {
   CHECKOUT_EVERY_MS,
   type ReplaySegment,
 } from '../src/replay/recorder';
+import { MAX_SEGMENT_BYTES } from '../src/replay/transport';
 import { createUrlSanitizer } from '../src/privacy/url';
 
 type Emit = (event: unknown, isCheckout?: boolean) => void;
@@ -15,12 +16,17 @@ type Emit = (event: unknown, isCheckout?: boolean) => void;
 const rrweb = vi.hoisted(() => {
   const state = {
     options: null as null | Record<string, unknown> & { emit: Emit },
+    calls: [] as Array<{ emit: Emit; stopped: boolean }>,
     nodes: new Map<number, unknown>(),
   };
   const record = Object.assign(
     (options: Record<string, unknown> & { emit: Emit }) => {
       state.options = options;
-      return () => {};
+      const call = { emit: options.emit, stopped: false };
+      state.calls.push(call);
+      return () => {
+        call.stopped = true;
+      };
     },
     { mirror: { getNode: (id: number) => state.nodes.get(id) ?? null } },
   );
@@ -29,25 +35,26 @@ const rrweb = vi.hoisted(() => {
 
 vi.mock('@rrweb/record', () => ({ record: rrweb.record }));
 
-const bytes = (value: unknown) =>
-  new TextEncoder().encode(JSON.stringify(value)).length;
+const encoder = new TextEncoder();
+const bytes = (text: string) => encoder.encode(text).length;
 
 /** The request body the transport builds for a segment, at its widest. */
 const body = (s: ReplaySegment) =>
-  bytes({
-    session_id: '00000000-0000-4000-8000-000000000000',
-    segment_index: 4_294_967_295,
-    events: s.events,
-  });
+  bytes(
+    `{"session_id":"00000000-0000-4000-8000-000000000000","segment_index":4294967295,"events":[${s.json.join(',')}]}`,
+  );
 
-const meta = (href = 'https://example.com/') => ({
+const events = (s: ReplaySegment) => s.json.map((j) => JSON.parse(j));
+const types = (s: ReplaySegment) => events(s).map((e) => e.type as number);
+
+const meta = (href = 'https://example.com/', timestamp = 1) => ({
   type: 4,
-  timestamp: 1,
+  timestamp,
   data: { href, width: 1, height: 1 },
 });
-const full = (pad = 0) => ({
+const full = (pad = 0, timestamp = 1) => ({
   type: 2,
-  timestamp: 1,
+  timestamp,
   data: { node: { type: 0, id: 1, pad: 'x'.repeat(pad) } },
 });
 const move = (n: number, pad = 0) => ({
@@ -67,47 +74,47 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('SegmentBuffer', () => {
-  it('starts a new segment at each checkout', () => {
+  it('opens a segment at each Meta event and sends its full snapshot at once', () => {
     const { segments, buffer } = collect();
     buffer.add(meta());
     buffer.add(full());
     buffer.add(move(1));
     buffer.add(move(2));
-    buffer.add(meta(), true);
-    buffer.add(full(), true);
+    buffer.add(meta());
+    buffer.add(full());
     buffer.add(move(3));
     buffer.flush();
 
-    expect(segments.map((s) => s.index)).toEqual([0, 1]);
-    expect(segments[0].events.map((e) => (e as { type: number }).type)).toEqual([4, 2, 3, 3]);
-    expect(segments[1].events.map((e) => (e as { type: number }).type)).toEqual([4, 2, 3]);
+    expect(segments.map((s) => s.index)).toEqual([0, 1, 2, 3]);
+    expect(segments.map(types)).toEqual([[4, 2], [3, 3], [4, 2], [3]]);
+    expect(segments.map((s) => s.snapshot)).toEqual([true, false, true, false]);
   });
 
-  it('sends no empty segment when a checkout opens the buffer', () => {
+  it('counts the bytes of the joined events as UTF-8', () => {
     const { segments, buffer } = collect();
-    buffer.add(meta(), true);
-    buffer.add(full(), true);
+    buffer.add({ type: 3, data: { text: 'héllo 日本 😀' } });
+    buffer.add(move(1));
     buffer.flush();
-    expect(segments).toHaveLength(1);
-    expect(segments[0].index).toBe(0);
+    expect(segments[0].bytes).toBe(bytes(segments[0].json.join(',')));
   });
 
   it('keeps each request body within the byte target', () => {
     const { segments, buffer } = collect();
     const pad = 100_000;
     // Seven fit under the target with the request fields, an eighth would not.
-    expect(bytes(move(0, pad)) * 7 + 200).toBeLessThan(SEGMENT_TARGET_BYTES);
-    expect(bytes(move(0, pad)) * 8).toBeGreaterThan(SEGMENT_TARGET_BYTES);
+    expect(bytes(JSON.stringify(move(0, pad))) * 7 + 200).toBeLessThan(SEGMENT_TARGET_BYTES);
+    expect(bytes(JSON.stringify(move(0, pad))) * 8).toBeGreaterThan(SEGMENT_TARGET_BYTES);
 
     for (let i = 0; i < 16; i++) buffer.add(move(i, pad));
     buffer.flush();
 
-    expect(segments.map((s) => s.events.length)).toEqual([7, 7, 2]);
+    expect(segments.map((s) => s.json.length)).toEqual([7, 7, 2]);
     for (const s of segments) expect(body(s)).toBeLessThanOrEqual(SEGMENT_TARGET_BYTES);
-    const order = segments.flatMap((s) => s.events.map((e) => (e as { data: { n: number } }).data.n));
+    const order = segments.flatMap((s) => events(s).map((e) => e.data.n));
     expect(order).toEqual([...Array(16).keys()]);
   });
 
@@ -125,34 +132,27 @@ describe('SegmentBuffer', () => {
     buffer.add(move(2, SEGMENT_TARGET_BYTES + 1));
     buffer.add(move(3));
     buffer.flush();
-    expect(segments.map((s) => s.events.length)).toEqual([1, 1, 1]);
+    expect(segments.map((s) => s.json.length)).toEqual([1, 1, 1]);
     expect(segments.map((s) => s.index)).toEqual([0, 1, 2]);
   });
 
   it('keeps a large full snapshot with the Meta event before it', () => {
     const { segments, buffer } = collect();
     buffer.add(move(1, 300_000));
-    buffer.add(meta(), true);
-    buffer.add(full(2_000_000), true);
+    buffer.add(meta());
+    buffer.add(full(2_000_000));
     buffer.add(move(2));
     buffer.flush();
-    expect(segments.map((s) => s.events.map((e) => (e as { type: number }).type))).toEqual([
-      [3],
-      [4, 2],
-      [3],
-    ]);
+    expect(segments.map(types)).toEqual([[3], [4, 2], [3]]);
   });
 
-  it('never puts a full snapshot after other events past the byte target', () => {
+  it('refuses a full snapshot too large to send, keeping its Meta event', () => {
     const { segments, buffer } = collect();
-    buffer.add(move(1, 300_000));
     buffer.add(meta());
-    buffer.add(full(600_000));
+    expect(buffer.add(full(MAX_SEGMENT_BYTES))).toBe(false);
     buffer.flush();
-    expect(segments.map((s) => s.events.map((e) => (e as { type: number }).type))).toEqual([
-      [3, 4],
-      [2],
-    ]);
+    expect(segments.map(types)).toEqual([[4]]);
+    expect(segments[0].snapshot).toBe(false);
   });
 
   it('numbers segments from the index source it is given', () => {
@@ -170,7 +170,7 @@ describe('SegmentBuffer', () => {
     const { segments, buffer } = collect();
     for (let i = 0; i < SEGMENT_MAX_EVENTS * 2 + 3; i++) buffer.add(move(i));
     buffer.flush();
-    expect(segments.map((s) => s.events.length)).toEqual([
+    expect(segments.map((s) => s.json.length)).toEqual([
       SEGMENT_MAX_EVENTS,
       SEGMENT_MAX_EVENTS,
       3,
@@ -185,25 +185,32 @@ describe('SegmentBuffer', () => {
     buffer.add(move(2));
     expect(segments).toHaveLength(0);
     vi.advanceTimersByTime(1);
-    expect(segments.map((s) => s.events.length)).toEqual([2]);
+    expect(segments.map((s) => s.json.length)).toEqual([2]);
 
     // An idle buffer holds no timer.
     expect(vi.getTimerCount()).toBe(0);
     buffer.add(move(3));
     vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS);
-    expect(segments.map((s) => s.events.length)).toEqual([2, 1]);
+    expect(segments.map((s) => s.json.length)).toEqual([2, 1]);
   });
 
-  it('restarts the age clock after a checkout', () => {
+  it('holds no timer after a snapshot', () => {
     const { segments, buffer } = collect();
     buffer.add(move(1));
     vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS - 1);
-    buffer.add(meta(), true);
-    buffer.add(full(), true);
-    vi.advanceTimersByTime(1);
-    expect(segments).toHaveLength(1);
-    vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS - 1);
-    expect(segments.map((s) => s.events.length)).toEqual([1, 2]);
+    buffer.add(meta());
+    buffer.add(full());
+    expect(segments.map(types)).toEqual([[3], [4, 2]]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('marks a flush as final', () => {
+    const { segments, buffer } = collect();
+    buffer.add(move(1));
+    buffer.flush(true);
+    buffer.add(move(2));
+    buffer.flush();
+    expect(segments.map((s) => s.final)).toEqual([true, false]);
   });
 });
 
@@ -215,6 +222,7 @@ describe('ReplayRecorder', () => {
 
   beforeEach(() => {
     rrweb.state.options = null;
+    rrweb.state.calls = [];
     rrweb.state.nodes.clear();
     sessionStorage.clear();
     recorder = new ReplayRecorder();
@@ -253,22 +261,28 @@ describe('ReplayRecorder', () => {
     expect((await start(true)).maskTextSelector).toBe('*');
   });
 
-  it('splits at a checkout and sends the rest when the segment ages out', async () => {
+  it('minimises the Meta event URL', async () => {
     const { emit } = await start();
     emit(meta('https://example.com/a?token=secret'));
     emit(full());
-    emit(move(1));
-    emit(meta('https://example.com/b'), true);
-    emit(full(), true);
-    expect(segments).toHaveLength(1);
-    expect((segments[0].events[0] as ReturnType<typeof meta>).data.href).toBe(
-      'https://example.com/a',
-    );
+    expect(events(segments[0])[0].data.href).toBe('https://example.com/a');
+  });
 
+  it('stops recording a page whose snapshot is too large, sending only its Meta event', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { emit } = await start();
+    emit(meta());
+    emit(full(MAX_SEGMENT_BYTES));
     emit(move(2));
-    vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS);
-    expect(segments.map((s) => s.events.length)).toEqual([3, 3]);
-    expect(segments[1].index).toBe(1);
+    await Promise.resolve();
+
+    expect(rrweb.state.calls[0].stopped).toBe(true);
+    expect(segments.map(types)).toEqual([[4]]);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    emit(move(3));
+    vi.advanceTimersByTime(CHECKOUT_EVERY_MS);
+    expect(segments).toHaveLength(1);
   });
 
   it('drops the document of a blocked iframe only', async () => {
@@ -294,41 +308,43 @@ describe('ReplayRecorder', () => {
     emit(full());
     emit(attach(7));
     emit(attach(8));
-    vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS);
+    recorder.stop();
 
-    const adds = segments[0].events
-      .filter((e) => (e as { type: number }).type === 3)
-      .map((e) => (e as ReturnType<typeof attach>).data.adds[0].parentId);
-    expect(adds).toEqual([8]);
+    expect(events(segments[1]).map((e) => e.data.adds[0].parentId)).toEqual([8]);
   });
 
   it('sends the open segment when stopped', async () => {
     const { emit } = await start();
     emit(meta());
     emit(full());
+    emit(move(2));
     recorder.stop();
-    expect(segments.map((s) => s.events.length)).toEqual([2]);
+    expect(segments.map((s) => s.json.length)).toEqual([2, 1]);
     vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS);
-    expect(segments).toHaveLength(1);
+    expect(segments).toHaveLength(2);
   });
 
-  it('flushes the open segment when the page is hidden', async () => {
+  it('sends the open segment as final on pagehide, and plainly when hidden', async () => {
     const { emit } = await start();
     emit(meta());
     emit(full());
-    window.dispatchEvent(new Event('pagehide'));
-    expect(segments.map((s) => s.events.length)).toEqual([2]);
+    emit(move(2));
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: false }));
+    expect(segments.map((s) => [s.json.length, s.final])).toEqual([
+      [2, false],
+      [1, true],
+    ]);
 
-    emit(move(1));
+    emit(move(3));
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
     document.dispatchEvent(new Event('visibilitychange'));
     delete (document as unknown as Record<string, unknown>).visibilityState;
-    expect(segments.map((s) => s.events.length)).toEqual([2, 1]);
+    expect(segments.map((s) => s.final)).toEqual([false, true, false]);
 
     recorder.stop();
-    emit(move(2));
+    emit(move(4));
     window.dispatchEvent(new Event('pagehide'));
-    expect(segments).toHaveLength(2);
+    expect(segments).toHaveLength(3);
   });
 
   /** One page load: a fresh recorder, as a reload makes, in the same tab. */
@@ -338,10 +354,11 @@ describe('ReplayRecorder', () => {
     const { emit } = await start(false, sessionId);
     emit(meta());
     emit(full());
-    for (let i = 1; i < segmentCount; i++) {
-      vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS);
+    for (let i = 2; i < segmentCount; i++) {
       emit(move(i));
+      vi.advanceTimersByTime(SEGMENT_MAX_AGE_MS);
     }
+    emit(move(segmentCount));
     recorder.stop();
   }
 

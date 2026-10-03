@@ -9,6 +9,7 @@ import {
   MAX_BUFFERED_SEGMENTS,
   MAX_BUFFERED_BYTES,
   MAX_SEGMENT_BYTES,
+  type ReplaySegment,
 } from '../src/replay/transport';
 import { KEEPALIVE_MAX_BYTES } from '../src/send';
 
@@ -510,6 +511,12 @@ describe('TransportManager retries', () => {
 describe('ReplayTransport', () => {
   const REPLAY = 'https://replay.example.com/v1/segments';
 
+  function seg(index: number, events: unknown[], extra: Partial<ReplaySegment> = {}): ReplaySegment {
+    const json = events.map((e) => JSON.stringify(e));
+    const bytes = new TextEncoder().encode(json.join(',')).length;
+    return { index, json, bytes, snapshot: false, final: false, ...extra };
+  }
+
   beforeEach(() => {
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
   });
@@ -517,11 +524,8 @@ describe('ReplayTransport', () => {
   it('sends a large segment without keepalive instead of dropping it', async () => {
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
-    await replay.sendSegment('s1', {
-      index: 0,
-      events: [{ data: 'x'.repeat(KEEPALIVE_MAX_BYTES) }],
-    });
-    await replay.sendSegment('s1', { index: 1, events: [{ data: 'small' }] });
+    await replay.sendSegment('s1', seg(0, [{ data: 'x'.repeat(KEEPALIVE_MAX_BYTES) }]));
+    await replay.sendSegment('s1', seg(1, [{ data: 'small' }]));
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(fetchSpy.mock.calls[0][0]).toContain('segment_index=0');
@@ -536,7 +540,7 @@ describe('ReplayTransport', () => {
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
     await expect(
-      replay.sendSegment('s1', { index: 0, events: [] }),
+      replay.sendSegment('s1', seg(0, [])),
     ).resolves.toBeUndefined();
   });
 
@@ -545,9 +549,9 @@ describe('ReplayTransport', () => {
     fetchSpy.mockImplementationOnce(() => first.promise);
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
-    void replay.sendSegment('s1', { index: 0, events: [] });
-    void replay.sendSegment('s1', { index: 1, events: [] });
-    void replay.sendSegment('s1', { index: 2, events: [] });
+    void replay.sendSegment('s1', seg(0, []));
+    void replay.sendSegment('s1', seg(1, []));
+    void replay.sendSegment('s1', seg(2, []));
     await settle();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
@@ -569,7 +573,7 @@ describe('ReplayTransport', () => {
     fetchSpy.mockImplementationOnce(failure);
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
-    await replay.sendSegment('s1', { index: 0, events: [] });
+    await replay.sendSegment('s1', seg(0, []));
     await vi.advanceTimersByTimeAsync(999);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
@@ -581,8 +585,8 @@ describe('ReplayTransport', () => {
     fetchSpy.mockImplementationOnce(() => failResponse(429, { 'Retry-After': '20' }));
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
-    await replay.sendSegment('s1', { index: 0, events: [] });
-    await replay.sendSegment('s1', { index: 1, events: [] });
+    await replay.sendSegment('s1', seg(0, []));
+    await replay.sendSegment('s1', seg(1, []));
     await vi.advanceTimersByTimeAsync(19_999);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
@@ -598,8 +602,8 @@ describe('ReplayTransport', () => {
     fetchSpy.mockImplementationOnce(() => failResponse(status));
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
-    await replay.sendSegment('s1', { index: 0, events: [] });
-    await replay.sendSegment('s1', { index: 1, events: [] });
+    await replay.sendSegment('s1', seg(0, []));
+    await replay.sendSegment('s1', seg(1, []));
     await vi.advanceTimersByTimeAsync(10 * 60_000);
 
     expect(fetchSpy.mock.calls.map((c) => c[0])).toEqual([
@@ -612,8 +616,8 @@ describe('ReplayTransport', () => {
     fetchSpy.mockImplementationOnce(() => failResponse(status));
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
-    await replay.sendSegment('s1', { index: 0, events: [] });
-    await replay.sendSegment('s1', { index: 1, events: [] });
+    await replay.sendSegment('s1', seg(0, []));
+    await replay.sendSegment('s1', seg(1, []));
     await vi.advanceTimersByTimeAsync(10 * 60_000);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -623,9 +627,9 @@ describe('ReplayTransport', () => {
     fetchSpy.mockImplementationOnce(() => failResponse(429, { 'Retry-After': '300' }));
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
-    await replay.sendSegment('s1', { index: 0, events: [] });
+    await replay.sendSegment('s1', seg(0, []));
     for (let i = 1; i <= 15; i++) {
-      await replay.sendSegment('s1', { index: i, events: [] });
+      await replay.sendSegment('s1', seg(i, []));
     }
     await vi.advanceTimersByTimeAsync(300_000);
 
@@ -642,10 +646,10 @@ describe('ReplayTransport', () => {
     const replay = new ReplayTransport(REPLAY, 'ct_test');
     const big = 'x'.repeat(Math.ceil(MAX_SEGMENT_BYTES * 0.9));
 
-    await replay.sendSegment('s1', { index: 0, events: [big] });
-    await replay.sendSegment('s1', { index: 1, events: [big] });
-    await replay.sendSegment('s1', { index: 2, events: [big] });
-    await replay.sendSegment('s1', { index: 3, events: [big] });
+    await replay.sendSegment('s1', seg(0, [big]));
+    await replay.sendSegment('s1', seg(1, [big]));
+    await replay.sendSegment('s1', seg(2, [big]));
+    await replay.sendSegment('s1', seg(3, [big]));
     await vi.advanceTimersByTimeAsync(300_000);
 
     const sent = fetchSpy.mock.calls
@@ -660,9 +664,9 @@ describe('ReplayTransport', () => {
     const replay = new ReplayTransport(REPLAY, 'ct_test');
     const huge = 'x'.repeat(MAX_SEGMENT_BYTES);
 
-    await replay.sendSegment('s1', { index: 0, events: [huge] });
-    await replay.sendSegment('s1', { index: 1, events: [huge] });
-    await replay.sendSegment('s1', { index: 2, events: [{ data: 'small' }] });
+    await replay.sendSegment('s1', seg(0, [huge]));
+    await replay.sendSegment('s1', seg(1, [huge]));
+    await replay.sendSegment('s1', seg(2, [{ data: 'small' }]));
 
     expect(fetchSpy.mock.calls.map((c) => c[0])).toEqual([
       `${REPLAY}?session_id=s1&segment_index=2`,
@@ -674,10 +678,7 @@ describe('ReplayTransport', () => {
     const replay = new ReplayTransport(REPLAY, 'ct_test');
     const envelope = JSON.stringify({ session_id: 's1', segment_index: 0, events: [''] }).length;
 
-    await replay.sendSegment('s1', {
-      index: 0,
-      events: ['x'.repeat(MAX_SEGMENT_BYTES - envelope)],
-    });
+    await replay.sendSegment('s1', seg(0, ['x'.repeat(MAX_SEGMENT_BYTES - envelope)]));
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0][1].body.length).toBe(MAX_SEGMENT_BYTES);
@@ -691,11 +692,97 @@ describe('ReplayTransport', () => {
     const replay = new ReplayTransport(REPLAY, 'ct_test');
 
     for (let i = 0; i < 4; i++) {
-      await replay.sendSegment('s1', { index: i, events: [{ data: i }] });
+      await replay.sendSegment('s1', seg(i, [{ data: i }]));
     }
 
     expect(fetchSpy).toHaveBeenCalledTimes(4);
     expect(vi.getTimerCount()).toBe(0);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  const sentIndexes = () =>
+    fetchSpy.mock.calls.map((c) => Number(new URL(c[0]).searchParams.get('segment_index')));
+
+  it('drops the segments built on a snapshot the intake refused', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy.mockImplementationOnce(() => failResponse(413));
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+
+    await replay.sendSegment('s1', seg(0, [{ full: 1 }], { snapshot: true }));
+    await replay.sendSegment('s1', seg(1, [{ move: 1 }]));
+    await replay.sendSegment('s1', seg(2, [{ move: 2 }]));
+    await replay.sendSegment('s1', seg(3, [{ full: 2 }], { snapshot: true }));
+    await replay.sendSegment('s1', seg(4, [{ move: 3 }]));
+
+    expect(sentIndexes()).toEqual([0, 3, 4]);
+  });
+
+  it('drops the segments built on a snapshot too large to send', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+
+    await replay.sendSegment('s1', seg(0, ['x'.repeat(MAX_SEGMENT_BYTES)], { snapshot: true }));
+    await replay.sendSegment('s1', seg(1, [{ move: 1 }]));
+    await replay.sendSegment('s1', seg(2, [{ full: 2 }], { snapshot: true }));
+    await replay.sendSegment('s1', seg(3, [{ move: 2 }]));
+
+    expect(sentIndexes()).toEqual([2, 3]);
+  });
+
+  it('drops the segments queued behind a snapshot pushed out of the buffer', async () => {
+    fetchSpy.mockImplementationOnce(() => failResponse(429, { 'Retry-After': '300' }));
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+
+    await replay.sendSegment('s1', seg(0, [{ move: 0 }]));
+    await replay.sendSegment('s1', seg(1, [{ full: 1 }], { snapshot: true }));
+    for (let i = 2; i <= MAX_BUFFERED_SEGMENTS + 1; i++) {
+      await replay.sendSegment('s1', seg(i, [{ move: i }]));
+    }
+    await replay.sendSegment('s1', seg(20, [{ full: 2 }], { snapshot: true }));
+    await replay.sendSegment('s1', seg(21, [{ move: 21 }]));
+    await vi.advanceTimersByTimeAsync(300_000);
+
+    // 0 and the snapshot at 1 fell out, so 2-11 went with it.
+    expect(sentIndexes()).toEqual([0, 20, 21]);
+  });
+
+  it('sends the final segment at once, alone and with keepalive', async () => {
+    const first = pendingResponse();
+    fetchSpy.mockImplementationOnce(() => first.promise);
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+
+    void replay.sendSegment('s1', seg(0, [{ full: 1 }], { snapshot: true }));
+    first.resolve();
+    await settle();
+    fetchSpy.mockImplementationOnce(() => pendingResponse().promise);
+    void replay.sendSegment('s1', seg(1, [{ move: 1 }]));
+    void replay.sendSegment('s1', seg(2, [{ move: 2 }]));
+    void replay.sendSegment('s1', seg(3, [{ move: 3 }], { final: true }));
+
+    expect(sentIndexes()).toEqual([0, 1, 3]);
+    const final = fetchSpy.mock.calls[2][1];
+    expect(final.keepalive).toBe(true);
+    expect(JSON.parse(final.body)).toEqual({
+      session_id: 's1',
+      segment_index: 3,
+      events: [{ move: 3 }],
+    });
+  });
+
+  it('drops a final segment over the keepalive cap', async () => {
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+    await replay.sendSegment('s1', seg(0, ['x'.repeat(KEEPALIVE_MAX_BYTES)], { final: true }));
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('drops a final segment while its snapshot is still on its way', async () => {
+    fetchSpy.mockImplementationOnce(() => pendingResponse().promise);
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+
+    void replay.sendSegment('s1', seg(0, [{ full: 1 }], { snapshot: true }));
+    void replay.sendSegment('s1', seg(1, [{ move: 1 }], { final: true }));
+    await settle();
+
+    expect(sentIndexes()).toEqual([0]);
   });
 });

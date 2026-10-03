@@ -1,4 +1,10 @@
-import { sendJson, isRefused, Backoff, byteLength } from '../send';
+import {
+  sendJson,
+  isRefused,
+  Backoff,
+  byteLength,
+  KEEPALIVE_MAX_BYTES,
+} from '../send';
 
 /** Segments held while one is in flight or while backing off. */
 export const MAX_BUFFERED_SEGMENTS = 10;
@@ -12,10 +18,24 @@ export const MAX_SEGMENT_BYTES = 4_000_000;
  */
 export const MAX_BUFFERED_BYTES = 2 * MAX_SEGMENT_BYTES;
 
+/** A run of rrweb events, each already serialized, ready to send. */
+export interface ReplaySegment {
+  index: number;
+  /** Each event as JSON. */
+  json: string[];
+  /** UTF-8 bytes of `json` joined by commas. */
+  bytes: number;
+  /** Holds a full snapshot, which the page's later segments build on. */
+  snapshot: boolean;
+  /** The last segment of a page that is going away. */
+  final: boolean;
+}
+
 interface PendingSegment {
   url: string;
   body: string;
   bytes: number;
+  snapshot: boolean;
 }
 
 /**
@@ -27,14 +47,19 @@ interface PendingSegment {
  * A segment is often past the 64 KiB keepalive cap, where a keepalive request
  * is refused outright; `sendJson` sends those as plain requests instead of
  * silently dropping them.
+ *
+ * Losing a snapshot segment drops the ones after it until the next snapshot:
+ * node ids restart per page load, so they would replay onto another page.
  */
 export class ReplayTransport {
   private buffer: PendingSegment[] = [];
   private bufferedBytes = 0;
   private sending: Promise<void> | null = null;
+  private inFlight: PendingSegment | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private backoff = new Backoff();
   private stopped = false;
+  private snapshotLost = false;
   private warnedTooLarge = false;
 
   constructor(
@@ -47,29 +72,53 @@ export class ReplayTransport {
    * settles when the queue stops moving: everything sent or dropped, or a
    * failure left the rest waiting on a backoff. It never rejects.
    */
-  sendSegment(
-    sessionId: string,
-    segment: { events: unknown[]; index: number },
-  ): Promise<void> {
+  sendSegment(sessionId: string, segment: ReplaySegment): Promise<void> {
     if (this.stopped) return Promise.resolve();
-    const body = JSON.stringify({
-      session_id: sessionId,
-      segment_index: segment.index,
-      events: segment.events,
-    });
-    const bytes = byteLength(body);
+    const head = `{"session_id":${JSON.stringify(sessionId)},"segment_index":${segment.index},"events":[`;
+    const bytes = byteLength(head) + segment.bytes + 2;
+    const url = `${this.endpoint}?session_id=${sessionId}&segment_index=${segment.index}`;
+    if (segment.final) {
+      this.sendFinal(url, head, segment, bytes);
+      return this.pump();
+    }
+    if (segment.snapshot) {
+      this.snapshotLost = false;
+    } else if (this.snapshotLost) {
+      return this.pump();
+    }
     if (bytes > MAX_SEGMENT_BYTES) {
       this.warnTooLarge();
+      if (segment.snapshot) this.snapshotLost = true;
       return this.pump();
     }
     this.buffer.push({
-      url: `${this.endpoint}?session_id=${sessionId}&segment_index=${segment.index}`,
-      body,
+      url,
+      body: `${head}${segment.json.join(',')}]}`,
       bytes,
+      snapshot: segment.snapshot,
     });
     this.bufferedBytes += bytes;
     this.trim();
     return this.pump();
+  }
+
+  /**
+   * Unloading cancels a plain request, so the last segment goes alone with
+   * keepalive, once its snapshot is in. A larger one is dropped.
+   */
+  private sendFinal(
+    url: string,
+    head: string,
+    segment: ReplaySegment,
+    bytes: number,
+  ): void {
+    const based =
+      segment.snapshot ||
+      (!this.snapshotLost &&
+        !this.inFlight?.snapshot &&
+        !this.buffer.some((s) => s.snapshot));
+    if (!based || bytes > KEEPALIVE_MAX_BYTES) return;
+    void sendJson(url, this.clientToken, `${head}${segment.json.join(',')}]}`, bytes);
   }
 
   private canSend(): boolean {
@@ -89,7 +138,14 @@ export class ReplayTransport {
     do {
       const segment = this.buffer.shift()!;
       this.bufferedBytes -= segment.bytes;
-      const outcome = await sendJson(segment.url, this.clientToken, segment.body);
+      this.inFlight = segment;
+      const outcome = await sendJson(
+        segment.url,
+        this.clientToken,
+        segment.body,
+        segment.bytes,
+      );
+      this.inFlight = null;
       if (this.stopped) break;
       if (outcome.kind === 'ok') {
         this.backoff.reset();
@@ -105,12 +161,21 @@ export class ReplayTransport {
         this.stopped = true;
         this.buffer = [];
         this.bufferedBytes = 0;
-      } else if (outcome.status === 413) {
-        this.warnTooLarge();
+      } else {
+        // Any other permanent failure drops just this segment.
+        if (outcome.status === 413) this.warnTooLarge();
+        if (segment.snapshot) this.loseSnapshot();
       }
-      // Any other permanent failure drops just this segment.
     } while (this.canSend());
     this.sending = null;
+  }
+
+  /** Drops the queued segments that built on a snapshot just dropped. */
+  private loseSnapshot(): void {
+    while (this.buffer.length > 0 && !this.buffer[0].snapshot) {
+      this.bufferedBytes -= this.buffer.shift()!.bytes;
+    }
+    this.snapshotLost = this.buffer.length === 0;
   }
 
   private warnTooLarge(): void {
@@ -124,7 +189,9 @@ export class ReplayTransport {
       this.buffer.length > MAX_BUFFERED_SEGMENTS ||
       (this.bufferedBytes > MAX_BUFFERED_BYTES && this.buffer.length > 1)
     ) {
-      this.bufferedBytes -= this.buffer.shift()!.bytes;
+      const dropped = this.buffer.shift()!;
+      this.bufferedBytes -= dropped.bytes;
+      if (dropped.snapshot) this.loseSnapshot();
     }
   }
 }
