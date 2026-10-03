@@ -3,11 +3,14 @@ import { sendJson, isRefused, Backoff, byteLength } from '../send';
 /** Segments held while one is in flight or while backing off. */
 export const MAX_BUFFERED_SEGMENTS = 10;
 
+/** Largest request body sent. A bigger segment is dropped, never sent. */
+export const MAX_SEGMENT_BYTES = 4_000_000;
+
 /**
- * Bytes held the same way. Past either cap the oldest segments are dropped,
- * though the newest is always kept even if it alone is over this.
+ * Bytes held the same way, room for a largest segment and others behind it.
+ * Past either cap the oldest segments are dropped.
  */
-export const MAX_BUFFERED_BYTES = 4_000_000;
+export const MAX_BUFFERED_BYTES = 2 * MAX_SEGMENT_BYTES;
 
 interface PendingSegment {
   url: string;
@@ -32,6 +35,7 @@ export class ReplayTransport {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private backoff = new Backoff();
   private stopped = false;
+  private warnedTooLarge = false;
 
   constructor(
     private endpoint: string,
@@ -53,12 +57,17 @@ export class ReplayTransport {
       segment_index: segment.index,
       events: segment.events,
     });
+    const bytes = byteLength(body);
+    if (bytes > MAX_SEGMENT_BYTES) {
+      this.warnTooLarge();
+      return this.pump();
+    }
     this.buffer.push({
       url: `${this.endpoint}?session_id=${sessionId}&segment_index=${segment.index}`,
       body,
-      bytes: byteLength(body),
+      bytes,
     });
-    this.bufferedBytes += this.buffer[this.buffer.length - 1].bytes;
+    this.bufferedBytes += bytes;
     this.trim();
     return this.pump();
   }
@@ -96,10 +105,18 @@ export class ReplayTransport {
         this.stopped = true;
         this.buffer = [];
         this.bufferedBytes = 0;
+      } else if (outcome.status === 413) {
+        this.warnTooLarge();
       }
       // Any other permanent failure drops just this segment.
     } while (this.canSend());
     this.sending = null;
+  }
+
+  private warnTooLarge(): void {
+    if (this.warnedTooLarge) return;
+    this.warnedTooLarge = true;
+    console.warn('[SiteQwality RUM] Skipped a replay segment that was too large');
   }
 
   private trim(): void {

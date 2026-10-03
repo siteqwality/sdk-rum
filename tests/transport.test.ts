@@ -8,6 +8,7 @@ import {
   ReplayTransport,
   MAX_BUFFERED_SEGMENTS,
   MAX_BUFFERED_BYTES,
+  MAX_SEGMENT_BYTES,
 } from '../src/replay/transport';
 import { KEEPALIVE_MAX_BYTES } from '../src/send';
 
@@ -636,20 +637,65 @@ describe('ReplayTransport', () => {
     expect(sent[sent.length - 1]).toBe(15);
   });
 
-  it('bounds the buffer by bytes, always keeping the newest segment', async () => {
+  it('bounds the buffer by bytes, dropping the oldest', async () => {
     fetchSpy.mockImplementationOnce(() => failResponse(429, { 'Retry-After': '300' }));
     const replay = new ReplayTransport(REPLAY, 'ct_test');
-    const big = 'x'.repeat(Math.ceil(MAX_BUFFERED_BYTES * 0.4));
+    const big = 'x'.repeat(Math.ceil(MAX_SEGMENT_BYTES * 0.9));
 
     await replay.sendSegment('s1', { index: 0, events: [big] });
     await replay.sendSegment('s1', { index: 1, events: [big] });
     await replay.sendSegment('s1', { index: 2, events: [big] });
-    await replay.sendSegment('s1', { index: 3, events: ['y'.repeat(MAX_BUFFERED_BYTES)] });
+    await replay.sendSegment('s1', { index: 3, events: [big] });
     await vi.advanceTimersByTimeAsync(300_000);
 
     const sent = fetchSpy.mock.calls
       .slice(1)
       .map((c) => Number(new URL(c[0]).searchParams.get('segment_index')));
-    expect(sent).toEqual([3]);
+    expect(MAX_SEGMENT_BYTES * 0.9 * 2).toBeLessThan(MAX_BUFFERED_BYTES);
+    expect(sent).toEqual([2, 3]);
+  });
+
+  it('never sends a body over MAX_SEGMENT_BYTES, and warns once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+    const huge = 'x'.repeat(MAX_SEGMENT_BYTES);
+
+    await replay.sendSegment('s1', { index: 0, events: [huge] });
+    await replay.sendSegment('s1', { index: 1, events: [huge] });
+    await replay.sendSegment('s1', { index: 2, events: [{ data: 'small' }] });
+
+    expect(fetchSpy.mock.calls.map((c) => c[0])).toEqual([
+      `${REPLAY}?session_id=s1&segment_index=2`,
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a body just under MAX_SEGMENT_BYTES', async () => {
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+    const envelope = JSON.stringify({ session_id: 's1', segment_index: 0, events: [''] }).length;
+
+    await replay.sendSegment('s1', {
+      index: 0,
+      events: ['x'.repeat(MAX_SEGMENT_BYTES - envelope)],
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy.mock.calls[0][1].body.length).toBe(MAX_SEGMENT_BYTES);
+  });
+
+  it('warns once on 413 and keeps sending later segments', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchSpy
+      .mockImplementationOnce(() => failResponse(413))
+      .mockImplementationOnce(() => failResponse(413));
+    const replay = new ReplayTransport(REPLAY, 'ct_test');
+
+    for (let i = 0; i < 4; i++) {
+      await replay.sendSegment('s1', { index: i, events: [{ data: i }] });
+    }
+
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });

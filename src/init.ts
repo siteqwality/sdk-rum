@@ -452,6 +452,7 @@ export class SiteQwalityRUM {
 
     const sessionId = this.session.getSessionId();
     await this.replayRecorder.start(
+      sessionId,
       (segment) => {
         this.replayTransport!.sendSegment(sessionId, segment);
       },

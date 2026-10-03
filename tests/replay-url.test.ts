@@ -1,15 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { EventType } from '@rrweb/types';
+import { EventType, IncrementalSource } from '@rrweb/types';
 import { sanitizeReplayEvent } from '../src/replay/recorder';
 import { createUrlSanitizer } from '../src/privacy/url';
 
 const sanitize = createUrlSanitizer();
 
 describe('sanitizeReplayEvent', () => {
-  it('agrees with rrweb about which discriminant a Meta event carries', () => {
-    // The recorder hardcodes 4 so the lazily-loaded rrweb chunk is not pulled
-    // into the core bundle. This is the test that keeps the two in step.
+  it('agrees with rrweb about the discriminants the recorder hardcodes', () => {
+    // Hardcoded so the lazily-loaded rrweb chunk is not pulled into the core
+    // bundle. This is the test that keeps the two in step.
     expect(EventType.Meta).toBe(4);
+    expect(EventType.FullSnapshot).toBe(2);
+    expect(EventType.IncrementalSnapshot).toBe(3);
+    expect(IncrementalSource.Mutation).toBe(0);
   });
 
   it('minimises the href rrweb embeds in a Meta event', () => {

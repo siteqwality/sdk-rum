@@ -12,7 +12,7 @@ const shared = {
 };
 
 export default [
-  // ESM (npm; rrweb and web-vitals are peer deps)
+  // ESM (npm; @rrweb/record and web-vitals are dependencies)
   {
     input: 'src/index.ts',
     output: {
@@ -20,10 +20,10 @@ export default [
       format: 'esm',
       sourcemap: true,
     },
-    external: ['web-vitals', 'rrweb'],
+    external: ['web-vitals', '@rrweb/record'],
     ...shared,
   },
-  // CJS (npm; rrweb and web-vitals are peer deps)
+  // CJS (npm; @rrweb/record and web-vitals are dependencies)
   {
     input: 'src/index.ts',
     output: {
@@ -33,7 +33,7 @@ export default [
       format: 'cjs',
       sourcemap: true,
     },
-    external: ['web-vitals', 'rrweb'],
+    external: ['web-vitals', '@rrweb/record'],
     ...shared,
   },
   // CDN bundle (ES module with code splitting, so rrweb is lazy-loaded)
