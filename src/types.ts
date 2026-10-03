@@ -59,6 +59,8 @@ export interface RumMeasureEvent {
   error_count: number;
   action_count: number;
   resource_count: number;
+  user_id?: string;
+  user_email?: string;
 }
 
 export interface RumDetailEvent {
@@ -112,6 +114,8 @@ export interface SdkConfig {
     privacy: {
       mask_inputs: boolean;
       mask_text: boolean;
+      /** Click names carry no element text (see `data-sq-action-name`). */
+      hide_action_text?: boolean;
     };
     /** Resource URL rules set in the dashboard; matching entries are not recorded. */
     resource_exclusions?: string[];
