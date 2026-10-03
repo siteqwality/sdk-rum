@@ -131,6 +131,11 @@ describe('createExclusionMatcher', () => {
     expect(isExcluded('//game.example/b')).toBe(false);
   });
 
+  it('handles a long run of slashes in linear time', () => {
+    const url = `https://game.example/b${'/'.repeat(200_000)}x`;
+    expect(createExclusionMatcher(['/b'], PAGE)(url)).toBe(true);
+  });
+
   it('never matches a path rule when the page origin is opaque', () => {
     const isExcluded = createExclusionMatcher(['/'], 'about:blank');
     expect(isExcluded('https://game.example/b')).toBe(false);

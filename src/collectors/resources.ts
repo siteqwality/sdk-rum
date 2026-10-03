@@ -139,9 +139,15 @@ function parsePrefix(url: string, base?: string): UrlPrefix | null {
     const parsed = new URL(url, base);
     // data:, blob: and the like have an opaque origin, serialised as "null".
     if (parsed.origin === 'null') return null;
-    return { origin: parsed.origin, path: parsed.pathname.replace(/\/+$/, '') };
+    return { origin: parsed.origin, path: trimTrailingSlashes(parsed.pathname) };
   } catch {
     return null;
   }
 }
 
+// A loop, since /\/+$/ backtracks quadratically on long runs of slashes.
+function trimTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') end--;
+  return path.slice(0, end);
+}
