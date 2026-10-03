@@ -1,3 +1,4 @@
+import { cut } from './text';
 import type { RumConfig, UserContext } from './types';
 
 export const MAX_GLOBAL_ATTRIBUTES = 50;
@@ -35,7 +36,7 @@ export class ContextManager {
     ) {
       return;
     }
-    this.globalAttributes.set(key, value.slice(0, MAX_ATTRIBUTE_VALUE_LENGTH));
+    this.globalAttributes.set(key, cut(value, MAX_ATTRIBUTE_VALUE_LENGTH));
   }
 
   removeGlobalAttribute(key: string): void {

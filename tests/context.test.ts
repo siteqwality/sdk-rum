@@ -50,6 +50,14 @@ describe('global attributes', () => {
     expect(ctx.getGlobalAttributes().long).toHaveLength(MAX_ATTRIBUTE_VALUE_LENGTH);
   });
 
+  it('never cuts an emoji in half at the cap', () => {
+    const ctx = manager();
+    ctx.setGlobalAttribute('e', `${'v'.repeat(MAX_ATTRIBUTE_VALUE_LENGTH - 1)}😀`);
+    const value = ctx.getGlobalAttributes().e;
+    expect(value).toBe('v'.repeat(MAX_ATTRIBUTE_VALUE_LENGTH - 1));
+    expect(JSON.stringify(value)).not.toMatch(/\\ud83d/i);
+  });
+
   it('ignores new keys past the cap but still updates existing ones', () => {
     const ctx = manager();
     for (let i = 0; i < MAX_GLOBAL_ATTRIBUTES + 5; i++) {

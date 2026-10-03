@@ -1,3 +1,5 @@
+import { cut } from '../text';
+
 export interface CollectedAction {
   action_type: string;
   action_target: string;
@@ -57,7 +59,7 @@ export function getSelector(el: Element, hideText = false): string {
     : '';
   if (hideText) return `${tag}${classes}`;
   const text =
-    el.textContent?.trim().slice(0, 30) ||
+    cut(el.textContent?.trim() ?? '', 30) ||
     el.getAttribute?.('aria-label') ||
     '';
   const suffix = text ? `[${text}]` : '';
@@ -71,9 +73,7 @@ function explicitActionName(el: Element): string {
       ? el.closest(`[${ACTION_NAME_ATTRIBUTE}]`)
       : null;
   const raw = holder?.getAttribute(ACTION_NAME_ATTRIBUTE) ?? '';
-  return raw
-    .trim()
-    .slice(0, MAX_ACTION_NAME_LENGTH)
+  return cut(raw.trim(), MAX_ACTION_NAME_LENGTH)
     .trim()
     .replace(/\[/g, '(')
     .replace(/\]/g, ')');

@@ -50,6 +50,11 @@ describe('getSelector text suffix', () => {
     expect(getSelector(target)).toBe(`span[${'x'.repeat(30)}]`);
   });
 
+  it('never cuts an emoji in half at the cap', () => {
+    const target = el(`<span>${'x'.repeat(29)}😀 more</span>`);
+    expect(getSelector(target)).toBe(`span[${'x'.repeat(29)}]`);
+  });
+
   it('falls back to aria-label, and hides it too', () => {
     const target = el('<button class="icon" aria-label="Delete Jane"></button>');
     expect(getSelector(target, false)).toBe('button.icon[Delete Jane]');
@@ -85,6 +90,11 @@ describe('getSelector data-sq-action-name', () => {
     const target = el(`<button data-sq-action-name="  ${name}  ">x</button>`);
     expect(getSelector(target)).toBe('n'.repeat(100));
     expect(getSelector(el('<button data-sq-action-name="  Pay  ">x</button>'))).toBe('Pay');
+  });
+
+  it('never cuts an emoji in half at the cap', () => {
+    const target = el(`<button data-sq-action-name="${'n'.repeat(99)}😀">x</button>`);
+    expect(getSelector(target)).toBe('n'.repeat(99));
   });
 
   it('never carries square brackets', () => {
