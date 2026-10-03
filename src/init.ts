@@ -154,6 +154,7 @@ export class SiteQwalityRUM {
   private ignoreErrors: IgnoreErrorsMatcher = () => false;
   private errorLimiter = new ErrorRateLimiter();
   private errorsSent = 0;
+  private inBeforeSend = false;
 
   /** Starts collecting before it returns. The promise resolves once the remote
    * config is applied or has failed; it never rejects. */
@@ -481,16 +482,19 @@ export class SiteQwalityRUM {
     timestamp: number = Date.now(),
     context?: unknown,
   ): void {
+    // An error the hook itself raises (addError inside beforeSend) is dropped.
+    if (this.inBeforeSend) return;
     if (isBrowserNoise(raw.message, raw.stack, raw.filename)) return;
     if (this.ignoreErrors(normalizeErrorMessage(raw.message))) return;
+    // Nobody is at a hidden tab whose session expired, so there is no session for it.
+    if (isHidden() && this.session.isExpired()) return;
     const message = this.sanitizeText(raw.message);
     const stack = this.sanitizeText(raw.stack);
     if (this.errorsSent >= MAX_ERRORS_PER_PAGE) return;
     if (!this.errorLimiter.allow(rateLimitKey(message))) return;
 
-    const sessionId = this.session.idForEmit();
     const original: RumErrorEvent = {
-      session_id: sessionId,
+      session_id: this.session.current(),
       view_id: this.currentViewId,
       event_id: uuid(),
       timestamp,
@@ -505,6 +509,10 @@ export class SiteQwalityRUM {
     };
     const event = this.applyBeforeSend(original);
     if (!event) return;
+    // Rotates only once the error is kept, so a dropped one never opens a session.
+    const sessionId = this.session.idForEmit();
+    event.session_id = sessionId;
+    event.view_id = this.currentViewId;
 
     this.errorTransport.enqueue(event);
     this.errorsSent++;
@@ -524,11 +532,14 @@ export class SiteQwalityRUM {
       custom_attributes: { ...original.custom_attributes },
     };
     let result: unknown;
+    this.inBeforeSend = true;
     try {
       result = hook(draft, 'error');
     } catch (err) {
       warnOnce('beforeSendThrew', '[SiteQwality RUM] beforeSend threw; the error was sent unchanged', err);
       return original;
+    } finally {
+      this.inBeforeSend = false;
     }
     if (result === false || result === null) return null;
     if (isThenable(result)) {
@@ -867,6 +878,10 @@ function eventTime(event: unknown): number {
   } catch {
     return now;
   }
+}
+
+function isHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
 
 function stringOrUndefined(value: unknown): string | undefined {

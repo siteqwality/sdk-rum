@@ -294,6 +294,16 @@ describe('beforeSend', () => {
     expect(event.custom_attributes).toEqual({ ok: 'yes' });
   });
 
+  it('drops an error the hook itself reports, so it cannot loop past the page cap', async () => {
+    const beforeSend = vi.fn(() => {
+      SiteQwalityRUM.addError(new Error(`nested ${beforeSend.mock.calls.length}`));
+    });
+    await start({ beforeSend });
+    SiteQwalityRUM.addError(new Error('outer'));
+    expect(beforeSend).toHaveBeenCalledTimes(1);
+    expect(errors(registry).map((e) => e.error_message)).toEqual(['outer']);
+  });
+
   it('treats a returned promise as no answer and warns once', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await start({

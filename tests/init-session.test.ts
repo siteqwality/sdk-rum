@@ -183,6 +183,49 @@ describe('session activity', () => {
     expect(views[1].session_id).not.toBe(first);
   });
 
+  it('an error that beforeSend drops never opens a session', async () => {
+    serveConfig();
+    await init({ beforeSend: () => false });
+    await settle();
+    const first = sessionId();
+    vi.advanceTimersByTime(16 * MIN);
+    SiteQwalityRUM.addError(new Error('dropped by the hook'));
+    expect(sessionId()).toBe(first);
+    expect(measures(registry).filter((m) => m.type === 'view')).toHaveLength(1);
+  });
+
+  it('a kept error in an expired session goes to the new session and its view', async () => {
+    let seenSession = '';
+    serveConfig();
+    await init({ beforeSend: (e: { session_id: string }) => { seenSession = e.session_id; } });
+    await settle();
+    const first = sessionId();
+    vi.advanceTimersByTime(16 * MIN);
+    SiteQwalityRUM.addError(new Error('kept'));
+    const [event] = errors(registry);
+    expect(seenSession).toBe(first);
+    expect(event.session_id).toBe(sessionId());
+    expect(event.session_id).not.toBe(first);
+    expect(event.view_id).toBe(measures(registry).at(-1)!.view_id);
+  });
+
+  it('a hidden tab drops errors once its session expired, without rotating', async () => {
+    await start();
+    const first = sessionId();
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    try {
+      vi.advanceTimersByTime(10 * MIN);
+      SiteQwalityRUM.addError(new Error('failing poll'));
+      vi.advanceTimersByTime(6 * MIN);
+      SiteQwalityRUM.addError(new Error('failing poll'));
+    } finally {
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    }
+    expect(errors(registry).map((e) => e.session_id)).toEqual([first]);
+    expect(sessionId()).toBe(first);
+    expect(measures(registry).filter((m) => m.type === 'view')).toHaveLength(1);
+  });
+
   it('background resources in an expired session are dropped without rotating', async () => {
     await start([MATCH_ALL]);
     const first = sessionId();
