@@ -49,7 +49,10 @@ export class Intake {
   }
 
   stop(): Promise<void> {
-    return new Promise((resolve) => this.server.close(() => resolve()));
+    // The page may still hold connections open; close() alone would wait for them.
+    const closed = new Promise<void>((resolve) => this.server.close(() => resolve()));
+    this.server.closeAllConnections();
+    return closed;
   }
 
   page(name: string, html: string): string {
