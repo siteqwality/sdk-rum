@@ -155,4 +155,40 @@ describe('ReplayRecorder with rrweb', () => {
     expect(sent).toEqual([]);
     expect(sessionStorage.getItem('sq_rum_replay_next:session-1')).toBeNull();
   });
+
+  describe('hidden inputs', () => {
+    const CANARY = 'sqcanarycsrf_8b31';
+    const sentText = () => segments.map((s) => s.json.join(',')).join('\n');
+
+    async function record(maskInputs: boolean, maskText: boolean) {
+      await recorder.start('session-1', (s) => void segments.push(s), { maskInputs, maskText }, createUrlSanitizer());
+    }
+
+    for (const [maskInputs, maskText] of [[false, false], [true, false], [true, true]] as const) {
+      it(`never records their value (maskInputs ${maskInputs}, maskText ${maskText})`, async () => {
+        document.body.innerHTML = `
+          <form id="f">
+            <input type="hidden" name="csrf" value="${CANARY}">
+            <input type="HIDDEN" name="state" value="${CANARY}-upper">
+            <input type="text" id="visible" value="visible-value">
+          </form>`;
+        await record(maskInputs, maskText);
+        const later = document.createElement('input');
+        later.type = 'hidden';
+        later.value = `${CANARY}-added`;
+        document.getElementById('f')!.append(later);
+        await settle();
+        (document.querySelector('input[name=csrf]') as HTMLInputElement).value = `${CANARY}-set`;
+        document.querySelector('input[name=csrf]')!.setAttribute('value', `${CANARY}-attr`);
+        await settle();
+        recorder.stop();
+
+        const text = sentText();
+        expect(text).toContain('"type":2');
+        expect(text).not.toContain(CANARY);
+        // The page around them is still recorded.
+        if (!maskInputs) expect(text).toContain('visible-value');
+      });
+    }
+  });
 });

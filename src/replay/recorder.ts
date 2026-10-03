@@ -14,6 +14,9 @@ const RRWEB_META_EVENT_TYPE = 4;
 const RRWEB_MUTATION_SOURCE = 0;
 const RRWEB_DOCUMENT_NODE_TYPE = 0;
 
+/** Elements whose content and attributes replay never records. */
+export const HIDDEN_INPUT_SELECTOR = 'input[type="hidden" i]';
+
 /** Events in one segment. */
 export const SEGMENT_MAX_EVENTS = 500;
 
@@ -262,6 +265,8 @@ export class ReplayRecorder {
       recordCrossOriginIframes: false,
       recordCanvas: false,
       maskAllInputs: privacySettings.maskInputs,
+      // maskAllInputs skips hidden inputs (CSRF tokens and the like): never record them.
+      blockSelector: HIDDEN_INPUT_SELECTOR,
       maskTextSelector: privacySettings.maskText ? '*' : undefined,
     };
     this.capture();
