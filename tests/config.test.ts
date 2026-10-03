@@ -125,4 +125,25 @@ describe('ConfigManager', () => {
     expect(mgr.getConfig()).toEqual(remoteConfig);
     mgr.destroy();
   });
+
+  it('replaces the config on a successful periodic refresh', async () => {
+    vi.useFakeTimers();
+    const refreshed: SdkConfig = {
+      ...remoteConfig,
+      settings: { ...remoteConfig.settings, resource_exclusions: ['/b'] },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse({ data: remoteConfig }))
+      .mockResolvedValue(okResponse({ data: refreshed }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const mgr = new ConfigManager();
+    await mgr.init(APP_ID, 'token-1', INGEST_BASE);
+    expect(mgr.getConfig()?.settings.resource_exclusions).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1_000);
+    expect(mgr.getConfig()?.settings.resource_exclusions).toEqual(['/b']);
+    mgr.destroy();
+  });
 });

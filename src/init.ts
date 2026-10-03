@@ -276,11 +276,13 @@ export class SiteQwalityRUM {
     // whoever builds it.
     startErrorCollector((error) => this.handleError(error), this.sanitizeText);
 
-    // Resources are detail only, activated by sampling
+    // Resources are detail only, activated by sampling. Exclusions are read
+    // per batch so a config refresh applies without a reload.
     startResourceCollector(
       (resource) => this.handleResource(resource),
       this.sanitizeUrl,
       ownBases,
+      () => this.config.getConfig()?.settings.resource_exclusions,
     );
 
     // Actions: the count is always tracked, the detail only if sampling is

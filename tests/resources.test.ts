@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   startResourceCollector,
   createOwnRequestMatcher,
+  createExclusionMatcher,
   type CollectedResource,
 } from '../src/collectors/resources';
 import { createUrlSanitizer } from '../src/privacy/url';
@@ -62,6 +63,93 @@ describe('createOwnRequestMatcher', () => {
     const isOwn = createOwnRequestMatcher(['http://', 'data:text/plain,x']);
     expect(isOwn('data:text/plain,x')).toBe(false);
     expect(isOwn('https://api.example.com/v1/events')).toBe(false);
+  });
+});
+
+// Shared with the ingestor's Rust matcher; keep both in sync.
+const PAGE = 'https://game.example/place';
+const VECTORS: [rule: string, url: string, match: boolean][] = [
+  ['/b', 'https://game.example/b', true],
+  ['/b', 'https://game.example/b?t=1', true],
+  ['/b', 'https://game.example/b/2', true],
+  ['/b', 'https://game.example/blocks', false],
+  ['/b', 'https://other.example/b', false],
+  ['/b/', 'https://game.example/b', true],
+  ['/', 'https://game.example/anything', true],
+  ['https://us.i.posthog.com', 'https://us.i.posthog.com/e/?ip=1', true],
+  ['https://us.i.posthog.com', 'https://eu.i.posthog.com/e/', false],
+  ['https://API.example:443/v1', 'https://api.example/v1/x', true],
+  ['https://api.example/v1', 'http://api.example/v1/x', false],
+  ['https://api.example/v1', 'https://api.example/v10', false],
+];
+
+describe('createExclusionMatcher', () => {
+  it.each(VECTORS)('%s vs %s -> %s', (rule, url, match) => {
+    expect(createExclusionMatcher([rule], PAGE)(url)).toBe(match);
+  });
+
+  it('ignores the fragment', () => {
+    expect(createExclusionMatcher(['/b'], PAGE)('https://game.example/b#x')).toBe(true);
+  });
+
+  it('matches if any rule matches', () => {
+    const isExcluded = createExclusionMatcher(['/a', 'https://us.i.posthog.com'], PAGE);
+    expect(isExcluded('https://game.example/a/1')).toBe(true);
+    expect(isExcluded('https://us.i.posthog.com/e/')).toBe(true);
+    expect(isExcluded('https://game.example/b')).toBe(false);
+  });
+
+  it('treats a leading // as a path on the page origin, not a host', () => {
+    const isExcluded = createExclusionMatcher(['//other.example'], PAGE);
+    expect(isExcluded('https://other.example/x')).toBe(false);
+    expect(isExcluded('https://game.example//other.example/x')).toBe(true);
+  });
+
+  it('never matches with unsupported or unparseable rules', () => {
+    const isExcluded = createExclusionMatcher(
+      [
+        '', 'b', 'us.i.posthog.com', 'ftp://game.example', 'https://', 42, null,
+        '/b?x', '/b#x', '/b c', ' /b ', '/b\u0085',
+      ],
+      PAGE,
+    );
+    expect(isExcluded('https://game.example/b')).toBe(false);
+    expect(isExcluded('https://game.example/b%20c')).toBe(false);
+    expect(isExcluded('https://us.i.posthog.com/e/')).toBe(false);
+  });
+
+  it('accepts U+FEFF in a rule, as the ingestor does', () => {
+    const isExcluded = createExclusionMatcher(['/a\ufeffb'], PAGE);
+    expect(isExcluded('https://game.example/a%EF%BB%BFb')).toBe(true);
+  });
+
+  it('never matches an unparseable, opaque or relative resource URL', () => {
+    const isExcluded = createExclusionMatcher(['/'], PAGE);
+    expect(isExcluded('http://')).toBe(false);
+    expect(isExcluded('data:text/plain,x')).toBe(false);
+    expect(isExcluded('/b')).toBe(false);
+    expect(isExcluded('//game.example/b')).toBe(false);
+  });
+
+  it('handles a long run of slashes in linear time', () => {
+    const url = `https://game.example/b${'/'.repeat(200_000)}x`;
+    expect(createExclusionMatcher(['/b'], PAGE)(url)).toBe(true);
+  });
+
+  it('never matches a path rule when the page origin is opaque', () => {
+    const isExcluded = createExclusionMatcher(['/'], 'about:blank');
+    expect(isExcluded('https://game.example/b')).toBe(false);
+  });
+
+  it('treats a missing or malformed rule list as no rules', () => {
+    expect(createExclusionMatcher([], PAGE)('https://game.example/b')).toBe(false);
+    expect(
+      createExclusionMatcher('/b' as unknown as string[], PAGE)('https://game.example/b'),
+    ).toBe(false);
+  });
+
+  it('defaults the page to location.href', () => {
+    expect(createExclusionMatcher(['/b'])(`${location.origin}/b/1`)).toBe(true);
   });
 });
 
@@ -126,6 +214,57 @@ describe('startResourceCollector', () => {
     expect(seen.map((r) => r.resource_url)).toEqual([
       'https://telemetry.customer.example/api/cart',
       'https://rum.siteqwality.com/v1/events',
+    ]);
+  });
+
+  it('skips resources matching the remote exclusions', () => {
+    const observer = installObserver();
+    const seen: CollectedResource[] = [];
+    startResourceCollector(
+      (r) => seen.push(r),
+      createUrlSanitizer(),
+      DEFAULT_BASES,
+      () => ['/b', 'https://us.i.posthog.com'],
+    );
+
+    observer.emit([
+      entry(`${location.origin}/b?t=1`),
+      entry(`${location.origin}/blocks`),
+      entry('https://us.i.posthog.com/e/?ip=1'),
+      entry('https://rum.siteqwality.com/v1/events'),
+      entry('https://api.example.com/orders'),
+    ]);
+
+    expect(seen.map((r) => r.resource_url)).toEqual([
+      `${location.origin}/blocks`,
+      'https://api.example.com/orders',
+    ]);
+  });
+
+  it('applies a new rule list on the next batch', () => {
+    const observer = installObserver();
+    const seen: CollectedResource[] = [];
+    let rules: string[] | undefined;
+    startResourceCollector(
+      (r) => seen.push(r),
+      createUrlSanitizer(),
+      DEFAULT_BASES,
+      () => rules,
+    );
+
+    observer.emit([entry(`${location.origin}/b`)]);
+    rules = ['/b'];
+    observer.emit([entry(`${location.origin}/b`), entry(`${location.origin}/c`)]);
+    rules = ['/c'];
+    observer.emit([entry(`${location.origin}/b`), entry(`${location.origin}/c`)]);
+    rules = undefined;
+    observer.emit([entry(`${location.origin}/c`)]);
+
+    expect(seen.map((r) => new URL(r.resource_url).pathname)).toEqual([
+      '/b',
+      '/c',
+      '/b',
+      '/c',
     ]);
   });
 });

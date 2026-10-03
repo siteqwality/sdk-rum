@@ -22,15 +22,25 @@ export function startResourceCollector(
   onResource: (resource: CollectedResource) => void,
   sanitizeUrl: UrlSanitizer,
   ownBases: readonly string[],
+  getExclusions: () => readonly string[] | undefined = () => undefined,
 ): void {
   if (typeof PerformanceObserver === 'undefined') return;
 
   const isOwnRequest = createOwnRequestMatcher(ownBases);
+  // Recompiled only when a config refresh swaps in a new rule list.
+  let exclusions: readonly string[] | undefined;
+  let isExcluded: UrlMatcher = () => false;
 
   const observer = new PerformanceObserver((list) => {
+    const current = getExclusions();
+    if (current !== exclusions) {
+      exclusions = current;
+      isExcluded = createExclusionMatcher(current ?? []);
+    }
     for (const entry of list.getEntries()) {
       const re = entry as PerformanceResourceTiming;
-      if (isOwnRequest(re.name)) continue;
+      const target = parsePrefix(re.name);
+      if (target && (isOwnRequest(target) || isExcluded(target))) continue;
       onResource({
         resource_type: re.initiatorType,
         resource_url: sanitizeUrl(re.name),
@@ -47,10 +57,13 @@ export function startResourceCollector(
   }
 }
 
-interface UrlPrefix {
+export interface UrlPrefix {
   origin: string;
   path: string;
 }
+
+/** Takes a URL or one already parsed; a relative URL never matches. */
+export type UrlMatcher = (url: string | UrlPrefix) => boolean;
 
 /**
  * True for a URL under one of `bases`: the same origin (scheme, host and port,
@@ -61,37 +74,80 @@ interface UrlPrefix {
  * against the page, as `fetch` resolves it. A base that does not parse is
  * ignored.
  */
-export function createOwnRequestMatcher(
-  bases: readonly string[],
-): (url: string) => boolean {
-  const prefixes = bases
-    .map(parsePrefix)
-    .filter((p): p is UrlPrefix => p !== null);
+export function createOwnRequestMatcher(bases: readonly string[]): UrlMatcher {
+  const pageUrl = currentPageUrl();
+  return prefixMatcher(bases.map((base) => parsePrefix(base, pageUrl)));
+}
+
+/**
+ * Matches resource URLs against the application's `resource_exclusions`. A rule
+ * is a path on the page's origin ("/b") or an absolute origin with optional path.
+ */
+export function createExclusionMatcher(
+  rules: readonly unknown[],
+  pageUrl: string | undefined = currentPageUrl(),
+): UrlMatcher {
+  const pageOrigin = (pageUrl && parsePrefix(pageUrl)?.origin) || null;
+  const list = Array.isArray(rules) ? rules : [];
+  return prefixMatcher(list.map((rule) => parseExclusionRule(rule, pageOrigin)));
+}
+
+// Rust's char::is_whitespace, which differs from \s on U+0085 and U+FEFF.
+const UNSUPPORTED_RULE_CHARS =
+  /[?#\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
+
+/** Mirrors Rule::parse in core-rs, so both matchers skip the same rules. */
+function parseExclusionRule(
+  rule: unknown,
+  pageOrigin: string | null,
+): UrlPrefix | null {
+  if (typeof rule !== 'string' || UNSUPPORTED_RULE_CHARS.test(rule)) return null;
+  // A path rule is literal, so "//x" is a path on the page's origin, not a host.
+  if (rule.startsWith('/')) {
+    return pageOrigin ? parsePrefix(pageOrigin + rule) : null;
+  }
+  const prefix = parsePrefix(rule);
+  return prefix && /^https?:/.test(prefix.origin) ? prefix : null;
+}
+
+function prefixMatcher(parsed: readonly (UrlPrefix | null)[]): UrlMatcher {
+  const prefixes = parsed.filter((p): p is UrlPrefix => p !== null);
   if (prefixes.length === 0) return () => false;
 
   return (url) => {
-    const target = parsePrefix(url);
-    if (!target) return false;
-    return prefixes.some(
-      (p) =>
-        p.origin === target.origin &&
-        (p.path === '' ||
-          target.path === p.path ||
-          target.path.startsWith(`${p.path}/`)),
-    );
+    const target = typeof url === 'string' ? parsePrefix(url) : url;
+    return target !== null && prefixes.some((p) => isUnder(target, p));
   };
 }
 
-function parsePrefix(url: string): UrlPrefix | null {
+/** Same origin, and the path is the prefix's path or below it at a segment boundary. */
+function isUnder(target: UrlPrefix, prefix: UrlPrefix): boolean {
+  return (
+    target.origin === prefix.origin &&
+    (prefix.path === '' ||
+      target.path === prefix.path ||
+      target.path.startsWith(`${prefix.path}/`))
+  );
+}
+
+function currentPageUrl(): string | undefined {
+  return typeof location !== 'undefined' ? location.href : undefined;
+}
+
+function parsePrefix(url: string, base?: string): UrlPrefix | null {
   try {
-    const parsed = new URL(
-      url,
-      typeof location !== 'undefined' ? location.href : undefined,
-    );
+    const parsed = new URL(url, base);
     // data:, blob: and the like have an opaque origin, serialised as "null".
     if (parsed.origin === 'null') return null;
-    return { origin: parsed.origin, path: parsed.pathname.replace(/\/+$/, '') };
+    return { origin: parsed.origin, path: trimTrailingSlashes(parsed.pathname) };
   } catch {
     return null;
   }
+}
+
+// A loop, since /\/+$/ backtracks quadratically on long runs of slashes.
+function trimTrailingSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && path[end - 1] === '/') end--;
+  return path.slice(0, end);
 }

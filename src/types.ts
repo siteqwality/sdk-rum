@@ -113,6 +113,8 @@ export interface SdkConfig {
       mask_inputs: boolean;
       mask_text: boolean;
     };
+    /** Resource URL rules set in the dashboard; matching entries are not recorded. */
+    resource_exclusions?: string[];
   };
 }
 
