@@ -42,7 +42,8 @@ Vitals included, so every session shows its user.
 global is `window.SiteQwalityRUM` (it also works as `type="module"`). Use the
 snippet from the dashboard: its stub queues calls, and errors raised before
 the script arrives, and replays both with their original times. Loading the
-script twice is harmless. The session-replay recorder loads on demand as
+script twice is harmless, and if `init()` comes later (say, after consent),
+page errors raised in between are still kept. The session-replay recorder loads on demand as
 `recorder-<version>.min.js` from beside the SDK script; set `recorderUrl` to
 self-host it. A strict CSP needs `script-src https://cdn.siteqwality.com` and
 `connect-src https://rum.siteqwality.com https://replay.siteqwality.com`.
@@ -95,7 +96,8 @@ expired session are dropped, so an idle polling tab never opens one.
 Rules are checked when the config loads or refreshes, after every error sent,
 Web Vital, click and `setUser`, with no delay. A match lasts for the rest of
 the session, across page loads in the tab (kept in sessionStorage as
-`sq_rum_rules:<session id>`). A custom rule with a condition this SDK does not
+`sq_rum_rules:<session id>`); a later page resumes it once the server config
+arrives, never on the offline defaults. A custom rule with a condition this SDK does not
 know never matches. Detail events seen before the config arrives (up to 500)
 are kept and sent if a rule matches, otherwise dropped.
 
@@ -203,8 +205,9 @@ make probe            # test:bundle against the live CDN file
 
 - 1.1.0: classic CDN script with one global; collection starts at `init()`;
   browser noise filtered, burst limits, `ignoreErrors`, `beforeSend`,
-  `recorderUrl`; page views only on URL change, `loading_type`, Navigation
-  Timing load times; sessions follow user activity; rage, dead and error
+  `recorderUrl`; page views only on URL change (one per hash route),
+  `loading_type`, Navigation Timing load times; sessions follow user activity,
+  and pending error and action counts go out on hide; rage, dead and error
   clicks; rules evaluated at once and kept per session; resource types limited
   to the known set.
 
