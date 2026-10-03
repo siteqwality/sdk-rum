@@ -40,7 +40,10 @@ export class SegmentSequence {
       // Reserved before use, so no later page load can reuse it.
       if (writeNext(this.sessionId, this.next + 1)) return this.next++;
       this.stored = false;
+      const first = this.next === 0;
       this.next = fallbackBase();
+      // A session that never stored an index still starts at 0.
+      if (first) return 0;
     }
     return this.next++;
   }
