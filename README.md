@@ -101,6 +101,12 @@ arrives, never on the offline defaults. A custom rule with a condition this SDK 
 know never matches. Detail events seen before the config arrives (up to 500)
 are kept and sent if a rule matches, otherwise dropped.
 
+## Session replay
+
+Hidden inputs (`input[type=hidden]`, such as CSRF tokens) are never recorded,
+whatever the privacy settings. A page whose snapshot is too large to send is not
+recorded at all, so it never counts as a replay session.
+
 ## Frustration signals
 
 Each click carries at most one, by precedence: an `error_click` (an error sent
@@ -209,7 +215,7 @@ make probe            # test:bundle against the live CDN file
   `loading_type`, Navigation Timing load times; sessions follow user activity,
   and pending error and action counts go out on hide; rage, dead and error
   clicks; rules evaluated at once and kept per session; resource types limited
-  to the known set.
+  to the known set; hidden inputs never recorded in replay.
 
 ## Publish checklist
 
