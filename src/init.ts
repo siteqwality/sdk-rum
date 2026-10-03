@@ -110,6 +110,7 @@ export class SiteQwalityRUM {
   static readonly __sq = true;
 
   private static earlyErrors: EarlyError[] = [];
+  private static detachEarly: (() => void) | null = null;
 
   private options!: RumConfig;
   private session!: SessionManager;
@@ -238,6 +239,23 @@ export class SiteQwalityRUM {
     }
   }
 
+  /** @internal Until init runs, page errors wait in the early queue (CDN script
+   * loaded before a deferred init, e.g. behind a consent banner). */
+  static _holdEarly(): void {
+    try {
+      if (SiteQwalityRUM.instance?.started || SiteQwalityRUM.detachEarly) return;
+      const forward = (event: Event) => SiteQwalityRUM._captureEarly(event);
+      window.addEventListener('error', forward);
+      window.addEventListener('unhandledrejection', forward);
+      SiteQwalityRUM.detachEarly = () => {
+        window.removeEventListener('error', forward);
+        window.removeEventListener('unhandledrejection', forward);
+      };
+    } catch {
+      // Monitoring must never break the host page.
+    }
+  }
+
   /** Runs a public method on a started instance; calls before init are ignored. */
   private static call(fn: (inst: SiteQwalityRUM) => void): void {
     try {
@@ -288,6 +306,9 @@ export class SiteQwalityRUM {
     );
 
     this.restoreDecision();
+    // The error collector takes over from the early listeners.
+    SiteQwalityRUM.detachEarly?.();
+    SiteQwalityRUM.detachEarly = null;
     // A valid id even if the view collector fails; the intake rejects a batch without one.
     this.currentViewId = uuid();
     // The resource and action collectors are handed both bases so the SDK's

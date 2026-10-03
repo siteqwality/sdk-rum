@@ -85,8 +85,15 @@ export function instance(): any {
 
 /** A new page load in the same tab: sessionStorage survives, the instance does not. */
 export function newPageLoad(): void {
-  (SiteQwalityRUM as unknown as { instance: unknown }).instance = null;
-  (SiteQwalityRUM as unknown as { earlyErrors: unknown[] }).earlyErrors = [];
+  const sdk = SiteQwalityRUM as unknown as {
+    instance: unknown;
+    earlyErrors: unknown[];
+    detachEarly: (() => void) | null;
+  };
+  sdk.instance = null;
+  sdk.earlyErrors = [];
+  sdk.detachEarly?.();
+  sdk.detachEarly = null;
 }
 
 export function resetSdk(): void {

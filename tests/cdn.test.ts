@@ -65,8 +65,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  const loaded = win.SiteQwalityRUM as { instance?: unknown } | undefined;
+  const loaded = win.SiteQwalityRUM as { instance?: unknown; detachEarly?: (() => void) | null } | undefined;
   if (loaded && 'instance' in loaded) loaded.instance = null;
+  loaded?.detachEarly?.();
   delete win.SiteQwalityRUM;
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -223,6 +224,23 @@ describe('CDN snippet replay', () => {
       clientToken: 'ct_1',
     });
     expect(errors(registry).map((e: RumErrorEvent) => e.error_message)).toEqual(['Uncaught Error: e']);
+  });
+
+  it('keeps catching page errors between the script load and a deferred init', async () => {
+    // A consent banner holds init back: the snippet ran without its init call.
+    new Function(SNIPPET)();
+    expect(win.SiteQwalityRUM!._q).toHaveLength(0);
+    await loadCdn();
+    const t0 = Date.now();
+    window.dispatchEvent(new ErrorEvent('error', { message: 'Uncaught Error: while waiting', error: new Error('while waiting') }));
+    vi.advanceTimersByTime(2_000);
+    expect(errors(registry)).toHaveLength(0);
+
+    void (win.SiteQwalityRUM as unknown as { init(o: unknown): Promise<void> }).init({ applicationId: 'app-1', clientToken: 'ct_1' });
+    expect(errors(registry).map((e) => [e.error_message, e.timestamp])).toEqual([['Uncaught Error: while waiting', t0]]);
+
+    window.dispatchEvent(new ErrorEvent('error', { message: 'Uncaught Error: after init', error: new Error('after init') }));
+    expect(errors(registry).map((e) => e.error_message)).toEqual(['Uncaught Error: while waiting', 'Uncaught Error: after init']);
   });
 
   it('falls back to the current time for an implausible event time', async () => {

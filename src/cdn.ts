@@ -44,6 +44,8 @@ function boot(): void {
   };
   for (const entry of queue) if (isEntry(entry) && entry[0] === 'init') run(entry);
   for (const entry of queue) if (isEntry(entry) && entry[0] !== 'init') run(entry);
+  // No init yet (deferred, or bad options): keep catching page errors until it runs.
+  SiteQwalityRUM._holdEarly();
 
   // Code that kept a reference to the stub still reaches the SDK.
   if (stub && typeof stub === 'object') {
