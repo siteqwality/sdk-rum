@@ -56,4 +56,18 @@ describe('init', () => {
       'https://telemetry.customer.example/replay',
     ]);
   });
+
+  it('passes ignoreResourceUrls to the resource collector, and none by default', async () => {
+    await SiteQwalityRUM.init({
+      applicationId: 'app-1',
+      clientToken: 'ct_1',
+      ignoreResourceUrls: ['/b', /poll/],
+    });
+    expect(vi.mocked(startResourceCollector).mock.calls[0][3]).toEqual(['/b', /poll/]);
+
+    (SiteQwalityRUM as unknown as { instance: unknown }).instance = null;
+    vi.mocked(startResourceCollector).mockClear();
+    await SiteQwalityRUM.init({ applicationId: 'app-1', clientToken: 'ct_1' });
+    expect(vi.mocked(startResourceCollector).mock.calls[0][3]).toEqual([]);
+  });
 });
