@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   ReplayRecorder,
   SegmentBuffer,
+  withoutFrameContent,
   SEGMENT_TARGET_BYTES,
   SEGMENT_MAX_EVENTS,
   SEGMENT_MAX_AGE_MS,
@@ -214,6 +215,78 @@ describe('SegmentBuffer', () => {
   });
 });
 
+describe('withoutFrameContent', () => {
+  const frameDoc = document.implementation.createHTMLDocument('frame');
+  const nodes = new Map<number, unknown>([
+    [1, document],
+    [2, document.createElement('div')],
+    [7, document.createElement('iframe')],
+    [8, frameDoc],
+    [9, frameDoc.createElement('div')],
+  ]);
+  const getNode = (id: number) => nodes.get(id) ?? null;
+  const mutation = (data: Record<string, unknown>) => ({
+    type: 3,
+    timestamp: 1,
+    data: { source: 0, adds: [], removes: [], texts: [], attributes: [], ...data },
+  });
+
+  it('drops an iframe document and every mutation inside one', () => {
+    const attach = mutation({
+      isAttachIframe: true,
+      adds: [{ parentId: 7, nextId: null, node: { type: 0, id: 8, childNodes: [] } }],
+    });
+    expect(withoutFrameContent(attach, getNode)).toBeNull();
+    expect(
+      withoutFrameContent(
+        mutation({ adds: [{ parentId: 9, node: { type: 3, id: 10, textContent: 'secret' } }] }),
+        getNode,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps the page part of a mixed mutation', () => {
+    const event = mutation({
+      adds: [
+        { parentId: 2, node: { type: 2, id: 11 } },
+        { parentId: 9, node: { type: 2, id: 12 } },
+      ],
+      removes: [{ parentId: 8, id: 13 }, { parentId: 2, id: 14 }, { parentId: 99, id: 15 }],
+      texts: [{ id: 9, value: 'secret' }],
+      attributes: [{ id: 2, attributes: { class: 'a' } }],
+    });
+    const out = withoutFrameContent(event, getNode) as ReturnType<typeof mutation>;
+    expect(out.data).toMatchObject({
+      adds: [{ parentId: 2 }],
+      removes: [{ parentId: 2 }, { parentId: 99 }],
+      texts: [],
+      attributes: [{ id: 2 }],
+    });
+    expect(event.data.adds).toHaveLength(2);
+  });
+
+  it('drops input, clicks and pointer positions inside an iframe', () => {
+    const input = { type: 3, timestamp: 1, data: { source: 5, id: 9, text: 'secret' } };
+    const click = { type: 3, timestamp: 1, data: { source: 2, type: 2, id: 2, x: 1, y: 1 } };
+    const moves = {
+      type: 3,
+      timestamp: 1,
+      data: { source: 1, positions: [{ id: 2 }, { id: 9 }] },
+    };
+    expect(withoutFrameContent(input, getNode)).toBeNull();
+    expect(withoutFrameContent(click, getNode)).toBe(click);
+    expect(withoutFrameContent(moves, getNode)).toMatchObject({
+      data: { positions: [{ id: 2 }] },
+    });
+  });
+
+  it('passes page events through untouched', () => {
+    const event = mutation({ adds: [{ parentId: 2, node: { type: 2, id: 11 } }] });
+    expect(withoutFrameContent(event, getNode)).toBe(event);
+    expect(withoutFrameContent(meta(), getNode)).toEqual(meta());
+  });
+});
+
 describe('ReplayRecorder', () => {
   let recorder: ReplayRecorder;
   let segments: ReplaySegment[];
@@ -243,10 +316,9 @@ describe('ReplayRecorder', () => {
     return rrweb.state.options!;
   }
 
-  it('records with periodic checkouts, every input and the app privacy settings', async () => {
+  it('records with the app privacy settings, every input and no rrweb checkout', async () => {
     const options = await start();
     expect(options).toMatchObject({
-      checkoutEveryNms: CHECKOUT_EVERY_MS,
       sampling: { mousemove: 50, scroll: 150 },
       slimDOMOptions: 'all',
       inlineStylesheet: true,
@@ -255,6 +327,7 @@ describe('ReplayRecorder', () => {
       maskAllInputs: true,
     });
     expect(options.sampling).not.toHaveProperty('input');
+    expect(options.checkoutEveryNms).toBeUndefined();
     expect(options.maskTextSelector).toBeUndefined();
 
     recorder.stop();
@@ -267,6 +340,46 @@ describe('ReplayRecorder', () => {
     emit(meta('https://example.com/a?token=secret'));
     emit(full());
     expect(events(segments[0])[0].data.href).toBe('https://example.com/a');
+  });
+
+  it('restarts rrweb for a fresh snapshot once CHECKOUT_EVERY_MS has passed', async () => {
+    const { emit } = await start();
+    emit(meta());
+    emit(full());
+    emit(move(2));
+    await Promise.resolve();
+    expect(rrweb.state.calls).toHaveLength(1);
+
+    emit(move(CHECKOUT_EVERY_MS + 2));
+    emit(move(CHECKOUT_EVERY_MS + 3));
+    await Promise.resolve();
+    expect(rrweb.state.calls).toHaveLength(2);
+    expect(rrweb.state.calls[0].stopped).toBe(true);
+    expect(segments.map(types)).toEqual([[4, 2], [3, 3, 3]]);
+
+    // The stopped recording is ignored; the new one starts a new segment.
+    emit(move(CHECKOUT_EVERY_MS + 4));
+    const next = rrweb.state.calls[1].emit;
+    next(meta('https://example.com/', CHECKOUT_EVERY_MS + 5));
+    next(full(0, CHECKOUT_EVERY_MS + 5));
+    expect(segments.map(types)).toEqual([[4, 2], [3, 3, 3], [4, 2]]);
+  });
+
+  it('takes a fresh snapshot when the page is restored from the back-forward cache', async () => {
+    const { emit } = await start();
+    emit(meta());
+    emit(full());
+    emit(move(2));
+
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    expect(rrweb.state.calls).toHaveLength(1);
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    expect(rrweb.state.calls).toHaveLength(2);
+    expect(segments.map(types)).toEqual([[4, 2], [3]]);
+
+    recorder.stop();
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    expect(rrweb.state.calls).toHaveLength(2);
   });
 
   it('stops recording a page whose snapshot is too large, sending only its Meta event', async () => {
@@ -286,32 +399,28 @@ describe('ReplayRecorder', () => {
     expect(segments).toHaveLength(1);
   });
 
-  it('drops the document of a blocked iframe only', async () => {
-    const blocked = document.createElement('iframe');
-    blocked.className = 'rr-block';
-    rrweb.state.nodes.set(7, blocked);
-    rrweb.state.nodes.set(8, document.createElement('iframe'));
-    const attach = (parentId: number) => ({
+  it('sends nothing from inside an iframe', async () => {
+    const frameDoc = document.implementation.createHTMLDocument('frame');
+    rrweb.state.nodes.set(7, document.createElement('iframe'));
+    rrweb.state.nodes.set(8, frameDoc.body);
+    const { emit } = await start();
+    emit(meta());
+    emit(full());
+    emit({
       type: 3,
       timestamp: 2,
       data: {
         source: 0,
         isAttachIframe: true,
-        adds: [{ parentId, nextId: null, node: { type: 0, id: 99, childNodes: [] } }],
+        adds: [{ parentId: 7, nextId: null, node: { type: 0, id: 20, childNodes: [] } }],
         removes: [],
         texts: [],
         attributes: [],
       },
     });
-
-    const { emit } = await start();
-    emit(meta());
-    emit(full());
-    emit(attach(7));
-    emit(attach(8));
+    emit({ type: 3, timestamp: 3, data: { source: 5, id: 8, text: 'secret' } });
     recorder.stop();
-
-    expect(events(segments[1]).map((e) => e.data.adds[0].parentId)).toEqual([8]);
+    expect(segments.map(types)).toEqual([[4, 2]]);
   });
 
   it('sends the open segment when stopped', async () => {

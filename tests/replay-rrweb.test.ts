@@ -84,18 +84,52 @@ describe('ReplayRecorder with rrweb', () => {
     }
   });
 
-  it('drops the document of a blocked iframe and keeps an open one', async () => {
+  it('sends nothing from inside an iframe, blocked or not', async () => {
     document.body.innerHTML =
-      '<p id="p">hello</p><iframe class="rr-block"></iframe><iframe id="open"></iframe>';
+      '<p id="p">hello</p><iframe id="b" class="rr-block"></iframe><iframe id="o"></iframe>';
     await start();
     vi.advanceTimersByTime(10_000);
+    for (const id of ['b', 'o']) {
+      const doc = (document.getElementById(id) as HTMLIFrameElement).contentDocument!;
+      const div = doc.createElement('div');
+      div.textContent = `SECRET-IN-${id}`;
+      doc.body.appendChild(div);
+    }
+    await settle();
     await mutate('after');
     recorder.stop();
 
-    const attached = segments
-      .flatMap((s) => s.json)
-      .filter((j) => j.includes('"isAttachIframe":true'));
-    expect(attached).toHaveLength(1);
+    const all = segments.flatMap((s) => s.json);
+    expect(all.some((j) => j.includes('SECRET-IN-'))).toBe(false);
+    expect(all.some((j) => j.includes('"isAttachIframe"'))).toBe(false);
+    expect(all.some((j) => j.includes('"after"'))).toBe(true);
+  });
+
+  it('hears an iframe mutation once, however many checkouts came before', async () => {
+    document.body.innerHTML = '<p id="p">hello</p><iframe id="f"></iframe>';
+    // Every event rrweb emits, before frame content is dropped.
+    const heard = vi.spyOn(
+      ReplayRecorder.prototype as unknown as { onEvent: (event: unknown) => void },
+      'onEvent',
+    );
+
+    await start();
+    vi.advanceTimersByTime(10);
+    for (let k = 0; k < 5; k++) {
+      vi.setSystemTime(Date.now() + CHECKOUT_EVERY_MS + 1);
+      await mutate(`c${k}`);
+      vi.advanceTimersByTime(10);
+      await settle();
+    }
+    const doc = (document.getElementById('f') as HTMLIFrameElement).contentDocument!;
+    const div = doc.createElement('div');
+    div.textContent = 'ONE-MUTATION';
+    doc.body.appendChild(div);
+    await settle();
+
+    expect(segments.filter((s) => s.snapshot)).toHaveLength(6);
+    const hits = heard.mock.calls.filter(([e]) => JSON.stringify(e).includes('ONE-MUTATION'));
+    expect(hits).toHaveLength(1);
   });
 
   it('sends no later segment of a page whose snapshot is too large', async () => {

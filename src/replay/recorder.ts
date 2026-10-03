@@ -1,3 +1,4 @@
+import type { record as rrwebRecord } from '@rrweb/record';
 import type { UrlSanitizer } from '../privacy/url';
 import { byteLength } from '../send';
 import { SegmentSequence } from './sequence';
@@ -11,9 +12,7 @@ const RRWEB_FULL_SNAPSHOT_EVENT_TYPE = 2;
 const RRWEB_INCREMENTAL_EVENT_TYPE = 3;
 const RRWEB_META_EVENT_TYPE = 4;
 const RRWEB_MUTATION_SOURCE = 0;
-
-/** rrweb's default block class, the only blocking this recorder configures. */
-const RRWEB_BLOCK_CLASS = 'rr-block';
+const RRWEB_DOCUMENT_NODE_TYPE = 0;
 
 /** Events in one segment. */
 export const SEGMENT_MAX_EVENTS = 500;
@@ -30,18 +29,25 @@ export const SEGMENT_MAX_AGE_MS = 30_000;
 /** A fresh full snapshot this often, each one starting a new segment. */
 export const CHECKOUT_EVERY_MS = 60_000;
 
+type RecordOptions = NonNullable<Parameters<typeof rrwebRecord>[0]>;
+type GetNode = (id: number) => unknown;
 
 interface MaybeMetaEvent {
   type?: number;
   data?: { href?: unknown };
 }
 
-interface MaybeMutationEvent {
+interface MaybeIncrementalEvent {
   type?: number;
+  timestamp?: number;
   data?: {
     source?: number;
-    isAttachIframe?: boolean;
-    adds?: Array<{ parentId?: number }>;
+    id?: number;
+    positions?: Array<{ id?: number }>;
+    adds?: Array<{ parentId?: number; node?: { type?: number } }>;
+    removes?: Array<{ parentId?: number }>;
+    texts?: Array<{ id?: number }>;
+    attributes?: Array<{ id?: number }>;
   };
 }
 
@@ -78,25 +84,46 @@ export function sanitizeReplayEvent(
 }
 
 /**
- * rrweb still sends a blocked same-origin iframe's document. Replayed onto the
- * placeholder it wipes the page, and it holds what the page asked to block.
+ * The event without anything inside an iframe, or null if nothing is left.
+ * The player cannot draw frame documents; adding one wipes the page.
  */
-export function isBlockedFrameDocument(
+export function withoutFrameContent(
   event: unknown,
-  getNode: (id: number) => unknown,
-): boolean {
-  const e = event as MaybeMutationEvent | null;
-  if (
-    e?.type !== RRWEB_INCREMENTAL_EVENT_TYPE ||
-    e.data?.source !== RRWEB_MUTATION_SOURCE ||
-    e.data.isAttachIframe !== true
-  ) {
-    return false;
+  getNode: GetNode,
+): unknown {
+  const e = event as MaybeIncrementalEvent | null;
+  const data = e?.data;
+  if (e?.type !== RRWEB_INCREMENTAL_EVENT_TYPE || !data) return event;
+  // A node rrweb no longer knows is kept: only a remove can name one.
+  const inPage = (id: unknown) => {
+    if (typeof id !== 'number') return true;
+    const node = getNode(id) as Node | null;
+    return !node || node === document || node.ownerDocument === document;
+  };
+
+  if (data.source === RRWEB_MUTATION_SOURCE) {
+    const adds = (data.adds ?? []).filter(
+      (a) => a.node?.type !== RRWEB_DOCUMENT_NODE_TYPE && inPage(a.parentId),
+    );
+    const removes = (data.removes ?? []).filter((r) => inPage(r.parentId));
+    const texts = (data.texts ?? []).filter((t) => inPage(t.id));
+    const attributes = (data.attributes ?? []).filter((a) => inPage(a.id));
+    const kept = adds.length + removes.length + texts.length + attributes.length;
+    const total =
+      (data.adds?.length ?? 0) +
+      (data.removes?.length ?? 0) +
+      (data.texts?.length ?? 0) +
+      (data.attributes?.length ?? 0);
+    if (kept === total) return event;
+    if (kept === 0) return null;
+    return { ...e, data: { ...data, adds, removes, texts, attributes } };
   }
-  const parentId = e.data.adds?.[0]?.parentId;
-  if (typeof parentId !== 'number') return false;
-  const frame = getNode(parentId) as Element | null;
-  return !!frame?.classList?.contains(RRWEB_BLOCK_CLASS);
+  if (Array.isArray(data.positions)) {
+    const positions = data.positions.filter((p) => inPage(p.id));
+    if (positions.length === data.positions.length) return event;
+    return positions.length ? { ...e, data: { ...data, positions } } : null;
+  }
+  return inPage(data.id) ? event : null;
 }
 
 /**
@@ -180,9 +207,20 @@ function counter(): () => number {
 }
 
 export class ReplayRecorder {
-  private stopFn: (() => void) | null = null;
+  private record: typeof rrwebRecord | null = null;
+  private options: RecordOptions = {};
+  private stopRecord: (() => void) | null = null;
   private buffer: SegmentBuffer | null = null;
+  private sanitizeUrl: UrlSanitizer = String;
+  /** Bumped on every restart, so a stopped recording's late events are ignored. */
+  private generation = 0;
+  private snapshotAt = 0;
+  private checkoutQueued = false;
   private onPageHide = () => this.buffer?.flush(true);
+  private onPageShow = (event: PageTransitionEvent) => {
+    // Back from the back-forward cache: other pages may have run since.
+    if (event.persisted) this.capture();
+  };
   private onVisibilityChange = () => {
     if (document.visibilityState === 'hidden') this.buffer?.flush();
   };
@@ -193,49 +231,88 @@ export class ReplayRecorder {
     privacySettings: { maskInputs: boolean; maskText: boolean },
     sanitizeUrl: UrlSanitizer,
   ): Promise<void> {
-    if (this.stopFn) return; // already recording
+    if (this.buffer) return; // already recording
 
     // Lazy-loaded so the core bundle stays small; fetched only when replay starts.
     const { record } = await import('@rrweb/record');
+    if (this.buffer) return;
     const sequence = new SegmentSequence(sessionId);
-    const buffer = new SegmentBuffer(onSegment, () => sequence.take());
-    this.buffer = buffer;
-    const getNode = (id: number) => record.mirror.getNode(id);
-    let halted = false;
-
-    this.stopFn =
-      record({
-        emit: (event) => {
-          if (halted || isBlockedFrameDocument(event, getNode)) return;
-          if (!buffer.add(sanitizeReplayEvent(event, sanitizeUrl))) {
-            // Its later events would replay onto another page, so the page stops here.
-            halted = true;
-            console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
-            queueMicrotask(() => this.stop());
-          }
-        },
-        checkoutEveryNms: CHECKOUT_EVERY_MS,
-        sampling: { mousemove: 50, scroll: 150 },
-        slimDOMOptions: 'all',
-        inlineStylesheet: true,
-        recordCrossOriginIframes: false,
-        recordCanvas: false,
-        maskAllInputs: privacySettings.maskInputs,
-        maskTextSelector: privacySettings.maskText ? '*' : undefined,
-      }) ?? null;
+    this.buffer = new SegmentBuffer(onSegment, () => sequence.take());
+    this.record = record;
+    this.sanitizeUrl = sanitizeUrl;
+    this.options = {
+      sampling: { mousemove: 50, scroll: 150 },
+      slimDOMOptions: 'all',
+      inlineStylesheet: true,
+      recordCrossOriginIframes: false,
+      recordCanvas: false,
+      maskAllInputs: privacySettings.maskInputs,
+      maskTextSelector: privacySettings.maskText ? '*' : undefined,
+    };
+    this.capture();
 
     // Sends the open segment while the page can still send it.
     window.addEventListener('pagehide', this.onPageHide);
+    window.addEventListener('pageshow', this.onPageShow);
     document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
   /** Stops recording and sends whatever the open segment holds. */
   stop(): void {
-    this.stopFn?.();
-    this.stopFn = null;
+    this.generation++;
+    this.stopRecord?.();
+    this.stopRecord = null;
     window.removeEventListener('pagehide', this.onPageHide);
+    window.removeEventListener('pageshow', this.onPageShow);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.buffer?.flush();
     this.buffer = null;
+  }
+
+  /**
+   * Restarts rrweb for a fresh snapshot. Unlike rrweb's own checkout, this
+   * leaves one set of observers per iframe instead of one more each time.
+   */
+  private capture(): void {
+    if (!this.buffer || !this.record) return;
+    this.stopRecord?.();
+    this.stopRecord = null;
+    this.buffer.flush();
+    const generation = ++this.generation;
+    const { mirror } = this.record;
+    this.stopRecord =
+      this.record({
+        ...this.options,
+        emit: (event) => this.onEvent(event, generation, (id) => mirror.getNode(id)),
+      }) ?? null;
+  }
+
+  private onEvent(event: unknown, generation: number, getNode: GetNode): void {
+    if (generation !== this.generation || !this.buffer) return;
+    const kept = withoutFrameContent(event, getNode);
+    if (kept === null) return;
+    if (!this.buffer.add(sanitizeReplayEvent(kept, this.sanitizeUrl))) {
+      // Its later events would replay onto another page, so the page stops here.
+      this.generation++;
+      console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
+      queueMicrotask(() => this.stop());
+      return;
+    }
+    const e = kept as MaybeIncrementalEvent;
+    const at = e.timestamp ?? 0;
+    if (e.type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE) {
+      this.snapshotAt = at;
+    } else if (
+      e.type === RRWEB_INCREMENTAL_EVENT_TYPE &&
+      at - this.snapshotAt > CHECKOUT_EVERY_MS &&
+      !this.checkoutQueued
+    ) {
+      // Outside rrweb's own callback, like its checkout but after it returns.
+      this.checkoutQueued = true;
+      queueMicrotask(() => {
+        this.checkoutQueued = false;
+        this.capture();
+      });
+    }
   }
 }
