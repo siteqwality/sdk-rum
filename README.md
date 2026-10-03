@@ -70,14 +70,15 @@ Two things this does **not** reach: URLs embedded in the DOM snapshot inside a
 replay segment (rrweb's serialiser produces those and filtering them needs a
 fork), and `document.referrer`, which this SDK does not capture at all.
 
+A CDN bundle is also built (`dist/cdn/sdk.min.js`, rrweb lazy-loaded) and
+deployed separately via `make deploy`; it is not part of the npm package.
+
 ## Excluded resources
 
 Resource URLs listed under Excluded resources in the RUM application's
-dashboard settings are not recorded. The SDK picks up changes on its next
-config refresh (every 5 minutes), with no code change. Requires 1.0.5 or later.
-
-A CDN bundle is also built (`dist/cdn/sdk.min.js`, rrweb lazy-loaded) and
-deployed separately via `make deploy`; it is not part of the npm package.
+dashboard settings are not recorded. Applied at ingest for all versions; from
+1.0.5 the SDK also skips sending them, picking up changes on its next config
+refresh (every 5 minutes).
 
 ## Development
 
