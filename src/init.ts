@@ -571,14 +571,14 @@ export class SiteQwalityRUM {
     try {
       result = hook(draft, 'error');
     } catch (err) {
-      warnOnce('beforeSendThrew', '[SiteQwality RUM] beforeSend threw; the error was sent unchanged', err);
+      this.warnOnce('beforeSendThrew', '[SiteQwality RUM] beforeSend threw; the error was sent unchanged', err);
       return original;
     } finally {
       this.inBeforeSend = false;
     }
     if (result === false || result === null) return null;
     if (isThenable(result)) {
-      warnOnce('beforeSend', '[SiteQwality RUM] beforeSend must return synchronously');
+      this.warnOnce('beforeSend', '[SiteQwality RUM] beforeSend must return synchronously');
       result = undefined;
     }
     const chosen = result && typeof result === 'object' ? result : draft;
@@ -797,7 +797,7 @@ export class SiteQwalityRUM {
         stringOrUndefined(this.options.recorderUrl),
       )
       .catch(() => {
-        warnOnce('recorder', '[SiteQwality RUM] Could not load the session replay recorder');
+        this.warnOnce('recorder', '[SiteQwality RUM] Could not load the session replay recorder');
       });
   }
 
@@ -879,6 +879,20 @@ export class SiteQwalityRUM {
     return pageUrl(window.location.href, this.sanitizeUrl);
   }
 
+  private warned = new Set<string>();
+
+  /** Each kind of warning once per page. */
+  private warnOnce(key: string, message: string, detail?: unknown): void {
+    if (this.warned.has(key)) return;
+    this.warned.add(key);
+    try {
+      if (detail === undefined) console.warn(message);
+      else console.warn(message, detail);
+    } catch {
+      // No console.
+    }
+  }
+
   // Collector callbacks run inside host events, so a failure stays here. Only the
   // registered instance acts (tests replace it; production never does).
   private guard(fn: () => void): void {
@@ -886,7 +900,7 @@ export class SiteQwalityRUM {
     try {
       fn();
     } catch (err) {
-      warnOnce('internal', '[SiteQwality RUM] internal error', err);
+      this.warnOnce('internal', '[SiteQwality RUM] internal error', err);
     }
   }
 }
@@ -915,18 +929,6 @@ function warnInitFailed(err: unknown): void {
   }
 }
 
-const warned = new Set<string>();
-
-function warnOnce(key: string, message: string, detail?: unknown): void {
-  if (warned.has(key)) return;
-  warned.add(key);
-  try {
-    if (detail === undefined) console.warn(message);
-    else console.warn(message, detail);
-  } catch {
-    // No console.
-  }
-}
 
 /** When an event happened, in epoch ms, from its high-resolution timeStamp. */
 function eventTime(event: unknown): number {
