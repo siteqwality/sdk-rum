@@ -116,6 +116,58 @@ describe('vitals belong to the initial view', () => {
   });
 });
 
+describe('counts that no measure carried', () => {
+  function hidePage() {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+  }
+
+  it('go out for a rotated session when the page hides', async () => {
+    await start();
+    const [first] = measures(registry);
+    vi.advanceTimersByTime(16 * MIN);
+    input();
+    const rotationView = measures(registry).at(-1)!;
+    click(el('<button>Buy</button>'));
+    SiteQwalityRUM.addError(new Error('a'));
+    SiteQwalityRUM.addError(new Error('b'));
+    vital('cls', 0.02);
+    expect(measures(registry).at(-1)).toMatchObject({ session_id: first.session_id, error_count: 0, action_count: 0 });
+
+    hidePage();
+    const counts = measures(registry).filter((m) => m.type === 'action');
+    expect(counts).toEqual([
+      expect.objectContaining({
+        session_id: rotationView.session_id,
+        view_id: rotationView.view_id,
+        error_count: 2,
+        action_count: 1,
+        resource_count: 0,
+      }),
+    ]);
+    const total = measures(registry).reduce((n, m) => n + m.action_count, 0);
+    expect(total).toBe(1);
+  });
+
+  it('add nothing when every count already rode on a measure', async () => {
+    await start();
+    click(el('<button>Buy</button>'));
+    history.pushState({}, '', '/next');
+    hidePage();
+    expect(measures(registry).filter((m) => m.type === 'action')).toHaveLength(0);
+  });
+
+  it('carry the time of the last counted event, not the time of the hide', async () => {
+    await start();
+    const clickedAt = Date.now();
+    click(el('<button>Buy</button>'));
+    vi.advanceTimersByTime(3 * MIN);
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    expect(measures(registry).filter((m) => m.type === 'action')[0].timestamp).toBe(clickedAt);
+  });
+});
+
 describe('session activity', () => {
   it('input after 16 idle minutes rotates and starts a view in the new session', async () => {
     await start();

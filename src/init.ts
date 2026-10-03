@@ -84,6 +84,15 @@ interface ActionContext extends ViewRef {
   timestamp: number;
 }
 
+interface PendingCounts {
+  errors: number;
+  actions: number;
+  /** Where and when the last one happened, for a counts-only measure. */
+  view_id: string;
+  url: string;
+  at: number;
+}
+
 interface BufferedDetail {
   event: RumDetailEvent;
   hiddenTarget?: string;
@@ -122,7 +131,7 @@ export class SiteQwalityRUM {
 
   // Per session, errors and actions since its last measure: a delta, because the
   // server sums the column per session and across the application.
-  private pendingCounts = new Map<string, { errors: number; actions: number }>();
+  private pendingCounts = new Map<string, PendingCounts>();
 
   /**
    * Strips the fragment, the query string and any credentials from every URL
@@ -370,8 +379,12 @@ export class SiteQwalityRUM {
     document.addEventListener('visibilitychange', () =>
       this.guard(() => {
         if (document.visibilityState === 'visible') this.session.activity();
+        else this.flushCounts();
       }),
     );
+    window.addEventListener('pagehide', () => this.guard(() => this.flushCounts()), {
+      capture: true,
+    });
   }
 
   private onConfig(): void {
@@ -777,13 +790,40 @@ export class SiteQwalityRUM {
   private count(sessionId: string, kind: 'errors' | 'actions'): void {
     let counts = this.pendingCounts.get(sessionId);
     if (!counts) {
-      counts = { errors: 0, actions: 0 };
+      counts = { errors: 0, actions: 0, view_id: '', url: '', at: 0 };
       this.pendingCounts.set(sessionId, counts);
       if (this.pendingCounts.size > MAX_COUNTED_SESSIONS) {
-        this.pendingCounts.delete(this.pendingCounts.keys().next().value as string);
+        const oldest = this.pendingCounts.keys().next().value as string;
+        this.sendCounts(oldest);
       }
     }
     counts[kind]++;
+    counts.view_id = this.currentViewId;
+    counts.url = this.currentUrl();
+    counts.at = Date.now();
+  }
+
+  /** On hide, counts no view or vital carried yet go out on their own. */
+  private flushCounts(): void {
+    for (const sessionId of [...this.pendingCounts.keys()]) this.sendCounts(sessionId);
+  }
+
+  // A counts-only `action` measure, at the last counted event's view and time.
+  private sendCounts(sessionId: string): void {
+    const counts = this.pendingCounts.get(sessionId);
+    this.pendingCounts.delete(sessionId);
+    if (!counts || (counts.errors === 0 && counts.actions === 0)) return;
+    this.measureTransport.enqueue({
+      type: 'action',
+      session_id: sessionId,
+      view_id: counts.view_id,
+      timestamp: counts.at,
+      url: counts.url,
+      error_count: counts.errors,
+      action_count: counts.actions,
+      resource_count: 0,
+      ...this.userFields(),
+    } satisfies RumMeasureEvent);
   }
 
   /** Drains a session's counts since its previous measure. */
