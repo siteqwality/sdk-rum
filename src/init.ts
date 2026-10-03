@@ -14,6 +14,7 @@ import { TransportManager } from './transport';
 import { startVitalsCollector } from './collectors/vitals';
 import {
   startViewCollector,
+  pageUrl,
   type LoadTimings,
   type ViewCollector,
 } from './collectors/views';
@@ -875,7 +876,7 @@ export class SiteQwalityRUM {
 
   /** The current page URL, minimised. Never the raw `location.href`. */
   private currentUrl(): string {
-    return this.sanitizeUrl(window.location.href);
+    return pageUrl(window.location.href, this.sanitizeUrl);
   }
 
   // Collector callbacks run inside host events, so a failure stays here. Only the

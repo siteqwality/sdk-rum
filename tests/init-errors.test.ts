@@ -106,6 +106,18 @@ describe('a real error', () => {
     expect(event.view_id).toBe(instance().currentViewId);
   });
 
+  it('stamps a hash route as part of the page URL, and drops other fragments', async () => {
+    await start();
+    history.pushState({}, '', '/app#/orders/7?token=abc');
+    SiteQwalityRUM.addError(new Error('in a hash route'));
+    history.pushState({}, '', '/app#access_token=abc');
+    SiteQwalityRUM.addError(new Error('after an oauth redirect'));
+    expect(errors(registry).map((e) => e.url)).toEqual([
+      'http://localhost:3000/app#/orders/7',
+      'http://localhost:3000/app',
+    ]);
+  });
+
   it('labels an unhandled rejection console, as 1.x did', async () => {
     await start();
     const rejection = new Event('unhandledrejection') as Event & { reason: unknown };

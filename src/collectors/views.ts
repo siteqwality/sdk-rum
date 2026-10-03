@@ -27,9 +27,10 @@ export function startViewCollector(
   options: ViewCollectorOptions = {},
 ): ViewCollector {
   let currentUrl = '';
+  const href = () => pageUrl(window.location.href, sanitizeUrl);
 
   const emit = (loadingType: ViewEvent['loading_type'], timings?: LoadTimings) => {
-    currentUrl = sanitizeUrl(window.location.href);
+    currentUrl = href();
     onView({
       view_id: uuid(),
       url: currentUrl,
@@ -42,7 +43,7 @@ export function startViewCollector(
   const navigated = () => {
     try {
       options.onHistoryChange?.();
-      if (sanitizeUrl(window.location.href) !== currentUrl) emit('route_change');
+      if (href() !== currentUrl) emit('route_change');
     } catch {
       // Never throw into the host's navigation call.
     }
@@ -67,8 +68,19 @@ export function startViewCollector(
     }
   }
   window.addEventListener('popstate', navigated);
+  // Hash routers that assign location.hash.
+  window.addEventListener('hashchange', navigated);
 
   return { restart: () => emit('route_change') };
+}
+
+// A hash route (#/path or #!/path) is part of the page, minimised like a path;
+// any other fragment is dropped, as everywhere else.
+export function pageUrl(href: string, sanitizeUrl: UrlSanitizer): string {
+  const base = sanitizeUrl(href);
+  const hash = typeof href === 'string' ? href.indexOf('#') : -1;
+  const route = hash < 0 ? null : /^#(!?)(\/[\s\S]*)$/.exec(href.slice(hash));
+  return route ? `${base}#${route[1]}${sanitizeUrl(route[2])}` : base;
 }
 
 /** Load timings from Navigation Timing, or null until the load event has ended. */

@@ -77,7 +77,8 @@ matches an error rule.
 ## Page views and sessions
 
 A page view starts on load and whenever the URL (after minimisation) changes
-through pushState, replaceState or popstate, so router noise is not counted.
+through pushState, replaceState, popstate or hashchange, so router noise is not
+counted; hash-routed apps get one view per `#/` route.
 Views carry `loading_type` `initial_load` or `route_change`. Load and DOM-ready
 times come from Navigation Timing, for the initial view only; if the page has
 not finished loading at init they follow in a separate measure. Web Vitals
@@ -121,7 +122,8 @@ past that budget is ignored. Anything else is ignored, never thrown.
 
 Every URL the SDK captures is minimised in the browser before it is sent:
 
-- the fragment is removed entirely,
+- the fragment is removed, except a hash route (`#/path` or `#!/path`), which
+  is kept and minimised like a path,
 - the whole query string is removed,
 - credentials in the authority (`https://user:pass@host/`) are removed,
 - the scheme, host, port and path are kept verbatim.

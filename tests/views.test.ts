@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { startViewCollector, readLoadTimings } from '../src/collectors/views';
+import { startViewCollector, readLoadTimings, pageUrl } from '../src/collectors/views';
 import { createUrlSanitizer } from '../src/privacy/url';
 import type { ViewEvent } from '../src/types';
 
@@ -161,5 +161,58 @@ describe('route changes', () => {
       sanitize,
     );
     expect(() => history.pushState({}, '', '/still-fine')).not.toThrow();
+  });
+});
+
+describe('hash routes', () => {
+  beforeEach(() => navigationEntry(1000, 500));
+
+  it('a hash-routed app gets one view per route', () => {
+    history.replaceState({}, '', '/app#/inbox');
+    const { views } = collect();
+    history.pushState({}, '', '/app#/inbox/42?tab=thread&token=abc');
+    history.pushState({}, '', '/app#/settings');
+    history.replaceState({}, '', '/app#/settings');
+    expect(views.map((v) => v.url)).toEqual([
+      'http://localhost:3000/app#/inbox',
+      'http://localhost:3000/app#/inbox/42',
+      'http://localhost:3000/app#/settings',
+    ]);
+    expect(views.slice(1).every((v) => v.loading_type === 'route_change')).toBe(true);
+  });
+
+  it('keeps hashbang routes too', () => {
+    history.replaceState({}, '', '/app#!/a');
+    const { views } = collect();
+    history.pushState({}, '', '/app#!/b');
+    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#!/a', 'http://localhost:3000/app#!/b']);
+  });
+
+  it('follows a router that assigns location.hash (hashchange)', async () => {
+    vi.useRealTimers();
+    history.replaceState({}, '', '/app#/a');
+    const { views } = collect();
+    window.location.hash = '#/b';
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#/a', 'http://localhost:3000/app#/b']);
+  });
+
+  it('still drops any other fragment: anchors and tokens', () => {
+    history.replaceState({}, '', '/app');
+    const { views } = collect();
+    history.pushState({}, '', '/app#reviews');
+    history.replaceState({}, '', '/app#access_token=secret&state=1');
+    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app']);
+  });
+
+  it('minimises a route like a path, allowed query parameters included', () => {
+    const allowTab = createUrlSanitizer({ allowedQueryParams: ['tab'] });
+    expect(pageUrl('https://a.example/app?x=1#/orders/7?tab=2&email=a@b.c', allowTab)).toBe(
+      'https://a.example/app#/orders/7?tab=2',
+    );
+    expect(pageUrl('https://a.example/app#/orders/7#frag', sanitize)).toBe('https://a.example/app#/orders/7');
+    expect(pageUrl('https://a.example/app#/', sanitize)).toBe('https://a.example/app#/');
+    expect(pageUrl('https://a.example/app#', sanitize)).toBe('https://a.example/app');
+    expect(pageUrl(undefined as unknown as string, sanitize)).toBe(sanitize(undefined));
   });
 });
