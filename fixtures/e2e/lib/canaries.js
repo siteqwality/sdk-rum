@@ -21,8 +21,10 @@ export function expectation(guard, sdk, level) {
       if (!sdk.v2) return 'absent';
       return level === 'relaxed' ? 'allowed' : 'absent';
     case 'dom_urls':
-    case 'hidden_input':
       return sdk.v2 ? 'absent' : 'gap';
+    case 'hidden_input':
+      // Blocked at every level from 1.1, and in 2.0 as a hard rule, not an app setting.
+      return sdk.wave1 ? 'absent' : 'gap';
     case 'action_text':
       // Strict hides click text in every version from 1.0.6; Balanced scrubs it from 2.0 (7.1).
       if (level === 'strict') return 'absent';
@@ -40,7 +42,7 @@ export function expectation(guard, sdk, level) {
 export const GAP_REASONS = {
   text: '1.x has no PII pattern scrubbing; Balanced arrives with 2.0 (design 7.1)',
   dom_urls: '1.x leaves DOM attribute URLs in replay as rrweb serialises them (README)',
-  hidden_input: "1.x records input[type=hidden] values: rrweb's maskAllInputs does not cover hidden",
+  hidden_input: "1.0.x records input[type=hidden] values: rrweb's maskAllInputs does not cover hidden",
   pattern_scrub: '1.x sends error messages unscrubbed (URLs only are minimised)',
   action_text: '1.x puts button text in click names unscrubbed unless click text is hidden',
 };
@@ -82,7 +84,8 @@ export const PROOF = {
   text_input: (c) => typed(c) || 'no rrweb input events recorded',
   textarea: (c) => typed(c) || 'no rrweb input events recorded',
   prefilled_input: (c) => replayHas(c, 'in-prefilled') || 'forms page not in replay',
-  hidden_input: (c) => replayHas(c, 'csrf') || 'forms page not in replay',
+  // Not the input's own name: from 1.1 the hidden input is blocked, attributes and all.
+  hidden_input: (c) => replayHas(c, 'in-prefilled') || 'forms page not in replay',
   blocked_text: (c) => replayHas(c, 'forms') || 'forms page not in replay',
   url_query_token: (c) => hasPath(c.views, '/forms') || 'no view of /forms',
   url_fragment_token: (c) => hasPath(c.views, '/forms') || 'no view of /forms',

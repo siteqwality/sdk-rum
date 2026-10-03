@@ -88,10 +88,10 @@ test('an oversized page stops replay cleanly and keeps everything else', async (
   const ledger = new Ledger(`Oversized page, SDK ${SDK.version}`);
   const biggest = Math.max(0, ...c.segments.map((x) => x.wireBytes));
   const unplayable = c.segments.filter((x) => x.fullSnapshots === 0);
-  ledger.check('no unplayable segment sent', c.segments.every((x) => x.fullSnapshots > 0) || c.segments.length === 0, {
-    gap: !SDK.v2,
+  ledger.check('nothing sent for the page', c.segments.length === 0, {
+    gap: !SDK.wave1,
     detail: `${c.segments.length} segments, ${unplayable.length} without a snapshot (event types ${unplayable.flatMap((x) => x.events.map((e) => e.type)).join(',') || 'none'})`,
-    why: '1.x sends the Meta event alone, which meters a replay session with nothing to play',
+    why: '1.0.x sends the Meta event alone, which meters a replay session with nothing to play',
   });
   const cap = SDK.v2 ? 2 * 1024 * 1024 : 4_000_000;
   ledger.check('no segment over the intake cap', biggest <= cap, { detail: `largest ${kb(biggest)}, cap ${kb(cap)}` });
