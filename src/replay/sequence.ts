@@ -14,6 +14,11 @@ function readNext(sessionId: string): number {
   }
 }
 
+/** Whether an earlier page of this session in this tab already recorded replay. */
+export function hasRecorded(sessionId: string): boolean {
+  return readNext(sessionId) > 0;
+}
+
 function writeNext(sessionId: string, next: number): boolean {
   try {
     sessionStorage.setItem(KEY_PREFIX + sessionId, String(next));

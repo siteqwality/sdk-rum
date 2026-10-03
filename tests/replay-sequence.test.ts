@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { SegmentSequence } from '../src/replay/sequence';
+import { SegmentSequence, hasRecorded } from '../src/replay/sequence';
 
 const U32_MAX = 2 ** 32 - 1;
 
@@ -84,6 +84,13 @@ describe('SegmentSequence', () => {
     expect(indexes[0]).toBe(0);
     expect(indexes[1]).toBeGreaterThanOrEqual(2 ** 31);
     expect(indexes[2]).toBe(indexes[1] + 1);
+  });
+
+  it('knows whether a session already recorded in this tab', () => {
+    expect(hasRecorded('s1')).toBe(false);
+    new SegmentSequence('s1').take();
+    expect(hasRecorded('s1')).toBe(true);
+    expect(hasRecorded('s2')).toBe(false);
   });
 
   it('keeps the fallback once storage has failed', () => {
