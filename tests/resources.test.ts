@@ -107,17 +107,28 @@ describe('createExclusionMatcher', () => {
 
   it('never matches with unsupported or unparseable rules', () => {
     const isExcluded = createExclusionMatcher(
-      ['', 'b', 'us.i.posthog.com', 'ftp://game.example', 'https://', 42, null],
+      [
+        '', 'b', 'us.i.posthog.com', 'ftp://game.example', 'https://', 42, null,
+        '/b?x', '/b#x', '/b c', ' /b ', '/b\u0085',
+      ],
       PAGE,
     );
     expect(isExcluded('https://game.example/b')).toBe(false);
+    expect(isExcluded('https://game.example/b%20c')).toBe(false);
     expect(isExcluded('https://us.i.posthog.com/e/')).toBe(false);
   });
 
-  it('never matches an unparseable or opaque resource URL', () => {
+  it('accepts U+FEFF in a rule, as the ingestor does', () => {
+    const isExcluded = createExclusionMatcher(['/a\ufeffb'], PAGE);
+    expect(isExcluded('https://game.example/a%EF%BB%BFb')).toBe(true);
+  });
+
+  it('never matches an unparseable, opaque or relative resource URL', () => {
     const isExcluded = createExclusionMatcher(['/'], PAGE);
     expect(isExcluded('http://')).toBe(false);
     expect(isExcluded('data:text/plain,x')).toBe(false);
+    expect(isExcluded('/b')).toBe(false);
+    expect(isExcluded('//game.example/b')).toBe(false);
   });
 
   it('never matches a path rule when the page origin is opaque', () => {
