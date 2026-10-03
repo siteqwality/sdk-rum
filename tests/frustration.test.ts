@@ -12,6 +12,8 @@ interface Emitted {
   at: number;
 }
 
+const PRESS_EXPIRES = 3_000;
+
 function collector(options: { hideText?: () => boolean; ignore?: unknown[] } = {}) {
   const emitted: Emitted[] = [];
   let clicks = 0;
@@ -262,6 +264,41 @@ describe('dead clicks', () => {
     click(stuck);
     vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
     expect(verdicts()).toEqual([undefined, 'dead_click']);
+  });
+
+  it('a control that opens its menu on pointerdown, mousedown or Enter is not dead', () => {
+    const { verdicts } = collector();
+    const triggers = ['pointerdown', 'mousedown', 'keydown'].map((type) => {
+      const trigger = el(`<button class="${type}">Menu</button>`);
+      trigger.addEventListener(type, () => trigger.insertAdjacentHTML('afterend', '<div role="menu"></div>'));
+      return { type, trigger };
+    });
+    for (const { type, trigger } of triggers) {
+      const press =
+        type === 'keydown'
+          ? new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+          : new MouseEvent(type, { bubbles: true });
+      trigger.dispatchEvent(press);
+      vi.advanceTimersByTime(80);
+      click(trigger);
+      vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    }
+    expect(verdicts()).toEqual([undefined, undefined, undefined]);
+  });
+
+  it('a press with no reaction, or a reaction to a press elsewhere, still ends dead', () => {
+    const { verdicts } = collector();
+    const dead = el('<button class="dead">Dead</button>');
+    const other = el('<button class="other">Other</button>');
+    dead.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    click(dead);
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    other.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    vi.advanceTimersByTime(PRESS_EXPIRES);
+    document.body.append(document.createElement('span'));
+    click(dead);
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    expect(verdicts()).toEqual(['dead_click', 'dead_click']);
   });
 
   it('a verdict delayed by a blocked page (alert, confirm) is not dead', () => {

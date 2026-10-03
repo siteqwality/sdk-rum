@@ -17,6 +17,8 @@ export const FRUSTRATION_WINDOW_MS = 1000;
 const RAGE_CLICKS = 3;
 // A verdict this late means the page was blocked (alert, confirm, heavy work): no dead click.
 const BLOCKED_LATENESS_MS = 250;
+// Longest wait from a press (pointerdown, mousedown, Enter) to its click.
+const PRESS_MAX_MS = 3000;
 
 /** The element a click is named and grouped by. */
 const TARGET_SELECTOR =
@@ -52,6 +54,15 @@ interface Burst {
   raged: boolean;
 }
 
+/** A press on a control, watched because menus often open on pointerdown. */
+interface Press {
+  el: Element;
+  at: number;
+  perfTime: number;
+  reacted: boolean;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface Pending<C> {
   context: C;
   action: CollectedAction;
@@ -71,11 +82,14 @@ interface Pending<C> {
 export function startActionCollector<C>(options: ActionCollectorOptions<C>): ActionCollector {
   const bursts = new WeakMap<Element, Burst>();
   let pending: Pending<C>[] = [];
+  let press: Press | null = null;
+  let watching = false;
   let ignoreSource: readonly unknown[] | undefined;
   let ignoreList: string[] = [];
 
   const markAllReacted = () => {
     for (const p of pending) p.reacted = true;
+    if (press) press.reacted = true;
   };
 
   const mutations =
@@ -84,11 +98,14 @@ export function startActionCollector<C>(options: ActionCollectorOptions<C>): Act
     for (const entry of entries) {
       if (options.isOwnRequest?.(entry.name)) continue;
       for (const p of pending) if (entry.startTime > p.perfTime) p.reacted = true;
+      if (press && entry.startTime > press.perfTime) press.reacted = true;
     }
   });
 
+  // Observers run only while a click or a press is pending.
   const watch = () => {
-    if (pending.length !== 1) return;
+    if (watching) return;
+    watching = true;
     try {
       mutations?.observe(document.documentElement, {
         subtree: true,
@@ -103,10 +120,42 @@ export function startActionCollector<C>(options: ActionCollectorOptions<C>): Act
   };
 
   const unwatch = () => {
-    if (pending.length > 0) return;
+    if (!watching || pending.length > 0 || press) return;
+    watching = false;
     mutations?.disconnect();
     resources?.stop();
   };
+
+  const clearPress = () => {
+    if (!press) return;
+    clearTimeout(press.timer);
+    press = null;
+    unwatch();
+  };
+
+  const onPress = (event: Event) => {
+    try {
+      if (event.type === 'keydown') {
+        const key = (event as KeyboardEvent).key;
+        if (key !== 'Enter' && key !== ' ') return;
+      }
+      const target = elementOf(event.target);
+      if (!target) return;
+      const resolved = resolveTarget(target);
+      const now = Date.now();
+      // pointerdown then mousedown on the same control is one press.
+      if (press && press.el === resolved && now - press.at <= FRUSTRATION_WINDOW_MS) return;
+      clearPress();
+      if (!isDeadCandidate(resolved, event as MouseEvent)) return;
+      press = { el: resolved, at: now, perfTime: perfNow(), reacted: false, timer: setTimeout(clearPress, PRESS_MAX_MS) };
+      watch();
+    } catch {
+      // Never throw into the host's input handling.
+    }
+  };
+  for (const type of ['pointerdown', 'mousedown', 'keydown']) {
+    document.addEventListener(type, onPress, { capture: true });
+  }
 
   // Records not yet delivered still count toward the verdict.
   const collectRecords = () => {
@@ -169,6 +218,9 @@ export function startActionCollector<C>(options: ActionCollectorOptions<C>): Act
           }
         }
 
+        // A reaction to the press that led to this click counts for the click.
+        collectRecords();
+        const pressed = press && press.el === resolved ? press : null;
         const context = options.begin();
         const p: Pending<C> = {
           context,
@@ -177,11 +229,11 @@ export function startActionCollector<C>(options: ActionCollectorOptions<C>): Act
             action_target: getSelector(resolved, options.hideText?.() === true),
             action_target_hidden: getSelector(resolved, true),
           },
-          perfTime: perfNow(),
+          perfTime: pressed?.perfTime ?? perfNow(),
           burst,
           rage,
           deadCandidate: !ignored && isDeadCandidate(resolved, event),
-          reacted: false,
+          reacted: pressed?.reacted ?? false,
           error: false,
           timer: setTimeout(() => {
             try {
@@ -195,6 +247,7 @@ export function startActionCollector<C>(options: ActionCollectorOptions<C>): Act
         };
         pending.push(p);
         watch();
+        clearPress();
 
         // A followed link or a submit starts a navigation; known after dispatch.
         if (p.deadCandidate) {

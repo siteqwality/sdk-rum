@@ -257,7 +257,13 @@ test.describe('page views and frustration in a real browser', () => {
       `<!doctype html><html><head>${snippet(intake)}</head><body>
         <button id="dead" class="dead">Apply coupon</button>
         <button id="live" class="live">Next</button>
-        <script>document.getElementById('live').addEventListener('click', function (e) { e.currentTarget.classList.toggle('on'); });</script>
+        <button id="menu" class="menu">Options</button>
+        <script>
+          document.getElementById('live').addEventListener('click', function (e) { e.currentTarget.classList.toggle('on'); });
+          document.getElementById('menu').addEventListener('pointerdown', function (e) {
+            e.currentTarget.insertAdjacentHTML('afterend', '<div role="menu">Open</div>');
+          });
+        </script>
       </body></html>`,
     );
     await page.goto(url);
@@ -268,11 +274,15 @@ test.describe('page views and frustration in a real browser', () => {
     await page.waitForTimeout(1_200);
     for (let i = 0; i < 5; i++) await page.click('#live', { delay: 0 });
     await page.waitForTimeout(1_300);
+    // Opens on pointerdown, like Radix menus: the click itself changes nothing.
+    await page.click('#menu');
+    await page.waitForTimeout(1_300);
     await hide(page);
-    await expect.poll(() => intake.of('events').filter((e) => e.type === 'action').length).toBe(6);
+    await expect.poll(() => intake.of('events').filter((e) => e.type === 'action').length).toBe(7);
     const actions = intake.of<{ type: string; action_target: string; frustration?: string }>('events').filter((e) => e.type === 'action');
     expect(actions.find((a) => a.action_target.startsWith('#dead'))?.frustration).toBe('dead_click');
     expect(actions.filter((a) => a.frustration === 'rage_click')).toHaveLength(1);
     expect(actions.filter((a) => a.action_target === '#live' && a.frustration === 'dead_click')).toHaveLength(0);
+    expect(actions.find((a) => a.action_target === '#menu')?.frustration).toBeUndefined();
   });
 });
