@@ -1,5 +1,4 @@
 import type { UrlSanitizer } from '../privacy/url';
-import type { ResourceIgnoreRule } from '../types';
 
 export interface CollectedResource {
   resource_type: string;
@@ -18,25 +17,20 @@ export interface CollectedResource {
  * Every send the SDK makes is itself a resource entry, so recording them feeds
  * the SDK its own traffic: each batch produced an event about itself, and on a
  * hidden page, where each enqueue sent at once, that looped at network speed.
- *
- * Requests matching `ignore` (the `ignoreResourceUrls` option) are not
- * recorded either; see {@link createResourceIgnoreMatcher}.
  */
 export function startResourceCollector(
   onResource: (resource: CollectedResource) => void,
   sanitizeUrl: UrlSanitizer,
   ownBases: readonly string[],
-  ignore: readonly ResourceIgnoreRule[] = [],
 ): void {
   if (typeof PerformanceObserver === 'undefined') return;
 
   const isOwnRequest = createOwnRequestMatcher(ownBases);
-  const isIgnored = createResourceIgnoreMatcher(ignore);
 
   const observer = new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) {
       const re = entry as PerformanceResourceTiming;
-      if (isOwnRequest(re.name) || isIgnored(re.name)) continue;
+      if (isOwnRequest(re.name)) continue;
       onResource({
         resource_type: re.initiatorType,
         resource_url: sanitizeUrl(re.name),
@@ -51,40 +45,6 @@ export function startResourceCollector(
   } catch {
     // PerformanceObserver resource type not supported
   }
-}
-
-/**
- * True for a URL any `rules` entry matches: a string as a URL prefix on the
- * rules of {@link createOwnRequestMatcher} (resolved against the page, path
- * matched at a segment boundary, query string ignored), a RegExp tested
- * against the whole URL, or a predicate. A predicate that throws matches
- * nothing, so a bad rule cannot stop the collector.
- */
-export function createResourceIgnoreMatcher(
-  rules: readonly ResourceIgnoreRule[],
-): (url: string) => boolean {
-  const prefixes = createOwnRequestMatcher(
-    rules.filter((r): r is string => typeof r === 'string'),
-  );
-  const patterns = rules.filter((r): r is RegExp => r instanceof RegExp);
-  const predicates = rules.filter(
-    (r): r is (url: string) => boolean => typeof r === 'function',
-  );
-  if (patterns.length === 0 && predicates.length === 0) return prefixes;
-
-  return (url) =>
-    prefixes(url) ||
-    patterns.some((p) => {
-      p.lastIndex = 0;
-      return p.test(url);
-    }) ||
-    predicates.some((fn) => {
-      try {
-        return fn(url) === true;
-      } catch {
-        return false;
-      }
-    });
 }
 
 interface UrlPrefix {
