@@ -281,6 +281,7 @@ export class SiteQwalityRUM {
       (resource) => this.handleResource(resource),
       this.sanitizeUrl,
       ownBases,
+      this.options.ignoreResourceUrls ?? [],
     );
 
     // Actions: the count is always tracked, the detail only if sampling is

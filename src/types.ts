@@ -41,7 +41,28 @@ export interface RumConfig {
    * Only useful alongside `allowedQueryParams`.
    */
   deniedQueryParams?: string[];
+  /**
+   * Subresources, fetches and XHRs not to record as resource events, for
+   * requests too frequent to be worth their quota: a polling endpoint, a game
+   * loop, a heartbeat. Each rule is one of:
+   *
+   * - A string: a URL or a path, resolved against the page, so `'/b'` means
+   *   this site's `/b`. It matches that path and anything below it at a
+   *   segment boundary, whatever the query string: `'/b'` matches `/b`,
+   *   `/b?t=1` and `/b/2`, but not `/blocks`. Give a full URL for another
+   *   origin, such as `'https://us.i.posthog.com'`.
+   * - A RegExp, tested against the full URL as the browser reports it, before
+   *   the query string is removed.
+   * - A function, given that URL, returning true to skip it. One that throws
+   *   skips nothing.
+   *
+   * Only resource events are affected: page views, errors, actions and web
+   * vitals are recorded as before.
+   */
+  ignoreResourceUrls?: ResourceIgnoreRule[];
 }
+
+export type ResourceIgnoreRule = string | RegExp | ((url: string) => boolean);
 
 export interface RumMeasureEvent {
   type: 'view' | 'action' | 'vital';

@@ -70,6 +70,28 @@ Two things this does **not** reach: URLs embedded in the DOM snapshot inside a
 replay segment (rrweb's serialiser produces those and filtering them needs a
 fork), and `document.referrer`, which this SDK does not capture at all.
 
+## Skipping chatty requests
+
+Every subresource, fetch and XHR becomes a resource event, so an endpoint polled
+several times a second (a game loop, a heartbeat, a live-update poll) can use
+most of your RUM quota on its own. List those in `ignoreResourceUrls`:
+
+```ts
+SiteQwalityRUM.init({
+  applicationId: 'YOUR_APPLICATION_ID',
+  clientToken: 'YOUR_CLIENT_TOKEN',
+  ignoreResourceUrls: [
+    '/b',                        // this site's /b and /b/..., any query string; not /blocks
+    'https://us.i.posthog.com',  // everything under another origin
+    /[?&]poll=1(&|$)/,           // a RegExp, tested against the full URL
+  ],
+});
+```
+
+A function `(url) => boolean` works too. Only resource events are skipped: page
+views, errors, actions and web vitals are unaffected. The SDK never records its
+own requests to the ingest API, with or without this option.
+
 A CDN bundle is also built (`dist/cdn/sdk.min.js`, rrweb lazy-loaded) and
 deployed separately via `make deploy`; it is not part of the npm package.
 

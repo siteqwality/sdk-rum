@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   startResourceCollector,
   createOwnRequestMatcher,
+  createResourceIgnoreMatcher,
   type CollectedResource,
 } from '../src/collectors/resources';
 import { createUrlSanitizer } from '../src/privacy/url';
@@ -62,6 +63,51 @@ describe('createOwnRequestMatcher', () => {
     const isOwn = createOwnRequestMatcher(['http://', 'data:text/plain,x']);
     expect(isOwn('data:text/plain,x')).toBe(false);
     expect(isOwn('https://api.example.com/v1/events')).toBe(false);
+  });
+});
+
+describe('createResourceIgnoreMatcher', () => {
+  it('reads a path as this page\'s origin, at a segment boundary, whatever the query', () => {
+    vi.stubGlobal('location', { href: 'https://game.example/place' });
+    const isIgnored = createResourceIgnoreMatcher(['/b', '/sirtet/game']);
+    expect(isIgnored('https://game.example/b')).toBe(true);
+    expect(isIgnored('https://game.example/b?t=17&n=2')).toBe(true);
+    expect(isIgnored('https://game.example/b/2')).toBe(true);
+    expect(isIgnored('https://game.example/sirtet/game?tick=9')).toBe(true);
+    expect(isIgnored('https://game.example/blocks')).toBe(false);
+    expect(isIgnored('https://game.example/sirtet')).toBe(false);
+    // Another origin's /b is not this site's.
+    expect(isIgnored('https://other.example/b')).toBe(false);
+  });
+
+  it('matches a full URL rule for another origin', () => {
+    const isIgnored = createResourceIgnoreMatcher(['https://us.i.posthog.com']);
+    expect(isIgnored('https://us.i.posthog.com/e/?ip=1')).toBe(true);
+    expect(isIgnored('https://eu.i.posthog.com/e/')).toBe(false);
+  });
+
+  it('tests a RegExp against the whole URL, including the query string', () => {
+    const isIgnored = createResourceIgnoreMatcher([/[?&]poll=1(&|$)/, /\/heartbeat$/g]);
+    expect(isIgnored('https://api.example/state?poll=1')).toBe(true);
+    expect(isIgnored('https://api.example/state?poll=10')).toBe(false);
+    // A global flag must not make alternate calls miss.
+    expect(isIgnored('https://api.example/heartbeat')).toBe(true);
+    expect(isIgnored('https://api.example/heartbeat')).toBe(true);
+  });
+
+  it('calls a predicate, and a predicate that throws skips nothing', () => {
+    const isIgnored = createResourceIgnoreMatcher([
+      (url) => url.endsWith('.png'),
+      () => {
+        throw new Error('bad rule');
+      },
+    ]);
+    expect(isIgnored('https://cdn.example/a.png')).toBe(true);
+    expect(isIgnored('https://cdn.example/app.js')).toBe(false);
+  });
+
+  it('ignores nothing when there are no rules', () => {
+    expect(createResourceIgnoreMatcher([])('https://game.example/b')).toBe(false);
   });
 });
 
@@ -127,5 +173,24 @@ describe('startResourceCollector', () => {
       'https://telemetry.customer.example/api/cart',
       'https://rum.siteqwality.com/v1/events',
     ]);
+  });
+
+  it('does not record requests matching ignoreResourceUrls', () => {
+    vi.stubGlobal('location', { href: 'https://game.example/' });
+    const observer = installObserver();
+    const seen: CollectedResource[] = [];
+    startResourceCollector((r) => seen.push(r), createUrlSanitizer(), DEFAULT_BASES, [
+      '/b',
+      '/sirtet/game',
+    ]);
+
+    observer.emit([
+      entry('https://game.example/b?t=1'),
+      entry('https://game.example/sirtet/game'),
+      entry('https://game.example/blocks'),
+      entry('https://rum.siteqwality.com/v1/events'),
+    ]);
+
+    expect(seen.map((r) => r.resource_url)).toEqual(['https://game.example/blocks']);
   });
 });
