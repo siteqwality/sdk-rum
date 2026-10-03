@@ -1,20 +1,54 @@
+import type { record as rrwebRecord } from '@rrweb/record';
 import type { UrlSanitizer } from '../privacy/url';
+import { byteLength } from '../send';
+import { SegmentSequence } from './sequence';
+import { MAX_SEGMENT_BYTES, type ReplaySegment } from './transport';
 
-// rrweb is lazy-loaded to keep the core SDK bundle small (~30KB gzipped).
-// The full rrweb library is only fetched when replay recording is activated.
-type RrwebRecord = typeof import('rrweb').record;
+export type { ReplaySegment } from './transport';
 
-/**
- * rrweb's `EventType.Meta` discriminant. Hardcoded rather than imported so the
- * lazily-loaded rrweb chunk is not pulled into the core bundle just to read one
- * enum. Pinned by `replay-url.test.ts`, which asserts against rrweb's own
- * exported enum.
- */
+// rrweb discriminants, hardcoded so the lazy rrweb chunk stays out of the core
+// bundle. Pinned against rrweb's own enums by `replay-url.test.ts`.
+const RRWEB_FULL_SNAPSHOT_EVENT_TYPE = 2;
+const RRWEB_INCREMENTAL_EVENT_TYPE = 3;
 const RRWEB_META_EVENT_TYPE = 4;
+const RRWEB_MUTATION_SOURCE = 0;
+const RRWEB_DOCUMENT_NODE_TYPE = 0;
+
+/** Events in one segment. */
+export const SEGMENT_MAX_EVENTS = 500;
+
+/** Request body a segment aims for. A single larger event is sent alone. */
+export const SEGMENT_TARGET_BYTES = 750_000;
+
+/** Room for the request fields around the events. */
+const ENVELOPE_BYTES = 128;
+
+/** Longest a segment stays open before it is sent. */
+export const SEGMENT_MAX_AGE_MS = 30_000;
+
+/** A fresh full snapshot this often, each one starting a new segment. */
+export const CHECKOUT_EVERY_MS = 60_000;
+
+type RecordOptions = NonNullable<Parameters<typeof rrwebRecord>[0]>;
+type GetNode = (id: number) => unknown;
 
 interface MaybeMetaEvent {
   type?: number;
   data?: { href?: unknown };
+}
+
+interface MaybeIncrementalEvent {
+  type?: number;
+  timestamp?: number;
+  data?: {
+    source?: number;
+    id?: number;
+    positions?: Array<{ id?: number }>;
+    adds?: Array<{ parentId?: number; node?: { type?: number } }>;
+    removes?: Array<{ parentId?: number }>;
+    texts?: Array<{ id?: number }>;
+    attributes?: Array<{ id?: number }>;
+  };
 }
 
 /**
@@ -49,49 +83,236 @@ export function sanitizeReplayEvent(
   };
 }
 
+/**
+ * The event without anything inside an iframe, or null if nothing is left.
+ * The player cannot draw frame documents; adding one wipes the page.
+ */
+export function withoutFrameContent(
+  event: unknown,
+  getNode: GetNode,
+): unknown {
+  const e = event as MaybeIncrementalEvent | null;
+  const data = e?.data;
+  if (e?.type !== RRWEB_INCREMENTAL_EVENT_TYPE || !data) return event;
+  // A node rrweb no longer knows is kept: only a remove can name one.
+  const inPage = (id: unknown) => {
+    if (typeof id !== 'number') return true;
+    const node = getNode(id) as Node | null;
+    return !node || node === document || node.ownerDocument === document;
+  };
+
+  if (data.source === RRWEB_MUTATION_SOURCE) {
+    const adds = (data.adds ?? []).filter(
+      (a) => a.node?.type !== RRWEB_DOCUMENT_NODE_TYPE && inPage(a.parentId),
+    );
+    const removes = (data.removes ?? []).filter((r) => inPage(r.parentId));
+    const texts = (data.texts ?? []).filter((t) => inPage(t.id));
+    const attributes = (data.attributes ?? []).filter((a) => inPage(a.id));
+    const kept = adds.length + removes.length + texts.length + attributes.length;
+    const total =
+      (data.adds?.length ?? 0) +
+      (data.removes?.length ?? 0) +
+      (data.texts?.length ?? 0) +
+      (data.attributes?.length ?? 0);
+    if (kept === total) return event;
+    if (kept === 0) return null;
+    return { ...e, data: { ...data, adds, removes, texts, attributes } };
+  }
+  if (Array.isArray(data.positions)) {
+    const positions = data.positions.filter((p) => inPage(p.id));
+    if (positions.length === data.positions.length) return event;
+    return positions.length ? { ...e, data: { ...data, positions } } : null;
+  }
+  return inPage(data.id) ? event : null;
+}
+
+/**
+ * Groups serialized rrweb events into segments: a Meta event opens one, a full
+ * snapshot, the byte target, the event cap or `SEGMENT_MAX_AGE_MS` closes it.
+ */
+export class SegmentBuffer {
+  private json: string[] = [];
+  /** Event bytes plus the comma that joins each one. */
+  private bytes = 0;
+  private opensWithMeta = false;
+  private snapshot = false;
+  private ageTimer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private onSegment: (segment: ReplaySegment) => void,
+    private nextIndex: () => number = counter(),
+  ) {}
+
+  /** Adds an event. False, and nothing added, for a snapshot too large to send. */
+  add(event: unknown): boolean {
+    const type = typeOf(event);
+    if (type === RRWEB_META_EVENT_TYPE) this.flush();
+    const json = JSON.stringify(event);
+    const size = byteLength(json) + 1;
+    const isSnapshot = type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE;
+    // A full snapshot stays with the Meta event just before it.
+    const withMeta = isSnapshot && this.opensWithMeta && this.json.length === 1;
+    if (isSnapshot && ENVELOPE_BYTES + (withMeta ? this.bytes : 0) + size > MAX_SEGMENT_BYTES) {
+      return false;
+    }
+    if (!withMeta && ENVELOPE_BYTES + this.bytes + size > SEGMENT_TARGET_BYTES) {
+      this.flush();
+    }
+    if (this.json.length === 0) {
+      this.opensWithMeta = type === RRWEB_META_EVENT_TYPE;
+      this.ageTimer = setTimeout(() => this.flush(), SEGMENT_MAX_AGE_MS);
+    }
+    this.json.push(json);
+    this.bytes += size;
+    if (isSnapshot) this.snapshot = true;
+    // The snapshot goes at once, so even a short page view has it delivered.
+    if (
+      isSnapshot ||
+      this.json.length >= SEGMENT_MAX_EVENTS ||
+      ENVELOPE_BYTES + this.bytes >= SEGMENT_TARGET_BYTES
+    ) {
+      this.flush();
+    }
+    return true;
+  }
+
+  /** Sends the open segment; `final` when the page is going away. */
+  flush(final = false): void {
+    if (this.ageTimer) {
+      clearTimeout(this.ageTimer);
+      this.ageTimer = null;
+    }
+    if (this.json.length === 0) return;
+    const segment: ReplaySegment = {
+      index: this.nextIndex(),
+      json: this.json,
+      bytes: this.bytes - 1,
+      snapshot: this.snapshot,
+      final,
+    };
+    this.json = [];
+    this.bytes = 0;
+    this.snapshot = false;
+    this.onSegment(segment);
+  }
+}
+
+function typeOf(event: unknown): unknown {
+  return (event as { type?: unknown } | null)?.type;
+}
+
+function counter(): () => number {
+  let next = 0;
+  return () => next++;
+}
+
 export class ReplayRecorder {
-  private stopFn: (() => void) | null = null;
-  private segmentIndex = 0;
-  private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private record: typeof rrwebRecord | null = null;
+  private options: RecordOptions = {};
+  private stopRecord: (() => void) | null = null;
+  private buffer: SegmentBuffer | null = null;
+  private sanitizeUrl: UrlSanitizer = String;
+  /** Bumped on every restart, so a stopped recording's late events are ignored. */
+  private generation = 0;
+  private snapshotAt = 0;
+  private checkoutQueued = false;
+  private onPageHide = () => this.buffer?.flush(true);
+  private onPageShow = (event: PageTransitionEvent) => {
+    // Back from the back-forward cache: other pages may have run since.
+    if (event.persisted) this.capture();
+  };
+  private onVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') this.buffer?.flush();
+  };
 
   async start(
-    onSegment: (segment: { events: unknown[]; index: number }) => void,
+    sessionId: string,
+    onSegment: (segment: ReplaySegment) => void,
     privacySettings: { maskInputs: boolean; maskText: boolean },
     sanitizeUrl: UrlSanitizer,
   ): Promise<void> {
-    if (this.stopFn) return; // already recording
+    if (this.buffer) return; // already recording
 
-    // Dynamically import rrweb only when replay is needed
-    const { record } = await import('rrweb');
-
-    const events: unknown[] = [];
-
-    const flushSegment = () => {
-      if (events.length === 0) return;
-      const batch = events.splice(0);
-      onSegment({ events: batch, index: this.segmentIndex++ });
-    };
-
-    this.stopFn = (record as RrwebRecord)({
-      emit: (event) => {
-        events.push(sanitizeReplayEvent(event, sanitizeUrl));
-        // Flush at 100 events
-        if (events.length >= 100) flushSegment();
-      },
+    // Lazy-loaded so the core bundle stays small; fetched only when replay starts.
+    const { record } = await import('@rrweb/record');
+    if (this.buffer) return;
+    const sequence = new SegmentSequence(sessionId);
+    this.buffer = new SegmentBuffer(onSegment, () => sequence.take());
+    this.record = record;
+    this.sanitizeUrl = sanitizeUrl;
+    this.options = {
+      sampling: { mousemove: 50, scroll: 150 },
+      slimDOMOptions: 'all',
+      inlineStylesheet: true,
+      recordCrossOriginIframes: false,
+      recordCanvas: false,
       maskAllInputs: privacySettings.maskInputs,
       maskTextSelector: privacySettings.maskText ? '*' : undefined,
-    }) ?? null;
+    };
+    this.capture();
 
-    // Flush segment every 30 seconds
-    this.flushTimer = setInterval(flushSegment, 30_000);
+    // Sends the open segment while the page can still send it.
+    window.addEventListener('pagehide', this.onPageHide);
+    window.addEventListener('pageshow', this.onPageShow);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
+  /** Stops recording and sends whatever the open segment holds. */
   stop(): void {
-    this.stopFn?.();
-    this.stopFn = null;
-    if (this.flushTimer) {
-      clearInterval(this.flushTimer);
-      this.flushTimer = null;
+    this.generation++;
+    this.stopRecord?.();
+    this.stopRecord = null;
+    window.removeEventListener('pagehide', this.onPageHide);
+    window.removeEventListener('pageshow', this.onPageShow);
+    document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    this.buffer?.flush();
+    this.buffer = null;
+  }
+
+  /**
+   * Restarts rrweb for a fresh snapshot. Unlike rrweb's own checkout, this
+   * leaves one set of observers per iframe instead of one more each time.
+   */
+  private capture(): void {
+    if (!this.buffer || !this.record) return;
+    this.stopRecord?.();
+    this.stopRecord = null;
+    this.buffer.flush();
+    const generation = ++this.generation;
+    const { mirror } = this.record;
+    this.stopRecord =
+      this.record({
+        ...this.options,
+        emit: (event) => this.onEvent(event, generation, (id) => mirror.getNode(id)),
+      }) ?? null;
+  }
+
+  private onEvent(event: unknown, generation: number, getNode: GetNode): void {
+    if (generation !== this.generation || !this.buffer) return;
+    const kept = withoutFrameContent(event, getNode);
+    if (kept === null) return;
+    if (!this.buffer.add(sanitizeReplayEvent(kept, this.sanitizeUrl))) {
+      // Its later events would replay onto another page, so the page stops here.
+      this.generation++;
+      console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
+      queueMicrotask(() => this.stop());
+      return;
+    }
+    const e = kept as MaybeIncrementalEvent;
+    const at = e.timestamp ?? 0;
+    if (e.type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE) {
+      this.snapshotAt = at;
+    } else if (
+      e.type === RRWEB_INCREMENTAL_EVENT_TYPE &&
+      at - this.snapshotAt > CHECKOUT_EVERY_MS &&
+      !this.checkoutQueued
+    ) {
+      // Outside rrweb's own callback, like its checkout but after it returns.
+      this.checkoutQueued = true;
+      queueMicrotask(() => {
+        this.checkoutQueued = false;
+        this.capture();
+      });
     }
   }
 }

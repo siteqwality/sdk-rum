@@ -27,6 +27,7 @@ import {
 import { startLongTaskCollector } from './collectors/long-tasks';
 import { ReplayRecorder } from './replay/recorder';
 import { ReplayTransport } from './replay/transport';
+import { hasRecorded } from './replay/sequence';
 import {
   evaluateFilters,
   type SessionState,
@@ -216,10 +217,12 @@ export class SiteQwalityRUM {
     // never records the SDK's own requests.
     this.startCollectors([ingestBase, replayBase]);
 
-    // Periodically evaluate sampling rules
+    // Evaluate sampling rules now and then periodically. Replay that an
+    // earlier page of this session recorded carries on from the start.
     this.samplingTimer = setInterval(() => {
       this.evaluateSampling();
     }, SAMPLING_EVAL_INTERVAL_MS);
+    this.evaluateSampling(hasRecorded(this.session.getSessionId()));
   }
 
   /**
@@ -409,7 +412,7 @@ export class SiteQwalityRUM {
     this.eventTransport.enqueue(event);
   }
 
-  private evaluateSampling(): void {
+  private evaluateSampling(resumeReplay = false): void {
     const config = this.config.getConfig();
     if (!config) return;
 
@@ -423,8 +426,11 @@ export class SiteQwalityRUM {
       this.detailActive = true;
     }
 
-    // Activate replay if a filter with capture_replay matches
-    if (captureReplay && !this.replayActive) {
+    // Activate replay if a filter with capture_replay matches, or resume it
+    // while the app still captures replay at all
+    const resume =
+      resumeReplay && config.filters.some((f) => f.capture_replay);
+    if ((captureReplay || resume) && !this.replayActive) {
       this.replayActive = true;
       this.startReplay(config.settings.privacy);
     }
@@ -452,6 +458,7 @@ export class SiteQwalityRUM {
 
     const sessionId = this.session.getSessionId();
     await this.replayRecorder.start(
+      sessionId,
       (segment) => {
         this.replayTransport!.sendSegment(sessionId, segment);
       },

@@ -6,6 +6,7 @@ import {
   Backoff,
   BACKOFF_BASE_MS,
   BACKOFF_MAX_MS,
+  byteLength,
 } from '../src/send';
 
 function response(status: number, headers: Record<string, string> = {}) {
@@ -135,5 +136,14 @@ describe('Backoff', () => {
     expect(new Backoff().next(30_000)).toBe(30_000);
     expect(new Backoff().next(0)).toBe(BACKOFF_BASE_MS / 2);
     expect(new Backoff().next(24 * 3_600_000)).toBe(BACKOFF_MAX_MS);
+  });
+});
+
+describe('byteLength', () => {
+  it('counts UTF-8 bytes like TextEncoder', () => {
+    const encoder = new TextEncoder();
+    for (const text of ['', 'abc', 'é', '\u07ff\u0800', '日本語', '😀 ok', JSON.stringify('\ud800')]) {
+      expect(byteLength(text)).toBe(encoder.encode(text).length);
+    }
   });
 });

@@ -51,8 +51,8 @@ export function sendJson(
   url: string,
   clientToken: string,
   body: string | Blob,
+  size: number = typeof body === 'string' ? byteLength(body) : body.size,
 ): Promise<SendOutcome> {
-  const size = typeof body === 'string' ? byteLength(body) : body.size;
   let request: Promise<Response>;
   try {
     request = fetch(url, {
@@ -144,8 +144,13 @@ export class Backoff {
   }
 }
 
+/** UTF-8 length of a string, counted without encoding a copy of it. */
 export function byteLength(text: string): number {
-  return typeof TextEncoder !== 'undefined'
-    ? new TextEncoder().encode(text).length
-    : text.length;
+  let bytes = text.length;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    // Two bytes below U+0800, three above; a surrogate pair makes four.
+    if (code >= 0x80) bytes += code >= 0x800 && (code < 0xd800 || code > 0xdfff) ? 2 : 1;
+  }
+  return bytes;
 }
