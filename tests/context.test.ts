@@ -4,6 +4,7 @@ import {
   MAX_GLOBAL_ATTRIBUTES,
   MAX_ATTRIBUTE_KEY_LENGTH,
   MAX_ATTRIBUTE_VALUE_LENGTH,
+  MAX_GLOBAL_ATTRIBUTES_BYTES,
 } from '../src/context';
 import type { UserContext } from '../src/types';
 
@@ -73,6 +74,32 @@ describe('global attributes', () => {
     ctx.removeGlobalAttribute('k1');
     ctx.setGlobalAttribute('fresh', 'v');
     expect(ctx.getGlobalAttributes().fresh).toBe('v');
+  });
+
+  it('ignores a set that would take the total past the byte budget', () => {
+    const ctx = manager();
+    const big = 'v'.repeat(MAX_ATTRIBUTE_VALUE_LENGTH);
+    for (let i = 0; i < 10; i++) ctx.setGlobalAttribute(`k${i}`, big);
+    const attrs = ctx.getGlobalAttributes();
+    expect(Object.keys(attrs)).toHaveLength(3);
+    expect(new TextEncoder().encode(JSON.stringify(attrs)).length)
+      .toBeLessThanOrEqual(MAX_GLOBAL_ATTRIBUTES_BYTES);
+
+    // Growing an existing key past the budget keeps its old value.
+    ctx.setGlobalAttribute('k3', 'v'.repeat(500));
+    ctx.setGlobalAttribute('k3', big);
+    expect(ctx.getGlobalAttributes().k3).toBe('v'.repeat(500));
+    ctx.removeGlobalAttribute('k1');
+    ctx.setGlobalAttribute('k3', big);
+    expect(ctx.getGlobalAttributes().k3).toBe(big);
+  });
+
+  it('counts multi-byte characters as bytes', () => {
+    const ctx = manager();
+    const wide = '€'.repeat(MAX_ATTRIBUTE_VALUE_LENGTH);
+    ctx.setGlobalAttribute('a', wide);
+    ctx.setGlobalAttribute('b', wide);
+    expect(Object.keys(ctx.getGlobalAttributes())).toEqual(['a']);
   });
 
   it('keeps a __proto__ key as a plain attribute', () => {

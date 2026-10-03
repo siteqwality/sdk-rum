@@ -112,7 +112,8 @@ export class SiteQwalityRUM {
 
   /**
    * Adds a string to custom_attributes on later error and detail events.
-   * Caps: 50 keys, 128-char keys, 1024-char values (cut); bad input is ignored.
+   * Caps: 50 keys, 128-char keys, 1024-char values (cut), 4 KB in all;
+   * bad input or a set past the caps is ignored.
    */
   static setGlobalAttribute(key: string, value: string): void {
     SiteQwalityRUM.instance?.context?.setGlobalAttribute(key, value);

@@ -38,8 +38,9 @@ Vitals included, so every session shows its user.
 `setGlobalAttribute(key, value)` adds a string to `custom_attributes` on every
 later error, action and other detail event; `removeGlobalAttribute(key)` stops
 it. A `context` passed to `addError` or `addAction` wins on the same key. Up to
-50 keys of at most 128 characters; values are cut at 1024. Anything else is
-ignored, never thrown.
+50 keys of at most 128 characters; values are cut at 1024. All of them
+together stay within 4 KB as JSON, since they ride on every detail event; a set
+past that budget is ignored. Anything else is ignored, never thrown.
 
 ## URL minimisation
 

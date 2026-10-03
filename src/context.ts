@@ -1,9 +1,12 @@
+import { byteLength } from './send';
 import { cut } from './text';
 import type { RumConfig, UserContext } from './types';
 
 export const MAX_GLOBAL_ATTRIBUTES = 50;
 export const MAX_ATTRIBUTE_KEY_LENGTH = 128;
 export const MAX_ATTRIBUTE_VALUE_LENGTH = 1024;
+/** All global attributes together, as JSON; they ride on every detail event. */
+export const MAX_GLOBAL_ATTRIBUTES_BYTES = 4096;
 
 export class ContextManager {
   private user: UserContext = {};
@@ -36,7 +39,11 @@ export class ContextManager {
     ) {
       return;
     }
-    this.globalAttributes.set(key, cut(value, MAX_ATTRIBUTE_VALUE_LENGTH));
+    const next = new Map(this.globalAttributes);
+    next.set(key, cut(value, MAX_ATTRIBUTE_VALUE_LENGTH));
+    const size = byteLength(JSON.stringify(Object.fromEntries(next)));
+    if (size > MAX_GLOBAL_ATTRIBUTES_BYTES) return;
+    this.globalAttributes = next;
   }
 
   removeGlobalAttribute(key: string): void {
