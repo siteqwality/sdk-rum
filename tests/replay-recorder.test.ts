@@ -243,17 +243,18 @@ describe('ReplayRecorder', () => {
     return rrweb.state.options!;
   }
 
-  it('records with periodic checkouts and the app privacy settings', async () => {
+  it('records with periodic checkouts, every input and the app privacy settings', async () => {
     const options = await start();
     expect(options).toMatchObject({
       checkoutEveryNms: CHECKOUT_EVERY_MS,
-      sampling: { mousemove: 50, scroll: 150, input: 'last' },
+      sampling: { mousemove: 50, scroll: 150 },
       slimDOMOptions: 'all',
       inlineStylesheet: true,
       recordCrossOriginIframes: false,
       recordCanvas: false,
       maskAllInputs: true,
     });
+    expect(options.sampling).not.toHaveProperty('input');
     expect(options.maskTextSelector).toBeUndefined();
 
     recorder.stop();

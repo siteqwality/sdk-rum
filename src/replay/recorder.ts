@@ -215,7 +215,7 @@ export class ReplayRecorder {
           }
         },
         checkoutEveryNms: CHECKOUT_EVERY_MS,
-        sampling: { mousemove: 50, scroll: 150, input: 'last' },
+        sampling: { mousemove: 50, scroll: 150 },
         slimDOMOptions: 'all',
         inlineStylesheet: true,
         recordCrossOriginIframes: false,
