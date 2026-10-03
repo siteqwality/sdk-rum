@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RUM fixture</title>
+  <script src="/boot.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/assets/lib.js"></script>
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a href="/" data-link class="brand">RUM fixture</a>
+    <nav>
+      <a href="/" data-link data-testid="nav-home">Home</a>
+      <a href="/products" data-link data-testid="nav-products">Products</a>
+      <a href="/forms" data-link data-testid="nav-forms">Forms</a>
+      <a href="/network" data-link data-testid="nav-network">Network</a>
+      <a href="/errors" data-link data-testid="nav-errors">Errors</a>
+      <a href="/console" data-link data-testid="nav-console">Console</a>
+      <a href="/mutations" data-link data-testid="nav-mutations">Mutations</a>
+      <a href="/canvas" data-link data-testid="nav-canvas">Canvas</a>
+      <a href="/iframes" data-link data-testid="nav-iframes">Iframes</a>
+      <a href="/heavy-css" data-link data-testid="nav-heavy-css">Heavy CSS</a>
+      <a href="/hash" data-link data-testid="nav-hash">Hash routes</a>
+      <a href="/mpa/second.html" data-testid="nav-mpa">Second page</a>
+    </nav>
+  </header>
+  <main id="view" aria-live="polite"></main>
+</body>
+</html>

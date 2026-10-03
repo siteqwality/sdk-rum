@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RUM fixture: early error</title>
+  <script src="/boot.js"></script>
+  <script>
+    // Thrown while the SDK is still downloading: only the snippet stub can see it.
+    throw new Error('fx:early thrown before the SDK loaded');
+  </script>
+</head>
+<body><main data-fixture-page="early-error"><h1>Early error</h1></main></body>
+</html>
