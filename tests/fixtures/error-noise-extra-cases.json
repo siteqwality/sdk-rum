@@ -1,0 +1,177 @@
+[
+  {
+    "name": "resize observer, no trailing period",
+    "message": "ResizeObserver loop completed with undelivered notifications",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "resize observer, surrounding whitespace",
+    "message": "  Uncaught ResizeObserver loop limit exceeded  ",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "resize observer, even with an app stack",
+    "message": "ResizeObserver loop limit exceeded",
+    "stack": "Error\n    at https://shop.example.com/assets/app.js:10:5",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "script error, frameless stack",
+    "message": "Script error.",
+    "stack": "Error\n    at <anonymous>",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "script error, filename does not matter",
+    "message": "Script error.",
+    "stack": "",
+    "filename": "https://cdn.example.com/widget.js",
+    "ignore": true
+  },
+  {
+    "name": "script error, with an app frame",
+    "message": "Script error.",
+    "stack": "    at https://shop.example.com/assets/app.js:1:200",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "script error, longer message",
+    "message": "Script error. Something else",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "script error, lower case",
+    "message": "script error.",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "chrome extension, V8 frame",
+    "message": "TypeError: Failed to fetch",
+    "stack": "TypeError: Failed to fetch\n    at chrome-extension://bkkbcggnhapdmkeljlodobbkopceiche/content.js:1:2345",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "chrome extension, V8 frame in parentheses",
+    "message": "Uncaught TypeError: x is not a function",
+    "stack": "TypeError: x is not a function\n    at inject (chrome-extension://abcdefghijklmnop/inject.js:3:9)\n    at Array.forEach (<anonymous>)",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "firefox extension, Gecko frames",
+    "message": "TypeError: e is undefined",
+    "stack": "run@moz-extension://8a2b4c6d-1111-2222-3333-444455556666/content.js:10:5\n@moz-extension://8a2b4c6d-1111-2222-3333-444455556666/content.js:20:1\n",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "safari web extension, JSC frame",
+    "message": "TypeError: undefined is not an object",
+    "stack": "global code@safari-web-extension://4B5C6D7E-8F90-1234-ABCD-1234567890AB/script.js:1:10",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "safari legacy extension",
+    "message": "ReferenceError: Can't find variable: foo",
+    "stack": "safari-extension://com.example.ext-ABCDEF/abc/script.js:4:2",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "webkit masked frame",
+    "message": "Error: blocked",
+    "stack": "@webkit-masked-url://hidden/:1:4123",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "edge legacy extension",
+    "message": "Error: boom",
+    "stack": "at ms-browser-extension://ext/content.js:1:1",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "extension and app frames mixed (sdk)",
+    "message": "TypeError: Failed to fetch",
+    "stack": "TypeError: Failed to fetch\n    at chrome-extension://bkkbcggnhapdmkeljlodobbkopceiche/content.js:1:2345\n    at https://shop.example.com/assets/app.js:88:12",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "app frames, V8",
+    "message": "Uncaught TypeError: Cannot read properties of undefined (reading 'discount')",
+    "stack": "TypeError: Cannot read properties of undefined (reading 'discount')\n    at applyCoupon (https://shop.example.com/assets/index-4f9a3c.js:2:1844)\n    at HTMLButtonElement.<anonymous> (https://shop.example.com/assets/index-4f9a3c.js:2:2210)",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "app frames, Gecko",
+    "message": "TypeError: e.discount is undefined",
+    "stack": "applyCoupon@https://shop.example.com/assets/index-4f9a3c.js:2:1844\n@https://shop.example.com/assets/index-4f9a3c.js:2:2210\n",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "blob frame counts as its inner https URL",
+    "message": "Error: worker failed",
+    "stack": "Error: worker failed\n    at blob:https://shop.example.com/9b1d2c3e-aaaa-bbbb-cccc-1234567890ab:1:20",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "stack decides over an extension filename",
+    "message": "TypeError: Failed to fetch",
+    "stack": "    at https://shop.example.com/assets/app.js:1:1",
+    "filename": "chrome-extension://bkkbcggnhapdmkeljlodobbkopceiche/content.js",
+    "ignore": false
+  },
+  {
+    "name": "extension stack with an app filename",
+    "message": "TypeError: Failed to fetch",
+    "stack": "    at chrome-extension://bkkbcggnhapdmkeljlodobbkopceiche/content.js:1:1",
+    "filename": "https://shop.example.com/assets/app.js",
+    "ignore": true
+  },
+  {
+    "name": "stackless app error",
+    "message": "Failed to fetch",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "stackless app error with an app filename",
+    "message": "Uncaught ReferenceError: gtag is not defined",
+    "stack": "",
+    "filename": "https://shop.example.com/",
+    "ignore": false
+  },
+  {
+    "name": "Uncaught alone",
+    "message": "Uncaught",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "http frame is not an extension",
+    "message": "Error: boom",
+    "stack": "    at http://localhost:3000/src/main.ts:4:11",
+    "filename": "",
+    "ignore": false
+  }
+]

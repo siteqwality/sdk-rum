@@ -147,3 +147,58 @@ describe('ConfigManager', () => {
     mgr.destroy();
   });
 });
+
+describe('ConfigManager change notifications', () => {
+  it('calls onChange with the first config and each refreshed one', async () => {
+    vi.useFakeTimers();
+    const next: SdkConfig = { ...remoteConfig, filters: [] };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn()
+        .mockResolvedValueOnce(okResponse({ data: remoteConfig }))
+        .mockResolvedValue(okResponse({ data: next })),
+    );
+    const onChange = vi.fn();
+    const mgr = new ConfigManager();
+    await mgr.init(APP_ID, 'token-1', INGEST_BASE, onChange);
+    expect(onChange).toHaveBeenCalledWith(remoteConfig);
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 10);
+    expect(onChange).toHaveBeenLastCalledWith(next);
+    mgr.destroy();
+  });
+
+  it('calls onChange with the defaults when the fetch fails, and survives a throwing listener', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+    const mgr = new ConfigManager();
+    await expect(
+      mgr.init(APP_ID, 'token-1', INGEST_BASE, () => {
+        throw new Error('listener bug');
+      }),
+    ).resolves.toEqual(defaultSdkConfig(APP_ID));
+    mgr.destroy();
+  });
+
+  it('settles at the timeout even when fetch ignores the abort signal', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+    const mgr = new ConfigManager();
+    let result: SdkConfig | undefined;
+    void mgr.init(APP_ID, 'token-1', INGEST_BASE).then((c) => (result = c));
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual(defaultSdkConfig(APP_ID));
+    mgr.destroy();
+  });
+
+  it('fills in safe privacy defaults when the config omits them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => okResponse({ data: { application_id: APP_ID, filters: [], settings: {} } })),
+    );
+    const mgr = new ConfigManager();
+    const cfg = await mgr.init(APP_ID, 'token-1', INGEST_BASE);
+    mgr.destroy();
+    expect(cfg.settings.privacy).toEqual({ mask_inputs: true, mask_text: false });
+  });
+});

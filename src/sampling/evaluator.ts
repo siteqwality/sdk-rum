@@ -16,15 +16,19 @@ export interface SamplingResult {
   captureReplay: boolean;
 }
 
+/** The keys a `custom` rule may hold; any other key makes it never match. */
+export const CUSTOM_RULE_KEYS: readonly string[] = ['has_user', 'min_actions'];
+
+/** Rules are ORed: any match captures detail, and replay if that rule asks for it. */
 export function evaluateFilters(
-  rules: SessionFilterRule[],
+  rules: readonly SessionFilterRule[],
   state: SessionState,
 ): SamplingResult {
   let captureDetail = false;
   let captureReplay = false;
 
-  for (const rule of rules) {
-    if (matchesRule(rule, state)) {
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    if (rule && matchesRule(rule, state)) {
       captureDetail = true;
       if (rule.capture_replay) captureReplay = true;
     }
@@ -35,6 +39,8 @@ export function evaluateFilters(
 
 function matchesRule(rule: SessionFilterRule, state: SessionState): boolean {
   const c = rule.conditions;
+  // Fail closed on a malformed rule.
+  if (!c || typeof c !== 'object' || Array.isArray(c)) return false;
   switch (rule.filter_type) {
     case 'error':
       return state.hasError || (c.has_error === true && state.errorCount > 0);
@@ -50,12 +56,13 @@ function matchesRule(rule: SessionFilterRule, state: SessionState): boolean {
       );
 
     case 'custom':
+      // An unknown key is a condition this SDK cannot check, so it never matches.
+      if (Object.keys(c).some((key) => !CUSTOM_RULE_KEYS.includes(key))) return false;
       if (c.has_user === true && !state.userId) return false;
-      if (
-        c.min_actions != null &&
-        state.actionCount < Number(c.min_actions)
-      )
-        return false;
+      if (c.min_actions != null) {
+        const min = Number(c.min_actions);
+        if (!Number.isFinite(min) || state.actionCount < min) return false;
+      }
       return true;
 
     default:

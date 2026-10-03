@@ -1,5 +1,19 @@
 import type { UrlSanitizer } from '../privacy/url';
 
+/** Allowed `initiatorType` values; anything else is sent as `other`. */
+export const RESOURCE_TYPES: readonly string[] = [
+  'audio', 'beacon', 'body', 'css', 'early-hints', 'embed', 'eventsource', 'fetch',
+  'frame', 'icon', 'iframe', 'image', 'img', 'input', 'link', 'navigation', 'object',
+  'other', 'ping', 'script', 'track', 'video', 'xmlhttprequest',
+];
+
+/** Chrome reports the page URL as the type of some favicon entries. */
+export function resourceType(initiatorType: unknown): string {
+  return typeof initiatorType === 'string' && RESOURCE_TYPES.includes(initiatorType)
+    ? initiatorType
+    : 'other';
+}
+
 export interface CollectedResource {
   resource_type: string;
   resource_url: string;
@@ -42,7 +56,7 @@ export function startResourceCollector(
       const target = parsePrefix(re.name);
       if (target && (isOwnRequest(target) || isExcluded(target))) continue;
       onResource({
-        resource_type: re.initiatorType,
+        resource_type: resourceType(re.initiatorType),
         resource_url: sanitizeUrl(re.name),
         duration_ms: re.duration,
         transfer_size: re.transferSize,

@@ -37,16 +37,20 @@ export class ConfigManager {
     applicationId: string,
     clientToken: string,
     ingestBase: string,
+    onChange?: (config: SdkConfig) => void,
   ): Promise<SdkConfig> {
     this.config = await this.fetchConfigSafe(
       applicationId,
       clientToken,
       ingestBase,
     );
+    // After the first config and each refreshed one.
+    notify(onChange, this.config);
     this.refreshInterval = setInterval(() => {
       this.fetchConfig(applicationId, clientToken, ingestBase)
         .then((c) => {
           this.config = c;
+          notify(onChange, c);
         })
         .catch(() => {
           // keep the last known config
@@ -77,22 +81,27 @@ export class ConfigManager {
     ingestBase: string,
   ): Promise<SdkConfig> {
     const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      CONFIG_FETCH_TIMEOUT_MS,
-    );
-    try {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    // Rejects on time even if a fetch polyfill ignores the abort signal.
+    const timedOut = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        controller.abort();
+        reject(new Error('Config fetch timed out'));
+      }, CONFIG_FETCH_TIMEOUT_MS);
+    });
+    const request = (async () => {
       const resp = await fetch(`${ingestBase}/v1/config`, {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       });
       if (!resp.ok) throw new Error(`Config fetch failed: ${resp.status}`);
       const json = await resp.json();
-      const config = (json && json.data) as SdkConfig | undefined;
-      if (!config || !Array.isArray(config.filters) || !config.settings) {
-        throw new Error('Config fetch returned an unexpected shape');
-      }
-      return config;
+      return normalizeConfig((json && json.data) as SdkConfig | undefined, appId);
+    })();
+    // The loser of the race must not surface as an unhandled rejection.
+    request.catch(() => {});
+    try {
+      return await Promise.race([request, timedOut]);
     } finally {
       clearTimeout(timeout);
     }
@@ -100,5 +109,25 @@ export class ConfigManager {
 
   destroy(): void {
     if (this.refreshInterval) clearInterval(this.refreshInterval);
+  }
+}
+
+function normalizeConfig(config: SdkConfig | undefined, appId: string): SdkConfig {
+  if (!config || !Array.isArray(config.filters) || !config.settings) {
+    throw new Error('Config fetch returned an unexpected shape');
+  }
+  const privacy = config.settings.privacy;
+  if (!privacy || typeof privacy !== 'object') {
+    // Missing privacy settings mean the safe defaults.
+    config.settings.privacy = defaultSdkConfig(appId).settings.privacy;
+  }
+  return config;
+}
+
+function notify(onChange: ((config: SdkConfig) => void) | undefined, config: SdkConfig): void {
+  try {
+    onChange?.(config);
+  } catch {
+    // A listener must not break the config cycle.
   }
 }

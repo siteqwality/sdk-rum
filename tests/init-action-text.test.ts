@@ -3,7 +3,10 @@ import { SiteQwalityRUM } from '../src/init';
 import { startActionCollector } from '../src/collectors/actions';
 
 // Only the hide_action_text wiring is under test; the collectors are stubbed.
-vi.mock('../src/collectors/resources', () => ({ startResourceCollector: vi.fn() }));
+vi.mock('../src/collectors/resources', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/collectors/resources')>()),
+  startResourceCollector: vi.fn(),
+}));
 vi.mock('../src/collectors/views', () => ({ startViewCollector: vi.fn() }));
 vi.mock('../src/collectors/vitals', () => ({ startVitalsCollector: vi.fn() }));
 vi.mock('../src/collectors/errors', () => ({ startErrorCollector: vi.fn() }));
@@ -36,7 +39,7 @@ afterEach(() => {
 
 function hideGetter(): () => boolean {
   expect(startActionCollector).toHaveBeenCalledTimes(1);
-  const getter = vi.mocked(startActionCollector).mock.calls[0][1];
+  const getter = vi.mocked(startActionCollector).mock.calls[0][0].hideText;
   expect(getter).toBeTypeOf('function');
   return getter!;
 }

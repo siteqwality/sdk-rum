@@ -1,5 +1,5 @@
-import type { record as rrwebRecord } from '@rrweb/record';
 import type { UrlSanitizer } from '../privacy/url';
+import { loadRecord, type RecordFn } from './load-record';
 import { byteLength } from '../send';
 import { SegmentSequence } from './sequence';
 import { MAX_SEGMENT_BYTES, type ReplaySegment } from './transport';
@@ -29,7 +29,7 @@ export const SEGMENT_MAX_AGE_MS = 30_000;
 /** A fresh full snapshot this often, each one starting a new segment. */
 export const CHECKOUT_EVERY_MS = 60_000;
 
-type RecordOptions = NonNullable<Parameters<typeof rrwebRecord>[0]>;
+type RecordOptions = NonNullable<Parameters<RecordFn>[0]>;
 type GetNode = (id: number) => unknown;
 
 interface MaybeMetaEvent {
@@ -207,7 +207,9 @@ function counter(): () => number {
 }
 
 export class ReplayRecorder {
-  private record: typeof rrwebRecord | null = null;
+  private record: RecordFn | null = null;
+  /** Bumped by every start and stop, so a start overtaken while loading gives up. */
+  private startEpoch = 0;
   private options: RecordOptions = {};
   private stopRecord: (() => void) | null = null;
   private buffer: SegmentBuffer | null = null;
@@ -230,12 +232,14 @@ export class ReplayRecorder {
     onSegment: (segment: ReplaySegment) => void,
     privacySettings: { maskInputs: boolean; maskText: boolean },
     sanitizeUrl: UrlSanitizer,
+    recorderUrl?: string,
   ): Promise<void> {
     if (this.buffer) return; // already recording
+    const epoch = ++this.startEpoch;
 
     // Lazy-loaded so the core bundle stays small; fetched only when replay starts.
-    const { record } = await import('@rrweb/record');
-    if (this.buffer) return;
+    const record = await loadRecord(recorderUrl);
+    if (this.buffer || epoch !== this.startEpoch) return;
     const sequence = new SegmentSequence(sessionId);
     this.buffer = new SegmentBuffer(onSegment, () => sequence.take());
     this.record = record;
@@ -259,6 +263,7 @@ export class ReplayRecorder {
 
   /** Stops recording and sends whatever the open segment holds. */
   stop(): void {
+    this.startEpoch++;
     this.generation++;
     this.stopRecord?.();
     this.stopRecord = null;

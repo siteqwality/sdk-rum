@@ -8,7 +8,7 @@ set -euo pipefail
 #   - AWS CLI configured with siteqwality profile
 #   - SDK already built (npm run build)
 #
-# Uploads ALL files in dist/cdn/ (core SDK + lazy-loaded rrweb chunk)
+# Uploads ALL files in dist/cdn/ (core SDK + versioned recorder)
 # to s3://bucket/rum/v<version>/ (immutable) and s3://bucket/rum/v1/ (latest 1.x)
 
 SDK_BUCKET="sq-prod-us-east-1-rum-sdk"
@@ -30,6 +30,7 @@ if aws s3 ls "s3://${SDK_BUCKET}/${PINNED_PREFIX}/sdk.min.js" --profile siteqwal
   exit 1
 fi
 
+# No --delete: cached 1.0.x cores still load their rrweb-*.js chunks from v1/.
 upload() {
   local prefix="$1" js_cache="$2"
   echo "Uploading SDK files to s3://${SDK_BUCKET}/${prefix}/..."

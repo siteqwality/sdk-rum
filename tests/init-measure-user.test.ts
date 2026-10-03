@@ -5,7 +5,10 @@ import { startVitalsCollector } from '../src/collectors/vitals';
 import type { RumMeasureEvent, ViewEvent } from '../src/types';
 
 // Collectors are stubbed; their callbacks are driven by hand.
-vi.mock('../src/collectors/resources', () => ({ startResourceCollector: vi.fn() }));
+vi.mock('../src/collectors/resources', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/collectors/resources')>()),
+  startResourceCollector: vi.fn(),
+}));
 vi.mock('../src/collectors/views', () => ({ startViewCollector: vi.fn() }));
 vi.mock('../src/collectors/vitals', () => ({ startVitalsCollector: vi.fn() }));
 vi.mock('../src/collectors/errors', () => ({ startErrorCollector: vi.fn() }));

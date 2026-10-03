@@ -169,3 +169,38 @@ describe('evaluateFilters', () => {
     expect(result.captureReplay).toBe(true);
   });
 });
+
+describe('evaluateFilters fails closed', () => {
+  const state: SessionState = { hasError: true, errorCount: 1, pageCount: 1, actionCount: 50, userId: 'u', lcpMs: 9000, cls: 1 };
+
+  it('never matches a custom rule with a key it cannot check', () => {
+    for (const conditions of [{ url: '/checkout' }, { user_attribute: 'role' }, { has_user: true, role: 'admin' }]) {
+      const result = evaluateFilters([{ filter_type: 'custom', conditions, capture_replay: true }], state);
+      expect(result).toEqual({ captureDetail: false, captureReplay: false });
+    }
+  });
+
+  it('still matches an empty custom rule and its known keys', () => {
+    expect(evaluateFilters([{ filter_type: 'custom', conditions: {}, capture_replay: true }], state).captureReplay).toBe(true);
+    expect(
+      evaluateFilters([{ filter_type: 'custom', conditions: { has_user: true, min_actions: 5 }, capture_replay: false }], state).captureDetail,
+    ).toBe(true);
+  });
+
+  it('never matches a non-numeric min_actions', () => {
+    const rule = { filter_type: 'custom', conditions: { min_actions: 'many' }, capture_replay: false };
+    expect(evaluateFilters([rule], state).captureDetail).toBe(false);
+  });
+
+  it('skips malformed rules and conditions', () => {
+    const rules = [
+      null,
+      { filter_type: 'custom', conditions: null, capture_replay: true },
+      { filter_type: 'custom', conditions: [], capture_replay: true },
+      { filter_type: 'error', conditions: 'x', capture_replay: true },
+      { filter_type: 'unknown', conditions: {}, capture_replay: true },
+    ] as unknown as SessionFilterRule[];
+    expect(evaluateFilters(rules, state)).toEqual({ captureDetail: false, captureReplay: false });
+    expect(evaluateFilters(undefined as unknown as SessionFilterRule[], state).captureDetail).toBe(false);
+  });
+});

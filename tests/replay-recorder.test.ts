@@ -335,6 +335,13 @@ describe('ReplayRecorder', () => {
     expect((await start(true)).maskTextSelector).toBe('*');
   });
 
+  it('a stop while rrweb loads cancels that start', async () => {
+    const pending = recorder.start(SESSION, (s) => segments.push(s), { maskInputs: true, maskText: false }, createUrlSanitizer());
+    recorder.stop();
+    await pending;
+    expect(rrweb.state.calls).toHaveLength(0);
+  });
+
   it('minimises the Meta event URL', async () => {
     const { emit } = await start();
     emit(meta('https://example.com/a?token=secret'));
