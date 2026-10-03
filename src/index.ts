@@ -1,6 +1,7 @@
 export { SiteQwalityRUM } from './init';
 export type {
   RumConfig,
+  ResourceIgnoreRule,
   RumMeasureEvent,
   RumDetailEvent,
   RumErrorEvent,
