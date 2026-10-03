@@ -69,8 +69,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function start(filters: object[]) {
-  serveConfig(filters);
+async function start(filters: object[], settings: Record<string, unknown> = {}) {
+  serveConfig(filters, settings);
   await init();
   await settle();
 }
@@ -159,7 +159,7 @@ describe('the decision persists per session and tab', () => {
     expect(stored()).toEqual({ v: 1, detail: true, replay: true, actions: 1 });
   });
 
-  it('a reload resumes detail at once and replay once the config arrives', async () => {
+  it('a reload resumes detail and replay once the server config arrives', async () => {
     await start([ERROR_RULE]);
     SiteQwalityRUM.addError(new Error('boom'));
     const sid = sessionId();
@@ -167,25 +167,42 @@ describe('the decision persists per session and tab', () => {
     newPageLoad();
     const release = holdConfig([ERROR_RULE]);
     void init();
+    vi.mocked(startResourceCollector).mock.calls.at(-1)![0]({
+      resource_type: 'script', resource_url: 'https://a.example/app.js', duration_ms: 9, transfer_size: 10,
+    });
     expect(sessionId()).toBe(sid);
-    expect(instance().detailActive).toBe(true);
     expect(recorder().start).not.toHaveBeenCalled();
     release();
     await settle();
+    expect(instance().detailActive).toBe(true);
     expect(recorder().start).toHaveBeenCalledTimes(1);
+    expect(details(registry).map((e) => e.resource_url)).toEqual(['https://a.example/app.js']);
     expect(instance().sessionState.hasError).toBe(false);
   });
 
-  it('a resumed detail decision sends the pre-config buffer even if config fails', async () => {
-    await start([MATCH_ALL]);
+  it('with a failed config fetch a stored decision sends nothing, and resumes on a later good config', async () => {
+    await start([MATCH_ALL], { privacy: { mask_inputs: true, mask_text: false, hide_action_text: true } });
     newPageLoad();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValue(configResponse([MATCH_ALL], { privacy: { mask_inputs: true, mask_text: false, hide_action_text: true } }));
+    vi.stubGlobal('fetch', fetchMock);
     void init();
     vi.mocked(startResourceCollector).mock.calls.at(-1)![0]({
       resource_type: 'script', resource_url: 'https://a.example/app.js', duration_ms: 9, transfer_size: 10,
     });
+    click(el('<button class="pay">Pay Jane Doe</button>'));
     await settle();
-    expect(details(registry).map((e) => e.resource_url)).toEqual(['https://a.example/app.js']);
+    vi.advanceTimersByTime(1_100);
+    expect(details(registry)).toHaveLength(0);
+    expect(instance().detailActive).toBe(false);
+    expect(stored().detail).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(instance().detailActive).toBe(true);
+    click(el('<button class="pay">Pay Jane Doe</button>'));
+    vi.advanceTimersByTime(1_100);
+    expect(details(registry).map((e) => e.action_target)).toEqual(['button.pay']);
   });
 
   it('replay does not resume once no rule records replay', async () => {
@@ -203,9 +220,9 @@ describe('the decision persists per session and tab', () => {
     sessionStorage.setItem(`sq_rum_replay_next:${sid}`, '3');
     const release = holdConfig([ERROR_RULE]);
     void init();
-    expect(instance().detailActive).toBe(true);
     release();
     await settle();
+    expect(instance().detailActive).toBe(true);
     expect(recorder().start).toHaveBeenCalledWith(sid, expect.any(Function), expect.any(Object), expect.any(Function), undefined);
   });
 

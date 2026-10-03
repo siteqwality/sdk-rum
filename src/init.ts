@@ -143,7 +143,9 @@ export class SiteQwalityRUM {
   private configReady = false;
   private detailActive = false;
   private replayActive = false;
-  /** A stored decision said replay; it resumes while any rule still records replay. */
+  // A stored decision resumes only with a config from the server, whose privacy
+  // settings apply; the fallback defaults never turn detail or replay on.
+  private resumeDetail = false;
   private resumeReplay = false;
   private preConfig: BufferedDetail[] = [];
   private emittingView = false;
@@ -677,13 +679,16 @@ export class SiteQwalityRUM {
       config.filters,
       this.sessionState,
     );
+    const remote = this.config.isRemote();
     let changed = false;
-    if (captureDetail && !this.detailActive) {
+    if ((captureDetail || (this.resumeDetail && remote)) && !this.detailActive) {
       this.detailActive = true;
       changed = true;
     }
     const resume =
-      this.resumeReplay && config.filters.some((rule) => rule?.capture_replay === true);
+      this.resumeReplay &&
+      remote &&
+      config.filters.some((rule) => rule?.capture_replay === true);
     if ((captureReplay || resume) && !this.replayActive) {
       this.replayActive = true;
       changed = true;
@@ -695,14 +700,14 @@ export class SiteQwalityRUM {
   private restoreDecision(): void {
     const decision = loadDecision(this.session.current());
     if (!decision) return;
-    this.detailActive = decision.detail;
+    this.resumeDetail = decision.detail;
     this.resumeReplay = decision.replay;
     this.sessionState.actionCount = decision.actions;
   }
 
   private persistDecision(): void {
     saveDecision(this.session.current(), {
-      detail: this.detailActive,
+      detail: this.detailActive || this.resumeDetail,
       replay: this.replayActive || this.resumeReplay,
       actions: this.sessionState.actionCount,
     });
@@ -713,6 +718,7 @@ export class SiteQwalityRUM {
     this.sessionState = freshSessionState(this.context.getUser().id);
     this.detailActive = false;
     this.replayActive = false;
+    this.resumeDetail = false;
     this.resumeReplay = false;
     this.replayRecorder?.stop();
     this.preConfig = [];

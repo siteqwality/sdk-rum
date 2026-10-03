@@ -22,6 +22,8 @@ export function defaultSdkConfig(applicationId: string): SdkConfig {
 
 export class ConfigManager {
   private config: SdkConfig | null = null;
+  /** True once a config came from the server, not the fallback defaults. */
+  private remote = false;
   private refreshInterval: ReturnType<typeof setInterval> | null = null;
 
   /**
@@ -50,6 +52,7 @@ export class ConfigManager {
       this.fetchConfig(applicationId, clientToken, ingestBase)
         .then((c) => {
           this.config = c;
+          this.remote = true;
           notify(onChange, c);
         })
         .catch(() => {
@@ -63,13 +66,19 @@ export class ConfigManager {
     return this.config;
   }
 
+  isRemote(): boolean {
+    return this.remote;
+  }
+
   private async fetchConfigSafe(
     appId: string,
     token: string,
     ingestBase: string,
   ): Promise<SdkConfig> {
     try {
-      return await this.fetchConfig(appId, token, ingestBase);
+      const config = await this.fetchConfig(appId, token, ingestBase);
+      this.remote = true;
+      return config;
     } catch {
       return defaultSdkConfig(appId);
     }
