@@ -21,6 +21,7 @@ SiteQwalityRUM.init({
 });
 
 SiteQwalityRUM.setUser({ id: 'user_123', email: 'user@example.com' });
+SiteQwalityRUM.setGlobalAttribute('plan', 'pro');
 SiteQwalityRUM.addError(new Error('custom error'));
 SiteQwalityRUM.addAction('checkout-clicked');
 ```
@@ -28,6 +29,17 @@ SiteQwalityRUM.addAction('checkout-clicked');
 Init is fail-safe: if the remote config fetch fails or times out the SDK
 falls back to safe defaults (no replay, inputs masked) and never breaks the
 host page.
+
+From 1.0.6 the user's id and email go on every event, page views and Web
+Vitals included, so every session shows its user.
+
+## Global attributes
+
+`setGlobalAttribute(key, value)` adds a string to `custom_attributes` on every
+later error, action and other detail event; `removeGlobalAttribute(key)` stops
+it. A `context` passed to `addError` or `addAction` wins on the same key. Up to
+50 keys of at most 128 characters; values are cut at 1024. Anything else is
+ignored, never thrown.
 
 ## URL minimisation
 
@@ -79,6 +91,22 @@ Resource URLs listed under Excluded resources in the RUM application's
 dashboard settings are not recorded. Applied at ingest for all versions; from
 1.0.5 the SDK also skips sending them, picking up changes on its next config
 refresh (every 5 minutes).
+
+## Click names
+
+Clicks are named `tag.class[text]` from the element's text or `aria-label`.
+To set the name yourself, add `data-sq-action-name` to the element or an
+ancestor; it is used as is (trimmed, up to 100 characters, square brackets
+become parentheses):
+
+```html
+<button data-sq-action-name="Send message">Send to Jane</button>
+```
+
+With "Hide element text in click names" on in the RUM application's privacy
+settings, other clicks are named `tag.class` only. Applied at ingest for all
+versions; from 1.0.6 the SDK also stops sending the text, picking up changes on
+its next config refresh.
 
 ## Development
 

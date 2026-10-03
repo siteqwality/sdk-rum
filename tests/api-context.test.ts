@@ -161,3 +161,61 @@ describe('the message and stack of a hand-reported error', () => {
     );
   });
 });
+
+describe('setGlobalAttribute / removeGlobalAttribute', () => {
+  it('adds to custom_attributes on errors and actions; per-call context wins', () => {
+    installInstance({});
+    SiteQwalityRUM.setGlobalAttribute('plan', 'pro');
+    SiteQwalityRUM.setGlobalAttribute('env', 'prod');
+
+    SiteQwalityRUM.addError(new Error('boom'), { env: 'canary' });
+    expect(lastError().custom_attributes).toEqual({ plan: 'pro', env: 'canary' });
+
+    SiteQwalityRUM.addAction('buy-clicked');
+    expect(lastAction().custom_attributes).toEqual({ plan: 'pro', env: 'prod' });
+  });
+
+  it('removes an attribute from later events', () => {
+    installInstance({ plan: 'pro', region: 'eu' });
+    SiteQwalityRUM.removeGlobalAttribute('plan');
+    SiteQwalityRUM.addError(new Error('boom'));
+    expect(lastError().custom_attributes).toEqual({ region: 'eu' });
+  });
+
+  it('never throws, before init or on bad input', () => {
+    const loose = SiteQwalityRUM as unknown as {
+      setGlobalAttribute(k: unknown, v: unknown): void;
+      removeGlobalAttribute(k: unknown): void;
+    };
+    expect(() => loose.setGlobalAttribute('plan', 'pro')).not.toThrow();
+    expect(() => loose.removeGlobalAttribute('plan')).not.toThrow();
+
+    installInstance({});
+    expect(() => loose.setGlobalAttribute(undefined, undefined)).not.toThrow();
+    expect(() => loose.setGlobalAttribute({}, 1)).not.toThrow();
+    expect(() => loose.removeGlobalAttribute(undefined)).not.toThrow();
+    SiteQwalityRUM.addError(new Error('boom'));
+    expect(lastError().custom_attributes).toEqual({});
+  });
+});
+
+describe('user on hand-reported events', () => {
+  it('stamps the user id and email', () => {
+    installInstance({});
+    SiteQwalityRUM.setUser({ id: 'user_123', email: 'user@example.com' });
+    SiteQwalityRUM.addError(new Error('boom'));
+    SiteQwalityRUM.addAction('buy-clicked');
+
+    for (const event of [lastError(), lastAction()]) {
+      expect(event.user_id).toBe('user_123');
+      expect(event.user_email).toBe('user@example.com');
+    }
+  });
+
+  it('omits both when unset', () => {
+    installInstance({});
+    SiteQwalityRUM.addError(new Error('boom'));
+    expect(lastError()).not.toHaveProperty('user_id');
+    expect(lastError()).not.toHaveProperty('user_email');
+  });
+});

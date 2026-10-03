@@ -1,0 +1,102 @@
+import { describe, it, expect } from 'vitest';
+import {
+  ContextManager,
+  MAX_GLOBAL_ATTRIBUTES,
+  MAX_ATTRIBUTE_KEY_LENGTH,
+  MAX_ATTRIBUTE_VALUE_LENGTH,
+} from '../src/context';
+import type { UserContext } from '../src/types';
+
+function manager(): ContextManager {
+  return new ContextManager({ applicationId: 'app-1', clientToken: 'ct_1' });
+}
+
+describe('global attributes', () => {
+  it('sets, overwrites and removes', () => {
+    const ctx = manager();
+    ctx.setGlobalAttribute('plan', 'free');
+    ctx.setGlobalAttribute('plan', 'pro');
+    ctx.setGlobalAttribute('region', 'eu');
+    expect(ctx.getGlobalAttributes()).toEqual({ plan: 'pro', region: 'eu' });
+
+    ctx.removeGlobalAttribute('plan');
+    ctx.removeGlobalAttribute('missing');
+    expect(ctx.getGlobalAttributes()).toEqual({ region: 'eu' });
+  });
+
+  it('ignores blank, over-long or non-string keys and non-string values', () => {
+    const ctx = manager();
+    const loose = ctx as unknown as {
+      setGlobalAttribute(k: unknown, v: unknown): void;
+      removeGlobalAttribute(k: unknown): void;
+    };
+    ctx.setGlobalAttribute('', 'x');
+    ctx.setGlobalAttribute('  ', 'x');
+    ctx.setGlobalAttribute('k'.repeat(MAX_ATTRIBUTE_KEY_LENGTH + 1), 'x');
+    loose.setGlobalAttribute(42, 'x');
+    loose.setGlobalAttribute(undefined, undefined);
+    loose.setGlobalAttribute('count', 3);
+    loose.setGlobalAttribute('obj', { a: 1 });
+    loose.removeGlobalAttribute(null);
+    expect(ctx.getGlobalAttributes()).toEqual({});
+
+    ctx.setGlobalAttribute('k'.repeat(MAX_ATTRIBUTE_KEY_LENGTH), 'ok');
+    expect(Object.keys(ctx.getGlobalAttributes())).toHaveLength(1);
+  });
+
+  it('cuts values at the cap', () => {
+    const ctx = manager();
+    ctx.setGlobalAttribute('long', 'v'.repeat(MAX_ATTRIBUTE_VALUE_LENGTH + 50));
+    expect(ctx.getGlobalAttributes().long).toHaveLength(MAX_ATTRIBUTE_VALUE_LENGTH);
+  });
+
+  it('ignores new keys past the cap but still updates existing ones', () => {
+    const ctx = manager();
+    for (let i = 0; i < MAX_GLOBAL_ATTRIBUTES + 5; i++) {
+      ctx.setGlobalAttribute(`k${i}`, 'v');
+    }
+    const attrs = ctx.getGlobalAttributes();
+    expect(Object.keys(attrs)).toHaveLength(MAX_GLOBAL_ATTRIBUTES);
+    expect(attrs[`k${MAX_GLOBAL_ATTRIBUTES}`]).toBeUndefined();
+
+    ctx.setGlobalAttribute('k0', 'updated');
+    expect(ctx.getGlobalAttributes().k0).toBe('updated');
+
+    ctx.removeGlobalAttribute('k1');
+    ctx.setGlobalAttribute('fresh', 'v');
+    expect(ctx.getGlobalAttributes().fresh).toBe('v');
+  });
+
+  it('keeps a __proto__ key as a plain attribute', () => {
+    const ctx = manager();
+    ctx.setGlobalAttribute('__proto__', 'x');
+    const attrs = ctx.getGlobalAttributes();
+    expect(Object.getPrototypeOf(attrs)).toBe(Object.prototype);
+    expect(JSON.parse(JSON.stringify(attrs))).toEqual(
+      JSON.parse('{"__proto__":"x"}'),
+    );
+  });
+
+  it('returns a copy', () => {
+    const ctx = manager();
+    ctx.setGlobalAttribute('plan', 'pro');
+    ctx.getGlobalAttributes().plan = 'changed';
+    expect(ctx.getGlobalAttributes()).toEqual({ plan: 'pro' });
+  });
+});
+
+describe('setUser', () => {
+  it('keeps string fields and turns numeric ones into strings', () => {
+    const ctx = manager();
+    ctx.setUser({ id: 42, email: 'user@example.com', name: '' } as unknown as UserContext);
+    expect(ctx.getUser()).toEqual({ id: '42', email: 'user@example.com' });
+  });
+
+  it('drops other types and tolerates a missing user', () => {
+    const ctx = manager();
+    ctx.setUser({ id: { a: 1 }, email: null } as unknown as UserContext);
+    expect(ctx.getUser()).toEqual({});
+    ctx.setUser(undefined as unknown as UserContext);
+    expect(ctx.getUser()).toEqual({});
+  });
+});

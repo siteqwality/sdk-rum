@@ -102,11 +102,24 @@ export class SiteQwalityRUM {
     }
   }
 
+  /** The id and email are sent with every event, measures included. */
   static setUser(user: UserContext): void {
     const inst = SiteQwalityRUM.instance;
-    if (!inst) return;
+    if (!inst?.context) return;
     inst.context.setUser(user);
-    inst.sessionState.userId = user.id;
+    inst.sessionState.userId = inst.context.getUser().id;
+  }
+
+  /**
+   * Adds a string to custom_attributes on later error and detail events.
+   * Caps: 50 keys, 128-char keys, 1024-char values (cut); bad input is ignored.
+   */
+  static setGlobalAttribute(key: string, value: string): void {
+    SiteQwalityRUM.instance?.context?.setGlobalAttribute(key, value);
+  }
+
+  static removeGlobalAttribute(key: string): void {
+    SiteQwalityRUM.instance?.context?.removeGlobalAttribute(key);
   }
 
   /**
@@ -246,6 +259,7 @@ export class SiteQwalityRUM {
         dom_ready_ms: view.dom_ready_ms,
         ...this.takeCountsSinceLastMeasure(),
         resource_count: 0,
+        ...this.userFields(),
       };
       this.measureTransport.enqueue(measure);
     }, this.sanitizeUrl);
@@ -266,6 +280,7 @@ export class SiteQwalityRUM {
         [name]: value,
         ...this.takeCountsSinceLastMeasure(),
         resource_count: 0,
+        ...this.userFields(),
       };
       this.measureTransport.enqueue(measure);
     });
@@ -286,8 +301,11 @@ export class SiteQwalityRUM {
     );
 
     // Actions: the count is always tracked, the detail only if sampling is
-    // active
-    startActionCollector((action) => this.handleAction(action));
+    // active. Hiding element text is read per click, like the exclusions.
+    startActionCollector(
+      (action) => this.handleAction(action),
+      () => this.config.getConfig()?.settings.privacy?.hide_action_text === true,
+    );
 
     // Long tasks are detail only
     startLongTaskCollector((durationMs) => this.handleLongTask(durationMs));
@@ -317,8 +335,7 @@ export class SiteQwalityRUM {
       error_source: error.source,
       error_stack: error.stack,
       version: this.options.version,
-      user_id: this.context.getUser().id,
-      user_email: this.context.getUser().email,
+      ...this.userFields(),
       // Per-call context wins over ambient global attributes on collision
       custom_attributes: { ...this.context.getGlobalAttributes(), ...context },
     };
@@ -339,8 +356,7 @@ export class SiteQwalityRUM {
       resource_url: resource.resource_url,
       duration_ms: resource.duration_ms,
       transfer_size: resource.transfer_size,
-      user_id: this.context.getUser().id,
-      user_email: this.context.getUser().email,
+      ...this.userFields(),
       custom_attributes: this.context.getGlobalAttributes(),
     };
     this.eventTransport.enqueue(event);
@@ -368,8 +384,7 @@ export class SiteQwalityRUM {
       action_type: action.action_type,
       action_target: action.action_target,
       frustration: action.frustration,
-      user_id: this.context.getUser().id,
-      user_email: this.context.getUser().email,
+      ...this.userFields(),
       // Per-call context wins over ambient global attributes on collision
       custom_attributes: { ...this.context.getGlobalAttributes(), ...context },
     };
@@ -387,8 +402,7 @@ export class SiteQwalityRUM {
       timestamp: Date.now(),
       url: this.currentUrl(),
       long_task_duration_ms: durationMs,
-      user_id: this.context.getUser().id,
-      user_email: this.context.getUser().email,
+      ...this.userFields(),
       custom_attributes: this.context.getGlobalAttributes(),
     };
     this.eventTransport.enqueue(event);
@@ -413,6 +427,15 @@ export class SiteQwalityRUM {
       this.replayActive = true;
       this.startReplay(config.settings.privacy);
     }
+  }
+
+  /** The current user's id and email, each omitted when unset. */
+  private userFields(): { user_id?: string; user_email?: string } {
+    const { id, email } = this.context.getUser();
+    return {
+      ...(id ? { user_id: id } : {}),
+      ...(email ? { user_email: email } : {}),
+    };
   }
 
   /** The current page URL, minimised. Never the raw `location.href`. */
