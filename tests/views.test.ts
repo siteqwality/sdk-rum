@@ -205,6 +205,16 @@ describe('hash routes', () => {
     expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app']);
   });
 
+  it('leaving a route for an anchor or a token fragment starts no view', () => {
+    history.replaceState({}, '', '/app#/inbox');
+    const { views } = collect();
+    history.pushState({}, '', '/app#reviews');
+    history.replaceState({}, '', '/app#access_token=secret');
+    history.pushState({}, '', '/app#/inbox');
+    history.pushState({}, '', '/other#top');
+    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#/inbox', 'http://localhost:3000/other']);
+  });
+
   it('minimises a route like a path, allowed query parameters included', () => {
     const allowTab = createUrlSanitizer({ allowedQueryParams: ['tab'] });
     expect(pageUrl('https://a.example/app?x=1#/orders/7?tab=2&email=a@b.c', allowTab)).toBe(

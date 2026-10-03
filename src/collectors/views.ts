@@ -27,10 +27,12 @@ export function startViewCollector(
   options: ViewCollectorOptions = {},
 ): ViewCollector {
   let currentUrl = '';
+  let currentBase = '';
   const href = () => pageUrl(window.location.href, sanitizeUrl);
 
   const emit = (loadingType: ViewEvent['loading_type'], timings?: LoadTimings) => {
     currentUrl = href();
+    currentBase = sanitizeUrl(window.location.href);
     onView({
       view_id: uuid(),
       url: currentUrl,
@@ -43,7 +45,11 @@ export function startViewCollector(
   const navigated = () => {
     try {
       options.onHistoryChange?.();
-      if (href() !== currentUrl) emit('route_change');
+      const next = href();
+      if (next === currentUrl) return;
+      // A fragment that is not a route (an anchor, an OAuth token) never starts a view.
+      if (next === currentBase && sanitizeUrl(window.location.href) === currentBase) return;
+      emit('route_change');
     } catch {
       // Never throw into the host's navigation call.
     }
