@@ -198,8 +198,9 @@ export class SiteQwalityRUM {
       options.clientToken,
     );
 
-    // Start all collectors
-    this.startCollectors();
+    // Start all collectors. The resource collector is handed both bases so it
+    // never records the SDK's own requests.
+    this.startCollectors([ingestBase, replayBase]);
 
     // Periodically evaluate sampling rules
     this.samplingTimer = setInterval(() => {
@@ -229,7 +230,7 @@ export class SiteQwalityRUM {
     return counts;
   }
 
-  private startCollectors(): void {
+  private startCollectors(ownBases: readonly string[]): void {
     // Views: always active, updates current view
     startViewCollector((view) => {
       this.currentViewId = view.view_id;
@@ -279,6 +280,7 @@ export class SiteQwalityRUM {
     startResourceCollector(
       (resource) => this.handleResource(resource),
       this.sanitizeUrl,
+      ownBases,
     );
 
     // Actions: the count is always tracked, the detail only if sampling is
