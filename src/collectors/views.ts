@@ -1,128 +1,332 @@
-import type { ViewEvent } from '../types';
-import { createUrlSanitizer, type UrlSanitizer } from '../privacy/url';
-import { uuid } from '../uuid';
+// Views (design 5.6): view_start on load, URL change and back-forward cache restore; view_end
+// interim on hide and every 5 min, final on the next view and pagehide, with an increasing seq.
+import type { SqEvent } from '../types';
+import { OBSERVE, type Hub } from '../hub';
+import { createUrlSanitizer, type UrlSanitizer } from '../core/url';
+import { uuid } from '../core/hash';
+import { now, perfNow, round, isHidden, isNum, storage, cut, on } from '../core/util';
 
-export interface LoadTimings {
-  load_time_ms: number;
-  dom_ready_ms?: number;
+const INTERIM_MS = 5 * 60_000;
+const ACTIVE_WINDOW_MS = 5_000;
+const SETTLE_MS = 100;
+const LOADING_CAP_MS = 10_000;
+const UTM = ['source', 'medium', 'campaign', 'content', 'term'];
+const CLICK_IDS = ['gclid', 'fbclid', 'msclkid', 'ttclid'];
+
+export type LoadingType = 'initial_load' | 'route_change' | 'bfcache_restore';
+
+export interface View {
+  id: string;
+  sid: string;
+  url: string;
+  /** The URL without any fragment, for telling routes from anchors. */
+  base: string;
+  start: number;
+  startEvent: SqEvent;
+  seq: number;
+  ended: boolean;
+  errors: number;
+  actions: number;
+  frustrations: number;
+  activeAtStart: number;
+  scroll?: number;
+  height?: number;
+  fold?: number;
+  m: Record<string, unknown>;
 }
 
-export interface ViewCollectorOptions {
-  /** The initial view's load timings, when the load finished after init. */
-  onLoadTimings?: (timings: LoadTimings) => void;
-  /** Every pushState, replaceState and popstate, whether or not the URL changed. */
-  onHistoryChange?: () => void;
+const strict = createUrlSanitizer();
+
+/** A `#/route` (or `#!/route`) kept like a path when hash routing is on; any other fragment is dropped. */
+export function pageUrl(href: string, sanitize: UrlSanitizer, hashRouting = true): string {
+  const base = sanitize(href);
+  if (!hashRouting || typeof href !== 'string') return base;
+  const at = href.trim().indexOf('#');
+  const route = at < 0 ? null : /^(!?)(\/[\s\S]*)$/.exec(href.trim().slice(at + 1));
+  if (!route || /[=&]/.test(strict(route[2]))) return base;
+  return `${base}#${route[1]}${sanitize(route[2])}`;
 }
 
-export interface ViewCollector {
-  /** Starts a new view for the current URL (session rotation). */
-  restart(): void;
+function navEntry(): PerformanceNavigationTiming | undefined {
+  try {
+    return performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+  } catch {
+    return undefined;
+  }
 }
 
-// The initial view at once, then one per change of the sanitised URL, so router
-// noise is not a page view. `sanitizeUrl` is required so no raw href slips out.
-export function startViewCollector(
-  onView: (view: ViewEvent) => void,
-  sanitizeUrl: UrlSanitizer,
-  options: ViewCollectorOptions = {},
-): ViewCollector {
-  let currentUrl = '';
-  let currentBase = '';
-  const href = () => pageUrl(window.location.href, sanitizeUrl);
+export interface ViewsOptions {
+  /** Session id for a new view; may rotate an expired session. */
+  session: () => { id: string; isNew: boolean };
+  onView: (view: View) => void;
+  /** Every history change, URL changed or not (dead-click reactions). */
+  onHistory?: () => void;
+}
 
-  const emit = (loadingType: ViewEvent['loading_type'], timings?: LoadTimings) => {
-    currentUrl = href();
-    currentBase = sanitizeUrl(window.location.href);
-    onView({
-      view_id: uuid(),
-      url: currentUrl,
-      timestamp: Date.now(),
-      loading_type: loadingType,
-      ...timings,
-    });
-  };
+export type Views = ReturnType<typeof startViews>;
 
-  const navigated = () => {
-    try {
-      options.onHistoryChange?.();
-      const next = href();
-      if (next === currentUrl) return;
-      // A fragment that is not a route (an anchor, an OAuth token) never starts a view.
-      if (next === currentBase && sanitizeUrl(window.location.href) === currentBase) return;
-      emit('route_change');
-    } catch {
-      // Never throw into the host's navigation call.
-    }
-  };
+export function startViews(h: Hub, o: ViewsOptions) {
+  const hashRouting = h.opts.hashRouting === true;
+  const href = () => pageUrl(location.href, h.url, hashRouting);
+  let current!: View;
+  let initial!: View;
+  let firstOfPage = true;
 
-  const timings = readLoadTimings();
-  emit('initial_load', timings ?? undefined);
-  if (!timings && navigationEntry() && options.onLoadTimings) {
-    whenLoaded(options.onLoadTimings);
+  // Active time: each input counts the 5 s after it, while visible.
+  let actSid = '';
+  let actBase = 0;
+  let acc = 0;
+  let mark = 0;
+  let until = 0;
+  const activeTotal = (t = now()) => actBase + acc + Math.max(0, Math.min(t, until) - mark);
+  function closeActive(t = now()) {
+    acc += Math.max(0, Math.min(t, until) - mark);
+    mark = until = t;
+    storage.set('sessionStorage', '_sq_act', `${actSid}|${actBase + acc}`);
+  }
+  function resetActive(sid: string) {
+    const [s, ms] = (storage.get('sessionStorage', '_sq_act') || '').split('|');
+    actSid = sid;
+    actBase = s === sid && isNum(+ms) ? +ms : 0;
+    acc = mark = until = 0;
   }
 
+  // Route-change loading time (Datadog's definition): until 100 ms pass with no new request or mutation.
+  let loading: { view: View; start: number; last: number; pending: number; timer?: ReturnType<typeof setTimeout>; mo?: MutationObserver } | null = null;
+  function stopLoading(value?: number) {
+    if (!loading) return;
+    clearTimeout(loading.timer);
+    loading.mo?.disconnect();
+    if (value !== undefined) loading.view.m.loading_time_ms = round(Math.min(LOADING_CAP_MS, Math.max(0, value)));
+    loading = null;
+  }
+  function loadingTick() {
+    if (!loading) return;
+    loading.last = perfNow();
+    clearTimeout(loading.timer);
+    if (loading.last - loading.start >= LOADING_CAP_MS) return stopLoading(LOADING_CAP_MS);
+    loading.timer = setTimeout(() => {
+      if (loading && !loading.pending) stopLoading(loading.last - loading.start);
+    }, SETTLE_MS);
+  }
+
+  function emitEnd(view: View, final: boolean): void {
+    if (view.ended && !final) return;
+    view.seq++;
+    view.ended = final;
+    const t = now();
+    const e: SqEvent = {
+      k: 'view_end',
+      t,
+      view_id: view.id,
+      seq: view.seq,
+      final,
+      time_spent_ms: Math.max(0, t - view.start),
+      active_ms: round(Math.max(0, activeTotal(t) - view.activeAtStart)),
+      session_active_ms: round(activeTotal(t)),
+      ...view.m,
+      ...(view.scroll !== undefined ? { scroll_depth_pct: view.scroll, page_height_px: view.height, fold_px: view.fold } : {}),
+      errors: view.errors,
+      actions: view.actions,
+      frustrations: view.frustrations,
+    };
+    h.emit(e, OBSERVE, { kind: 'view', sid: view.sid });
+  }
+
+  function start(type: LoadingType, navigationType: string): void {
+    if (current && !current.ended) emitEnd(current, true);
+    stopLoading();
+    const s = o.session();
+    if (s.id !== actSid) resetActive(s.id);
+    const url = href();
+    const id = uuid();
+    const route = routeOf(url);
+    const startEvent: SqEvent = {
+      k: 'view_start',
+      t: now(),
+      view_id: id,
+      url,
+      ...(route ? { route } : {}),
+      loading_type: type,
+      navigation_type: navigationType,
+    };
+    if (s.isNew && firstOfPage) Object.assign(startEvent, acquisition());
+    firstOfPage = false;
+    current = { id, sid: s.id, url, base: h.url(location.href), start: startEvent.t, startEvent, seq: 0, ended: false, errors: 0, actions: 0, frustrations: 0, activeAtStart: activeTotal(), m: {} };
+    if (!initial) initial = current;
+    measureScroll();
+    o.onView(current);
+    h.emit(startEvent, OBSERVE, { kind: 'view', sid: s.id });
+    if (type === 'route_change') {
+      loading = { view: current, start: perfNow(), last: perfNow(), pending: 0 };
+      try {
+        loading.mo = new MutationObserver(loadingTick);
+        loading.mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      } catch {
+        // No observer: the timer alone decides.
+      }
+      loadingTick();
+    }
+  }
+
+  function routeOf(url: string): string | undefined {
+    const fn = h.opts.routeName;
+    if (typeof fn !== 'function') return undefined;
+    try {
+      const path = url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, '') || '/';
+      const r = fn(path);
+      return typeof r === 'string' && r ? cut(r, 256) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function acquisition(): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    const ref = strict(document.referrer);
+    if (ref) out.referrer = ref;
+    try {
+      const q = new URLSearchParams(location.search);
+      const utm: Record<string, string> = {};
+      for (const k of UTM) {
+        const v = q.get(`utm_${k}`);
+        if (v) utm[k] = cut(h.scrub(v), 256);
+      }
+      if (Object.keys(utm).length) out.utm = utm;
+      const click = CLICK_IDS.find((k) => q.has(k));
+      if (click) out.click_id_type = click;
+    } catch {
+      // No URLSearchParams.
+    }
+    return out;
+  }
+
+  function measureScroll(): void {
+    try {
+      const el = document.documentElement;
+      const height = Math.max(el.scrollHeight, document.body?.scrollHeight ?? 0);
+      const fold = window.innerHeight;
+      if (!height || !fold) return;
+      const depth = round(Math.min(100, ((window.scrollY + fold) / height) * 100));
+      current.scroll = Math.max(current.scroll ?? 0, depth);
+      current.height = Math.max(current.height ?? 0, height);
+      current.fold = fold;
+    } catch {
+      // Detached document.
+    }
+  }
+
+  let scrollTimer: ReturnType<typeof setTimeout> | null = null;
+  on(window, 'scroll', () => {
+    if (scrollTimer) return;
+    scrollTimer = setTimeout(() => {
+      scrollTimer = null;
+      measureScroll();
+    }, 200);
+  });
+
+  const nav = navEntry();
+  const initialNav = (nav?.type || 'navigate').replace(/-/g, '_');
+  start('initial_load', initialNav);
+  const loadTimings = () => {
+    const n = navEntry();
+    if (!n || !(n.loadEventEnd > 0)) return false;
+    initial.m.loading_time_ms = initial.m.load_event_ms = round(n.loadEventEnd);
+    if (n.domContentLoadedEventEnd > 0) initial.m.dom_content_loaded_ms = round(n.domContentLoadedEventEnd);
+    return true;
+  };
+  if (!loadTimings()) on(window, 'load', () => setTimeout(() => loadTimings() && lateUpdate(initial), 0), { once: true });
+
+  const navigated = (type: string) => () => {
+    try {
+      o.onHistory?.();
+      const next = href();
+      const base = h.url(location.href);
+      // An anchor or token fragment on the same page is not a route: no new view.
+      if (next !== current.url && !(next === base && base === current.base)) start('route_change', type);
+    } catch {
+      // Never throw into the host's navigation.
+    }
+  };
   for (const method of ['pushState', 'replaceState'] as const) {
     try {
       const original = history[method];
+      const after = navigated(method === 'pushState' ? 'push' : 'replace');
       history[method] = function (this: History, ...args: Parameters<History['pushState']>) {
         const result = original.apply(this, args);
-        navigated();
+        after();
         return result;
       };
     } catch {
       // A frozen history object: popstate still works.
     }
   }
-  window.addEventListener('popstate', navigated);
-  // Hash routers that assign location.hash.
-  window.addEventListener('hashchange', navigated);
+  on(window, 'popstate', navigated('pop'), false);
+  on(window, 'hashchange', navigated('hash'), false);
 
-  return { restart: () => emit('route_change') };
-}
-
-const strictUrl = createUrlSanitizer();
-
-// A hash route (#/path or #!/path) is part of the page, minimised like a path, as core-rs
-// minimise_page_url does; any other fragment is dropped, as everywhere else.
-export function pageUrl(href: string, sanitizeUrl: UrlSanitizer): string {
-  const base = sanitizeUrl(href);
-  if (typeof href !== 'string') return base;
-  const trimmed = href.trim();
-  const at = trimmed.indexOf('#');
-  const route = at < 0 ? null : /^(!?)(\/[\s\S]*)$/.exec(trimmed.slice(at + 1));
-  if (!route) return base;
-  // Parameters or tokens, never a page: #/access_token=...&token_type=Bearer.
-  if (/[=&]/.test(strictUrl(route[2]))) return base;
-  return `${base}#${route[1]}${sanitizeUrl(route[2])}`;
-}
-
-/** Load timings from Navigation Timing, or null until the load event has ended. */
-export function readLoadTimings(): LoadTimings | null {
-  const entry = navigationEntry();
-  if (!entry || !(entry.loadEventEnd > 0)) return null;
-  const domReady = entry.domContentLoadedEventEnd;
-  return {
-    load_time_ms: Math.round(entry.loadEventEnd),
-    ...(domReady > 0 ? { dom_ready_ms: Math.round(domReady) } : {}),
-  };
-}
-
-function navigationEntry(): PerformanceNavigationTiming | undefined {
-  try {
-    const [entry] = performance.getEntriesByType('navigation');
-    return entry as PerformanceNavigationTiming | undefined;
-  } catch {
-    return undefined;
+  // Late vitals and timings for a view already ended go out as one more final view_end.
+  const lateQueued = new Set<View>();
+  function lateUpdate(view: View): void {
+    if (!view.ended || lateQueued.has(view)) return;
+    lateQueued.add(view);
+    void Promise.resolve().then(() => {
+      lateQueued.delete(view);
+      emitEnd(view, true);
+    });
   }
-}
 
-// loadEventEnd is set once the load handlers return, so read one macrotask later.
-function whenLoaded(onLoadTimings: (timings: LoadTimings) => void): void {
-  const read = () =>
-    setTimeout(() => {
-      const timings = readLoadTimings();
-      if (timings) onLoadTimings(timings);
-    }, 0);
-  if (document.readyState === 'complete') read();
-  else window.addEventListener('load', read, { once: true });
+  setInterval(() => {
+    if (!isHidden() && current && !current.ended) emitEnd(current, false);
+  }, INTERIM_MS);
+
+  return {
+    get current(): View {
+      return current;
+    },
+    get initial(): View {
+      return initial;
+    },
+    restart(type: LoadingType = 'route_change', navigationType = 'session'): void {
+      start(type, navigationType);
+    },
+    /** setView(): the route of the current view; applied to its view_start if not yet sent. */
+    setRoute(name: string): void {
+      current.startEvent.route = name;
+    },
+    /** A vital of the document's initial view (design 5.6). */
+    vital(fields: Record<string, unknown>): void {
+      Object.assign(initial.m, fields);
+      lateUpdate(initial);
+    },
+    input(t = now()): void {
+      if (t <= until) until = t + ACTIVE_WINDOW_MS;
+      else {
+        acc += Math.max(0, until - mark);
+        mark = t;
+        until = t + ACTIVE_WINDOW_MS;
+      }
+    },
+    /** A request started: it holds the route-change loading time open until it ends. */
+    netStart(): (() => void) | undefined {
+      if (!loading) return undefined;
+      const l = loading;
+      l.pending++;
+      loadingTick();
+      return () => {
+        l.pending--;
+        if (loading === l) loadingTick();
+      };
+    },
+    hide(): void {
+      closeActive();
+      measureScroll();
+      if (!current.ended) emitEnd(current, false);
+    },
+    pagehide(): void {
+      closeActive();
+      measureScroll();
+      stopLoading();
+      if (!current.ended) emitEnd(current, true);
+    },
+  };
 }

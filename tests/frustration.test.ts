@@ -4,7 +4,7 @@ import {
   FRUSTRATION_WINDOW_MS,
   type CollectedAction,
 } from '../src/collectors/actions';
-import { click, el } from './helpers/harness';
+import { click, el } from './helpers/sdk';
 
 interface Emitted {
   action: CollectedAction;
@@ -61,8 +61,9 @@ describe('click names and timing', () => {
     vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
     expect(emitted[0].action).toMatchObject({
       action_type: 'click',
-      action_target: 'button.pay[Pay now]',
-      action_target_hidden: 'button.pay',
+      name: 'Pay now',
+      hiddenName: 'button.pay',
+      selector: 'button.pay',
     });
   });
 
@@ -82,14 +83,14 @@ describe('click names and timing', () => {
     const { emitted } = collector({ hideText: () => true });
     click(liveButton('<button class="send">Hello Jane</button>'));
     vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
-    expect(emitted[0].action.action_target).toBe('button.send');
+    expect(emitted[0].action.name).toBe('button.send');
   });
 
   it('falls back to the clicked element when nothing interactive encloses it', () => {
     const { emitted } = collector();
     click(el('<div class="card"><p class="body">Text</p></div>').querySelector('p')!);
     vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
-    expect(emitted[0].action.action_target).toBe('p.body[Text]');
+    expect(emitted[0].action).toMatchObject({ name: 'Text', selector: 'div.card > p.body' });
     expect(emitted[0].action.frustration).toBeUndefined();
   });
 });
@@ -382,5 +383,76 @@ describe('opting out', () => {
     vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
     expect(verdicts().slice(0, 10).every((v) => v === undefined)).toBe(true);
     expect(verdicts()[10]).toBe('dead_click');
+  });
+});
+
+describe('names, selectors, offsets, fields and forms', () => {
+  it('prefers data-sq-action-name, then aria-label, then text, cut to 64', () => {
+    const { emitted } = collector();
+    for (const html of [
+      '<button data-sq-action-name="Send [msg]">Send to Jane</button>',
+      '<button aria-label="Close dialog">×</button>',
+      `<button>${'long '.repeat(30)}</button>`,
+    ]) click(liveButton(html));
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    expect(emitted.map((e) => e.action.name)).toEqual(['Send (msg)', 'Close dialog', 'long '.repeat(13).trim().slice(0, 64).trim()]);
+  });
+
+  it('builds a stable selector from id, data-testid, data-sq-* and up to two classes, 4 levels', () => {
+    const { emitted } = collector();
+    const tree = el('<section id="checkout"><div class="row css-1x2y3z col"><form class="pay"><button type="button" class="btn primary big">Pay</button></form></div></section>');
+    const button = tree.querySelector('button')!;
+    button.addEventListener('click', () => button.classList.toggle('on'));
+    click(button);
+    const tested = liveButton('<button data-testid="buy-now" class="x">Buy</button>');
+    click(tested);
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    expect(emitted[0].action.selector).toBe('#checkout > div.row.col > form.pay > button.btn.primary');
+    expect(emitted[1].action.selector).toBe('button[data-testid="buy-now"]');
+  });
+
+  it('carries the offset inside the element, page coordinates and viewport width', () => {
+    const { emitted } = collector();
+    const button = liveButton();
+    button.getBoundingClientRect = () => ({ left: 100, top: 50, width: 200, height: 100, right: 300, bottom: 150, x: 100, y: 50, toJSON: () => ({}) });
+    click(button, { clientX: 150, clientY: 75 });
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    expect(emitted[0].action).toMatchObject({ offset_pct: [25, 25], viewport_w: innerWidth });
+    expect(emitted[0].action.page_xy).toHaveLength(2);
+  });
+
+  it('a rage click carries the burst click count', () => {
+    const { emitted } = collector();
+    clickEvery(liveButton(), 5, 100);
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    expect(emitted.find((e) => e.action.frustration === 'rage_click')?.action.click_count).toBe(5);
+  });
+
+  it('records field changes and form submits by name, never value', () => {
+    const { emitted } = collector();
+    const form = el('<form name="signup"><label>Email <input type="email" value="jane@x.io"></label><input type="hidden" name="csrf" value="t"></form>');
+    form.querySelector('input[type=email]')!.dispatchEvent(new Event('change', { bubbles: true }));
+    form.querySelector('input[type=hidden]')!.dispatchEvent(new Event('change', { bubbles: true }));
+    form.dispatchEvent(new Event('submit', { bubbles: true }));
+    expect(emitted.map((e) => [e.action.action_type, e.action.name])).toEqual([
+      ['input', 'Email'],
+      ['submit', 'signup'],
+    ]);
+    expect(JSON.stringify(emitted)).not.toContain('jane@x.io');
+  });
+
+  it('focus moving elsewhere is a reaction; focus the user moves is not', () => {
+    const { verdicts } = collector();
+    const opener = el('<button>Open</button>');
+    const field = el('<input>');
+    opener.addEventListener('click', () => field.focus());
+    click(opener);
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    const dead = el('<button>Dead</button>');
+    dead.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+    dead.focus();
+    click(dead);
+    vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
+    expect(verdicts()).toEqual([undefined, 'dead_click']);
   });
 });

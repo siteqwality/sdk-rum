@@ -1,0 +1,15 @@
+[
+  { "name": "N4 script error on line 0", "message": "Javascript error: Script error. on line 0", "stack": "", "filename": "", "ignore": true },
+  { "name": "N4 without the period", "message": "Javascript error: Script error on line 0", "stack": "", "filename": "", "ignore": true },
+  { "name": "N4 on another line is kept", "message": "Javascript error: Script error. on line 12", "stack": "", "filename": "", "ignore": false },
+  { "name": "N5 googletag redefined by an ad blocker", "message": "Uncaught TypeError: Cannot redefine property: googletag", "stack": "", "filename": "", "ignore": true },
+  { "name": "N5 another property is kept", "message": "TypeError: Cannot redefine property: cart", "stack": "", "filename": "", "ignore": false },
+  { "name": "N6 Google Search App gmo", "message": "ReferenceError: Can't find variable: gmo", "stack": "", "filename": "", "ignore": true },
+  { "name": "N7 Instagram webview autofill", "message": "ReferenceError: Can't find variable: _AutofillCallbackHandler", "stack": "", "filename": "", "ignore": true },
+  { "name": "N7 an app variable is kept", "message": "ReferenceError: Can't find variable: checkout", "stack": "", "filename": "", "ignore": false },
+  { "name": "N8 CEFSharp simulateEvent rejection", "message": "Object Not Found Matching Id:1, MethodName:simulateEvent, ParamCount:1", "stack": "", "filename": "", "ignore": true },
+  { "name": "N8 with Sentry's prefix", "message": "Non-Error promise rejection captured with value: Object Not Found Matching Id:3, MethodName:simulateEvent, ParamCount:2", "stack": "", "filename": "", "ignore": true },
+  { "name": "N8 another method is kept", "message": "Object Not Found Matching Id:1, MethodName:update, ParamCount:1", "stack": "", "filename": "", "ignore": false },
+  { "name": "N9 Facebook webview", "message": "Error: Java object is gone", "stack": "", "filename": "", "ignore": true },
+  { "name": "N9 with an app suffix is kept", "message": "Error: Java object is gone again", "stack": "", "filename": "", "ignore": false }
+]

@@ -1,10 +1,10 @@
-export { SiteQwalityRUM } from './init';
+export { SiteQwalityRUM } from './sdk';
 export type {
+  Consent,
+  InitOptions,
   RumConfig,
-  RumMeasureEvent,
-  RumDetailEvent,
-  RumErrorEvent,
-  SessionFilterRule,
-  SdkConfig,
+  SdkStatus,
+  SqEvent,
+  SqEventKind,
   UserContext,
 } from './types';

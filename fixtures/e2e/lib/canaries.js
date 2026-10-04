@@ -105,7 +105,8 @@ export const PROOF = {
   page_text_card: (c) => replayHas(c, 'text-card') || 'forms page not in replay',
   page_text_digits: (c) => replayHas(c, 'text-digits') || 'forms page not in replay',
   dom_href_token: (c) => replayHas(c, 'reset-link') || 'forms page not in replay',
-  dom_src_sig: (c) => replayHas(c, 'pixel.svg') || 'forms page not in replay',
+  // Strict blocks images outright (7.1), so the forms page itself is the proof there.
+  dom_src_sig: (c, app, level) => replayHas(c, level === 'strict' ? 'reset-link' : 'pixel.svg') || 'forms page not in replay',
   console_email: () => true,
   action_text_email: (c) => c.actions.length > 0 || 'no clicks recorded',
   // 1.x captures no referrer; 2.0 sends it on the first view (5.6).

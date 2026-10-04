@@ -1,13 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import {
-  sendJson,
-  isRefused,
-  parseRetryAfter,
-  Backoff,
-  BACKOFF_BASE_MS,
-  BACKOFF_MAX_MS,
-  byteLength,
-} from '../src/send';
+import { send, isRefused, parseRetryAfter, Backoff, BACKOFF_BASE_MS, BACKOFF_MAX_MS, keepaliveFits, gzip } from '../src/core/send';
+import { byteLength } from '../src/core/util';
+
+const sendJson = (url: string, token: string, body: string) =>
+  send(globalThis.fetch, url, token, body, 'application/json', byteLength(body));
 
 function response(status: number, headers: Record<string, string> = {}) {
   return {
@@ -145,5 +141,37 @@ describe('byteLength', () => {
     for (const text of ['', 'abc', 'é', '\u07ff\u0800', '日本語', '😀 ok', JSON.stringify('\ud800')]) {
       expect(byteLength(text)).toBe(encoder.encode(text).length);
     }
+  });
+});
+
+describe('send', () => {
+  it('posts with the token, the content type, keepalive within budget and no credentials', async () => {
+    const f = vi.fn().mockResolvedValue(response(202));
+    await send(f as unknown as typeof fetch, 'https://in.test/v2/batch', 'ct', '{}', 'application/json', 2);
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('https://in.test/v2/batch');
+    expect(init).toMatchObject({ method: 'POST', keepalive: true, credentials: 'omit', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ct' } });
+  });
+
+  it('shares one keepalive budget across requests in flight', async () => {
+    const releases: Array<(r: unknown) => void> = [];
+    const f = vi.fn(() => new Promise((r) => releases.push(r)));
+    const first = send(f as unknown as typeof fetch, 'u', 't', 'x', 'application/json', 50_000);
+    expect(keepaliveFits(20_000)).toBe(false);
+    const second = send(f as unknown as typeof fetch, 'u', 't', 'x', 'application/json', 20_000);
+    expect((f.mock.calls[1] as unknown as [string, RequestInit])[1].keepalive).toBe(false);
+    for (const r of releases) r(response(202));
+    await Promise.all([first, second]);
+    expect(keepaliveFits(20_000)).toBe(true);
+  });
+});
+
+describe('gzip', () => {
+  it('compresses with CompressionStream', async () => {
+    const text = JSON.stringify({ a: 'x'.repeat(5000) });
+    const blob = (await gzip(text))!;
+    expect(blob.size).toBeLessThan(200);
+    const back = await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    expect(back).toBe(text);
   });
 });

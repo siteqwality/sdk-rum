@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventType, IncrementalSource } from '@rrweb/types';
 import { sanitizeReplayEvent } from '../src/replay/recorder';
-import { createUrlSanitizer } from '../src/privacy/url';
+import { createUrlSanitizer } from '../src/core/url';
 
 const sanitize = createUrlSanitizer();
 

@@ -1,4 +1,6 @@
-import type { UrlSanitizer } from '../privacy/url';
+import type { SqEvent } from '../types';
+import { ANALYZE, type Hub } from '../hub';
+import { epochOf, pct, read } from '../core/util';
 
 /** Allowed `initiatorType` values; anything else is sent as `other`. */
 export const RESOURCE_TYPES: readonly string[] = [
@@ -14,61 +16,122 @@ export function resourceType(initiatorType: unknown): string {
     : 'other';
 }
 
-export interface CollectedResource {
-  resource_type: string;
-  resource_url: string;
-  duration_ms: number;
-  transfer_size: number;
+const INITIAL_INDIVIDUAL = 150;
+const AGGREGATE_MS = 30_000;
+
+export interface ResourcesOptions {
+  /** fetch and XHR entries, for the network collector's timing join. */
+  onRequestEntry: (e: PerformanceResourceTiming) => void;
 }
 
-/**
- * `entry.name` is the absolute URL of every subresource, fetch and XHR the page
- * issues, which is where an API call's query string (and therefore its tokens
- * and identifiers) shows up. It goes through `sanitizeUrl` before it leaves the
- * browser, on the same rules as a page URL.
- *
- * Requests to `ownBases` (the ingest and replay bases) are never recorded.
- * Every send the SDK makes is itself a resource entry, so recording them feeds
- * the SDK its own traffic: each batch produced an event about itself, and on a
- * hidden page, where each enqueue sent at once, that looped at network speed.
- */
-export function startResourceCollector(
-  onResource: (resource: CollectedResource) => void,
-  sanitizeUrl: UrlSanitizer,
-  ownBases: readonly string[],
-  getExclusions: () => readonly string[] | undefined = () => undefined,
-): void {
-  if (typeof PerformanceObserver === 'undefined') return;
+export type Resources = ReturnType<typeof startResources>;
 
-  const isOwnRequest = createOwnRequestMatcher(ownBases);
-  // Recompiled only when a config refresh swaps in a new rule list.
+const ms = (n: number) => (n > 0 ? Math.round(n) : undefined);
+
+/**
+ * Subresources from resource timing (design 5.6): the first 150 of the initial view and the
+ * LCP resource one by one, later ones aggregated per view and origin. Own requests and the
+ * app's resource exclusions are never recorded.
+ */
+export function startResources(h: Hub, o: ResourcesOptions) {
   let exclusions: readonly string[] | undefined;
   let isExcluded: UrlMatcher = () => false;
+  let individual = 0;
+  let initialView = '';
+  const sent = new Set<string>();
+  const buckets = new Map<string, { e: SqEvent; d: number[] }>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
-  const observer = new PerformanceObserver((list) => {
-    const current = getExclusions();
-    if (current !== exclusions) {
-      exclusions = current;
-      isExcluded = createExclusionMatcher(current ?? []);
-    }
-    for (const entry of list.getEntries()) {
-      const re = entry as PerformanceResourceTiming;
-      const target = parsePrefix(re.name);
-      if (target && (isOwnRequest(target) || isExcluded(target))) continue;
-      onResource({
-        resource_type: resourceType(re.initiatorType),
-        resource_url: sanitizeUrl(re.name),
-        duration_ms: re.duration,
-        transfer_size: re.transferSize,
-      });
-    }
-  });
-
-  try {
-    observer.observe({ type: 'resource', buffered: true });
-  } catch {
-    // PerformanceObserver resource type not supported
+  function row(re: PerformanceResourceTiming): SqEvent {
+    const status = (re as PerformanceResourceTiming & { responseStatus?: number }).responseStatus;
+    return {
+      k: 'resource',
+      t: epochOf(re.startTime),
+      view_id: h.viewId(),
+      initiator: resourceType(re.initiatorType),
+      url: h.url(re.name),
+      duration_ms: Math.round(re.duration),
+      dns_ms: ms(re.domainLookupEnd - re.domainLookupStart),
+      connect_ms: ms(re.connectEnd - re.connectStart),
+      tls_ms: re.secureConnectionStart > 0 ? ms(re.connectEnd - re.secureConnectionStart) : undefined,
+      ttfb_ms: ms(re.responseStart - re.requestStart),
+      download_ms: ms(re.responseEnd - re.responseStart),
+      transfer_bytes: re.transferSize > 0 ? re.transferSize : undefined,
+      decoded_bytes: re.decodedBodySize > 0 ? re.decodedBodySize : undefined,
+      render_blocking: (re as PerformanceResourceTiming & { renderBlockingStatus?: string }).renderBlockingStatus === 'blocking' || undefined,
+      status: status && status > 0 ? status : undefined,
+    };
   }
+
+  function flush(): void {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    for (const { e, d } of buckets.values()) {
+      const p50 = Math.round(pct(d, 0.5));
+      h.emit({ ...e, duration_ms: p50, n: d.length, p50_ms: p50, p95_ms: Math.round(pct(d, 0.95)) }, ANALYZE);
+    }
+    buckets.clear();
+  }
+
+  function handle(re: PerformanceResourceTiming): void {
+    if (re.initiatorType === 'fetch' || re.initiatorType === 'xmlhttprequest') return o.onRequestEntry(re);
+    const exc = h.cfg().capture.resource_exclusions;
+    if (exc !== exclusions) {
+      exclusions = exc;
+      isExcluded = createExclusionMatcher(exc);
+    }
+    const target = parsePrefix(re.name);
+    if (target && (h.isOwn(re.name) || isExcluded(target))) return;
+    const view = h.viewId();
+    if (!initialView) initialView = view;
+    if (view === initialView && individual < INITIAL_INDIVIDUAL) {
+      individual++;
+      sent.add(re.name);
+      h.emit(row(re), ANALYZE);
+      return;
+    }
+    const origin = target?.origin ?? 'other';
+    const key = `${view} ${re.initiatorType} ${origin}`;
+    let b = buckets.get(key);
+    if (!b) {
+      b = { e: { ...row(re), url: origin, dns_ms: undefined, connect_ms: undefined, tls_ms: undefined, ttfb_ms: undefined, download_ms: undefined, status: undefined }, d: [] };
+      buckets.set(key, b);
+      if (!timer) timer = setTimeout(flush, AGGREGATE_MS);
+    } else {
+      const e = b.e as Record<string, number | undefined>;
+      e.transfer_bytes = (e.transfer_bytes ?? 0) + (re.transferSize || 0) || undefined;
+      e.decoded_bytes = (e.decoded_bytes ?? 0) + (re.decodedBodySize || 0) || undefined;
+    }
+    if (b.d.length < 1000) b.d.push(re.duration);
+  }
+
+  if (typeof PerformanceObserver === 'function') {
+    try {
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          try {
+            handle(e as PerformanceResourceTiming);
+          } catch {
+            // One bad entry must not stop the rest.
+          }
+        }
+      }).observe({ type: 'resource', buffered: true });
+    } catch {
+      // No resource timing.
+    }
+  }
+
+  return {
+    flush,
+    /** The LCP element's resource, always sent alone (design 5.6). */
+    lcp(url: string): void {
+      if (!url || sent.has(url)) return;
+      const e = read(() => performance.getEntriesByName(url, 'resource')[0]) as PerformanceResourceTiming | undefined;
+      if (!e) return;
+      sent.add(url);
+      h.emit(row(e), ANALYZE);
+    },
+  };
 }
 
 export interface UrlPrefix {
@@ -148,7 +211,7 @@ function currentPageUrl(): string | undefined {
   return typeof location !== 'undefined' ? location.href : undefined;
 }
 
-function parsePrefix(url: string, base?: string): UrlPrefix | null {
+export function parsePrefix(url: string, base?: string): UrlPrefix | null {
   try {
     const parsed = new URL(url, base);
     // data:, blob: and the like have an opaque origin, serialised as "null".

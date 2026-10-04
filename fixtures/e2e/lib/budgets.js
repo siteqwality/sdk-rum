@@ -21,10 +21,14 @@ export const TARGETS = {
 
 const show = (value, unit) => (unit === 'bytes' ? kb(value) : String(value));
 
+// Replay pipeline budgets apply from the replay chunk v2 (WP 2.1); the rest from the 2.0 core.
+const REPLAY_V2 = new Set(['replay.wire_bytes_per_min', 'replay.segments_per_min', 'flood.raw_bytes', 'heavy.snapshot_wire_bytes']);
+
 // Checks a measurement against this SDK's limit and prints the 2.0 target beside it.
 export function budget(ledger, key, actual, { detail = '' } = {}) {
   const [target, legacy, unit] = TARGETS[key];
-  const limit = SDK.v2 ? target : legacy;
-  const note = SDK.v2 ? `target ${show(target, unit)}` : `1.x limit ${show(legacy, unit)}, 2.0 target ${show(target, unit)}`;
+  const v2 = REPLAY_V2.has(key) ? SDK.replayV2 : SDK.v2;
+  const limit = v2 ? target : legacy;
+  const note = v2 ? `target ${show(target, unit)}` : `1.x limit ${show(legacy, unit)}, 2.0 target ${show(target, unit)}`;
   return ledger.check(key, actual <= limit, { detail: `${show(actual, unit)} (${note})${detail ? `; ${detail}` : ''}` });
 }

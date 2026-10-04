@@ -6,7 +6,19 @@ import {
   type ReplaySegment,
 } from '../src/replay/recorder';
 import { ReplayTransport, MAX_SEGMENT_BYTES } from '../src/replay/transport';
-import { createUrlSanitizer } from '../src/privacy/url';
+import { createUrlSanitizer, createTextUrlSanitizer } from '../src/core/url';
+
+// Imported once the fake clock is installed: rrweb keeps the Date.now it first imports with.
+let record: typeof import('@rrweb/record').record;
+const url = createUrlSanitizer();
+const startOpts = (sessionId: string, onSegment: (s: ReplaySegment) => void, maskInputs = true, maskAllText = false) => ({
+  sessionId,
+  record,
+  onSegment,
+  privacy: { maskInputs, maskAllText, blockSelector: '' },
+  url,
+  text: createTextUrlSanitizer(url),
+});
 
 // Runs the real rrweb recorder, not a stand-in.
 describe('ReplayRecorder with rrweb', () => {
@@ -14,8 +26,9 @@ describe('ReplayRecorder with rrweb', () => {
   let segments: ReplaySegment[];
 
   // One fake clock for the file: rrweb keeps the Date.now it first imports with.
-  beforeAll(() => {
+  beforeAll(async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    ({ record } = await import('@rrweb/record'));
   });
 
   afterAll(() => {
@@ -46,12 +59,8 @@ describe('ReplayRecorder with rrweb', () => {
   }
 
   function start(onSegment = (s: ReplaySegment) => void segments.push(s)) {
-    return recorder.start(
-      'session-1',
-      onSegment,
-      { maskInputs: true, maskText: false },
-      createUrlSanitizer(),
-    );
+    recorder.start(startOpts('session-1', onSegment));
+    return Promise.resolve();
   }
 
   it('opens a new segment with a full snapshot at each checkout', async () => {
@@ -161,7 +170,7 @@ describe('ReplayRecorder with rrweb', () => {
     const sentText = () => segments.map((s) => s.json.join(',')).join('\n');
 
     async function record(maskInputs: boolean, maskText: boolean) {
-      await recorder.start('session-1', (s) => void segments.push(s), { maskInputs, maskText }, createUrlSanitizer());
+      recorder.start(startOpts('session-1', (s) => void segments.push(s), maskInputs, maskText));
     }
 
     for (const [maskInputs, maskText] of [[false, false], [true, false], [true, true]] as const) {

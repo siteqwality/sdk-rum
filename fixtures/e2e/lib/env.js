@@ -32,8 +32,10 @@ export const SDK = {
   atLeast: (min) => atLeast(version, min),
   // Wave 1 (1.1.0): IIFE CDN core, noise rules, burst limit, early-error stub, methods never throw.
   wave1: atLeast(version, '1.1.0'),
-  // SDK 2.0: batch v2, segments v2, config from the CDN, privacy levels.
+  // SDK 2.0 core (WP 1.1): batch v2, config from the CDN, privacy levels, network and console.
   v2: atLeast(version, '2.0.0'),
+  // Replay chunk v2 (WP 2.1): segments v2, gzip, the replay ring, mutation throttle, CSS references.
+  replayV2: atLeast(version, '2.1.0'),
 };
 
 // 1.0.x is an ES module that only records replay when loaded as type=module (see README).

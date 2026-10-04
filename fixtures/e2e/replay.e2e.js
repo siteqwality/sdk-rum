@@ -29,7 +29,7 @@ test('a mutation flood is bounded and recording survives it', async ({ sq }, tes
   ledger.check('flood ran', flood.mutations > 10000, { info: true, detail: `${flood.mutations} mutations in ${flood.frames} frames, worst frame ${flood.worstFrameMs} ms` });
   budget(ledger, 'flood.raw_bytes', bytes, { detail: `${kb(bytes)} of mutations in ${((to - from) / 1000).toFixed(1)} s, ${c.segments.length} segments` });
   ledger.check('recording survives the flood', typedAfter, { detail: typedAfter ? 'input recorded after the flood' : 'nothing recorded after the flood' });
-  ledger.check('throttle marker', throttled, { gap: !SDK.v2, detail: throttled ? 'sq-throttle present' : 'no sq-throttle event', why: '2.0 throttles mutations and marks the gap (5.5)' });
+  ledger.check('throttle marker', throttled, { gap: !SDK.replayV2, detail: throttled ? 'sq-throttle present' : 'no sq-throttle event', why: 'the 2.1 replay chunk throttles mutations and marks the gap (5.5)' });
   ledger.print(testInfo);
   expect(ledger.failures).toEqual([]);
 });
@@ -48,9 +48,9 @@ test('1 MB of CSS is inlined once and compressed on the wire', async ({ sq }, te
   const ledger = new Ledger(`Heavy CSS, SDK ${SDK.version}`);
   ledger.check('stylesheet inlined in the snapshot', first > 1_000_000, { detail: `first full snapshot ${kb(first)}` });
   ledger.check('segment compressed on the wire', seg?.encoding === 'gzip', {
-    gap: !SDK.v2,
+    gap: !SDK.replayV2,
     detail: `${kb(seg?.wireBytes ?? 0)} on the wire, ${kb(seg?.gzipBytes ?? 0)} gzipped`,
-    why: '2.0 gzips segments (B1)',
+    why: 'the 2.1 replay chunk gzips segments (B1)',
   });
   budget(ledger, 'heavy.snapshot_wire_bytes', seg?.wireBytes ?? 0, { detail: `snapshot segment on the wire` });
   ledger.print(testInfo);
@@ -59,7 +59,7 @@ test('1 MB of CSS is inlined once and compressed on the wire', async ({ sq }, te
 
 test('later checkouts carry CSS by reference', async ({ sq }) => {
   test.skip(!SLOW, 'waits for a 60 s checkout: set SQ_SLOW=1');
-  knownGap(!SDK.v2, '1.x re-sends every stylesheet in every checkout; 2.0 sends sq-css:<hash> references (5.5)');
+  knownGap(!SDK.replayV2, 'before 2.1 every checkout re-sends every stylesheet; the 2.1 replay chunk sends sq-css:<hash> references (5.5)');
   test.setTimeout(240_000);
   const s = await sq.start({ spec: { capture: 'replay' } });
   const page = await s.open('/mpa/heavy.html');
@@ -93,7 +93,8 @@ test('an oversized page stops replay cleanly and keeps everything else', async (
     detail: `${c.segments.length} segments, ${unplayable.length} without a snapshot (event types ${unplayable.flatMap((x) => x.events.map((e) => e.type)).join(',') || 'none'})`,
     why: '1.0.x sends the Meta event alone, which meters a replay session with nothing to play',
   });
-  const cap = SDK.v2 ? 2 * 1024 * 1024 : 4_000_000;
+  // /v2/segments takes 2 MB (2.1); 2.0.0 still sends /v1/segments, which takes 4 MB.
+  const cap = SDK.replayV2 ? 2 * 1024 * 1024 : 4_000_000;
   ledger.check('no segment over the intake cap', biggest <= cap, { detail: `largest ${kb(biggest)}, cap ${kb(cap)}` });
   ledger.check('views still sent', c.views.length > 0, { detail: `${c.views.length} views` });
   const stopped = s.consoleMessages.some((m) => /too large/i.test(m.text));

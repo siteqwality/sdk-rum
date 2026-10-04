@@ -1,10 +1,5 @@
-import {
-  sendJson,
-  isRefused,
-  Backoff,
-  byteLength,
-  KEEPALIVE_MAX_BYTES,
-} from '../send';
+import { send, isRefused, Backoff, KEEPALIVE_MAX_BYTES } from '../core/send';
+import { byteLength } from '../core/util';
 
 /** Segments held while one is in flight or while backing off. */
 export const MAX_BUFFERED_SEGMENTS = 10;
@@ -45,7 +40,7 @@ interface PendingSegment {
  * for the rest of the page.
  *
  * A segment is often past the 64 KiB keepalive cap, where a keepalive request
- * is refused outright; `sendJson` sends those as plain requests instead of
+ * is refused outright; `send` sends those as plain requests instead of
  * silently dropping them.
  *
  * Losing a snapshot segment drops the ones after it until the next snapshot:
@@ -65,6 +60,7 @@ export class ReplayTransport {
   constructor(
     private endpoint: string,
     private clientToken: string,
+    private fetchFn: typeof fetch = (...a) => fetch(...a),
   ) {}
 
   /**
@@ -118,7 +114,7 @@ export class ReplayTransport {
         !this.inFlight?.snapshot &&
         !this.buffer.some((s) => s.snapshot));
     if (!based || bytes > KEEPALIVE_MAX_BYTES) return;
-    void sendJson(url, this.clientToken, `${head}${segment.json.join(',')}]}`, bytes);
+    void send(this.fetchFn, url, this.clientToken, `${head}${segment.json.join(',')}]}`, 'application/json', bytes);
   }
 
   private canSend(): boolean {
@@ -139,12 +135,7 @@ export class ReplayTransport {
       const segment = this.buffer.shift()!;
       this.bufferedBytes -= segment.bytes;
       this.inFlight = segment;
-      const outcome = await sendJson(
-        segment.url,
-        this.clientToken,
-        segment.body,
-        segment.bytes,
-      );
+      const outcome = await send(this.fetchFn, segment.url, this.clientToken, segment.body, 'application/json', segment.bytes);
       this.inFlight = null;
       if (this.stopped) break;
       if (outcome.kind === 'ok') {

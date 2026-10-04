@@ -1,4 +1,4 @@
-import { SiteQwalityRUM } from './init';
+import { SiteQwalityRUM } from './sdk';
 import { PUBLIC_METHODS } from './api';
 
 // CDN entry, a classic IIFE whose only global is window.SiteQwalityRUM. It replaces

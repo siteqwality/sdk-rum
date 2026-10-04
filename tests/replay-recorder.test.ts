@@ -3,14 +3,22 @@ import {
   ReplayRecorder,
   SegmentBuffer,
   withoutFrameContent,
+  recordOptions,
+  cleanAttributes,
+  cleanDomEvent,
+  HIDDEN_INPUT_SELECTOR,
   SEGMENT_TARGET_BYTES,
   SEGMENT_MAX_EVENTS,
   SEGMENT_MAX_AGE_MS,
   CHECKOUT_EVERY_MS,
   type ReplaySegment,
+  type ReplayPrivacy,
 } from '../src/replay/recorder';
+import { replayPrivacy } from '../src/replay/chunk';
 import { MAX_SEGMENT_BYTES } from '../src/replay/transport';
-import { createUrlSanitizer } from '../src/privacy/url';
+import { createUrlSanitizer, createTextUrlSanitizer } from '../src/core/url';
+import { createScrubber } from '../src/core/sanitize';
+import { normalizeConfig } from '../src/core/config';
 
 type Emit = (event: unknown, isCheckout?: boolean) => void;
 
@@ -29,7 +37,13 @@ const rrweb = vi.hoisted(() => {
         call.stopped = true;
       };
     },
-    { mirror: { getNode: (id: number) => state.nodes.get(id) ?? null } },
+    {
+      mirror: { getNode: (id: number) => state.nodes.get(id) ?? null },
+      custom: [] as Array<[string, unknown]>,
+      addCustomEvent(tag: string, payload: unknown) {
+        record.custom.push([tag, payload]);
+      },
+    },
   );
   return { state, record };
 });
@@ -315,13 +329,20 @@ describe('ReplayRecorder', () => {
     recorder.stop();
   });
 
-  async function start(maskText = false, sessionId = SESSION) {
-    await recorder.start(
+  const url = createUrlSanitizer();
+  let states: Array<[string, string | undefined]>;
+
+  async function start(maskText = false, sessionId = SESSION, privacy: Partial<ReplayPrivacy> = {}) {
+    states = [];
+    recorder.start({
       sessionId,
-      (s) => segments.push(s),
-      { maskInputs: true, maskText },
-      createUrlSanitizer(),
-    );
+      record: rrweb.record as never,
+      onSegment: (s) => segments.push(s),
+      privacy: { maskInputs: true, maskAllText: maskText, blockSelector: '', ...privacy },
+      url,
+      text: createTextUrlSanitizer(url),
+      onStatus: (state, reason) => states.push([state, reason]),
+    });
     return rrweb.state.options!;
   }
 
@@ -334,21 +355,31 @@ describe('ReplayRecorder', () => {
       recordCrossOriginIframes: false,
       recordCanvas: false,
       maskAllInputs: true,
+      maskInputOptions: { password: true, email: true, tel: true },
+      blockSelector: HIDDEN_INPUT_SELECTOR,
     });
     expect(options.sampling).not.toHaveProperty('input');
     expect(options.checkoutEveryNms).toBeUndefined();
     expect(options.maskTextSelector).toBeUndefined();
+    expect(states).toEqual([['recording', undefined]]);
 
     recorder.stop();
     recorder = new ReplayRecorder();
     expect((await start(true)).maskTextSelector).toBe('*');
   });
 
-  it('a stop while rrweb loads cancels that start', async () => {
-    const pending = recorder.start(SESSION, (s) => segments.push(s), { maskInputs: true, maskText: false }, createUrlSanitizer());
-    recorder.stop();
-    await pending;
-    expect(rrweb.state.calls).toHaveLength(0);
+  it('pauses with a custom sq-pause event and resumes with a full snapshot', async () => {
+    const { emit } = await start();
+    emit(meta());
+    emit(full());
+    recorder.pause('privacy_url');
+    expect(rrweb.record.custom.at(-1)).toEqual(['sq-pause', { reason: 'privacy_url' }]);
+    expect(rrweb.state.calls[0].stopped).toBe(true);
+    expect(states.at(-1)).toEqual(['paused', 'privacy_url']);
+    emit(move(5));
+    recorder.resume();
+    expect(rrweb.state.calls).toHaveLength(2);
+    expect(states.at(-1)).toEqual(['recording', undefined]);
   });
 
   it('minimises the Meta event URL', async () => {
@@ -409,6 +440,7 @@ describe('ReplayRecorder', () => {
     expect(rrweb.state.calls[0].stopped).toBe(true);
     expect(segments).toEqual([]);
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(states.at(-1)).toEqual(['stopped', 'too_large']);
 
     emit(move(3));
     vi.advanceTimersByTime(CHECKOUT_EVERY_MS);
@@ -515,5 +547,84 @@ describe('ReplayRecorder', () => {
     await pageLoad('session-b');
     await pageLoad('session-a');
     expect(segments.map((s) => s.index)).toEqual([0, 1, 0, 1, 2, 3]);
+  });
+});
+
+describe('replay privacy (7.1)', () => {
+  const privacy = (over: Record<string, unknown> = {}) => normalizeConfig({ privacy: over }, 'a').privacy;
+  const mask = createScrubber(['email', 'card', 'digits9'], true);
+
+  it('Balanced: inputs masked, text visible with patterns masked by stars', () => {
+    const o = recordOptions(replayPrivacy(privacy({ level: 'balanced' }), mask));
+    expect(o.maskAllInputs).toBe(true);
+    expect(o.maskTextSelector).toBe('*');
+    expect(o.maskTextFn!('mail jane@x.io ref 123456789', null)).toBe('mail ********* ref *********');
+    expect(o.maskTextFn!('plain', null)).toBe('plain');
+  });
+
+  it('Strict: all text masked except unmask selectors; media blocked', () => {
+    document.body.innerHTML = '<p class="public">Price</p><p>Name</p>';
+    const o = recordOptions(replayPrivacy(privacy({ level: 'strict', unmask_selectors: ['.public'], block_selectors: ['[data-sq-block]', 'not a selector ::'] }), mask));
+    const [pub, priv] = Array.from(document.querySelectorAll('p')) as HTMLElement[];
+    expect(o.maskTextFn!('Price', pub)).toBe('Price');
+    expect(o.maskTextFn!('Jane Doe', priv)).toBe('**** ***');
+    expect(o.blockSelector).toBe(`${HIDDEN_INPUT_SELECTOR},[data-sq-block],img,video,audio,picture,svg`);
+  });
+
+  it('Relaxed: no pattern masking; mask selectors still apply', () => {
+    document.body.innerHTML = '<p class="secret">x</p>';
+    const o = recordOptions(replayPrivacy(privacy({ level: 'relaxed', mask_selectors: ['.secret'] }), mask));
+    expect(o.maskTextFn!('a@b.io', document.body)).toBe('a@b.io');
+    expect(o.maskTextFn!('hide me', document.querySelector('p') as HTMLElement)).toBe('**** **');
+  });
+
+  it('legacy Custom follows the flags, and card fields stay masked without mask_inputs', () => {
+    const o = recordOptions(replayPrivacy(privacy({ level: null, mask_inputs: false, mask_text: false, pii_patterns: [] }), mask));
+    expect(o.maskAllInputs).toBe(false);
+    expect(o.maskInputOptions).toEqual({ password: true, email: true, tel: true });
+    expect(o.blockSelector).toContain('input[autocomplete^="cc-" i]');
+    expect(o.maskTextSelector).toBeUndefined();
+  });
+
+  it('ignore_input_selectors become rrweb ignoreSelector', () => {
+    expect(recordOptions(replayPrivacy(privacy({ ignore_input_selectors: ['.otp'] }), mask)).ignoreSelector).toBe('.otp');
+  });
+});
+
+describe('DOM attributes in replay', () => {
+  const url = createUrlSanitizer();
+  const text = createTextUrlSanitizer(url);
+  const scrub = createScrubber(['email'], true);
+
+  it('minimises URL attributes, srcset and style urls, and scrubs other attributes', () => {
+    const attrs: Record<string, unknown> = {
+      href: 'https://x.test/reset?token=abc#f',
+      src: '/p.svg?sig=1',
+      srcset: 'https://x.test/a.png?s=1 1x, https://x.test/b.png?s=2 2x',
+      style: 'background: url(https://x.test/bg.png?k=1)',
+      title: 'Mail jane@x.io',
+      _cssText: '.a{background:url(https://x.test/c.png?t=1)}',
+      rr_width: '10px',
+    };
+    cleanAttributes(attrs, url, text, scrub);
+    expect(attrs).toEqual({
+      href: 'https://x.test/reset',
+      src: '/p.svg',
+      srcset: 'https://x.test/a.png 1x, https://x.test/b.png 2x',
+      style: 'background: url(https://x.test/bg.png)',
+      title: 'Mail *********',
+      _cssText: '.a{background:url(https://x.test/c.png?t=1)}',
+      rr_width: '10px',
+    });
+  });
+
+  it('walks full snapshots and mutation adds and attributes', () => {
+    const clean = (a?: Record<string, unknown>) => cleanAttributes(a, url, text);
+    const snapshot = { type: 2, data: { node: { childNodes: [{ attributes: { href: '/a?x=1' }, childNodes: [{ attributes: { src: '/i?y=2' } }] }] } } };
+    cleanDomEvent(snapshot, clean);
+    expect(JSON.stringify(snapshot)).not.toContain('?');
+    const mutation = { type: 3, data: { source: 0, adds: [{ node: { attributes: { href: '/b?t=1' } } }], attributes: [{ attributes: { src: '/c?t=2', style: { 'background-image': 'url(https://x.test/d?t=3)' } } }] } };
+    cleanDomEvent(mutation, clean);
+    expect(JSON.stringify(mutation)).not.toContain('t=');
   });
 });
