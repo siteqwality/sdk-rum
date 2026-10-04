@@ -139,7 +139,7 @@ describe('ReplayRecorder, streaming', () => {
     expect(rrweb.state.calls.filter((c) => !c.stopped)).toHaveLength(1);
   });
 
-  it('pauses with sq-pause, sending the open segment, and resumes from a snapshot sent at once', () => {
+  it('pauses with sq-pause, sending the open segment, and resumes from a snapshot in its own segment', () => {
     start();
     move(1);
     recorder.pause('hidden');
@@ -148,8 +148,12 @@ describe('ReplayRecorder, streaming', () => {
     expect(rrweb.live()).toBeUndefined();
     expect(states.at(-1)).toEqual(['paused', 'hidden']);
     recorder.resume();
-    expect(types(segments[2])).toEqual([4, 2]);
     expect(states.at(-1)).toEqual(['recording', undefined]);
+    // Unlike a page load's first, it waits for its segment: a tab switch costs one request.
+    expect(segments).toHaveLength(2);
+    move(2);
+    recorder.pause('hidden');
+    expect(types(segments[2])).toEqual([4, 2, 3, 5]);
   });
 
   it('a recorder started paused captures nothing until resumed', () => {
@@ -243,6 +247,28 @@ describe('ReplayRecorder, buffering (design 5.4)', () => {
     expect(segments).toEqual([]);
   });
 
+  it("go() in a paused tab leaves its stale checkouts behind", async () => {
+    start({ buffer: true });
+    move(1);
+    recorder.pause('hidden');
+    await advance(10 * 60_000);
+    recorder.go();
+    expect(segments).toEqual([]);
+    recorder.resume();
+    recorder.stop();
+    expect(segments.map((g) => types(g)[0])).toEqual([4]);
+  });
+
+  it('holds at most the previous checkout beside the one being recorded', async () => {
+    start({ buffer: true });
+    for (let s = 0; s < 200; s++) {
+      move(s);
+      await advance(1_000);
+    }
+    recorder.go();
+    expect(segments.filter((g) => g.fs)).toHaveLength(2);
+  });
+
   it('a pause while buffering keeps the ring; go() still sends it', () => {
     start({ buffer: true });
     move(1);
@@ -265,6 +291,7 @@ describe('CSS references (design 5.5)', () => {
     stream.css.ack(segments[0].css);
     recorder.pause('idle');
     recorder.resume();
+    recorder.pause('idle');
     const again = evs(segments.at(-1)!)[1];
     expect(again.data.node.childNodes[0].attributes._cssText).toBe(`sq-css:${fnv1a64(sheet)}`);
     // Short sheets always stay inline.
@@ -319,6 +346,32 @@ describe('mutation throttle in the recorder', () => {
     // A second flood right away is marked when calm, but resyncs only after RESYNC_MIN_MS.
     for (let i = 0; i < 400; i++) adds(2_000);
     await advance(WINDOW_MS + 1_000);
+    expect(record).toHaveBeenCalledTimes(2);
+    await advance(RESYNC_MIN_MS);
+    expect(record).toHaveBeenCalledTimes(3);
+  });
+
+  it('a page that never calms still resyncs, at most every 30 s', async () => {
+    const record = start();
+    // About 80 KB a second, over the 64 KB a second the window allows.
+    for (let s = 0; s < 70; s++) {
+      for (let i = 0; i < 40; i++) adds(2_000);
+      await advance(1_000);
+    }
+    const resyncs = record.mock.calls.length - 1;
+    expect(resyncs).toBeGreaterThanOrEqual(1);
+    expect(resyncs).toBeLessThanOrEqual(3);
+    expect(segments.flatMap((g) => evs(g)).some((e) => e.data?.tag === 'sq-throttle')).toBe(true);
+  });
+
+  it('a resync asked for too soon is taken once RESYNC_MIN_MS has passed, not dropped', async () => {
+    const record = start();
+    recorder.resync();
+    await advance(10);
+    expect(record).toHaveBeenCalledTimes(2);
+    await advance(10_000);
+    recorder.resync();
+    await advance(10_000);
     expect(record).toHaveBeenCalledTimes(2);
     await advance(RESYNC_MIN_MS);
     expect(record).toHaveBeenCalledTimes(3);

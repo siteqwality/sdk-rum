@@ -140,6 +140,8 @@ describe('a long-lived tab with a 1 s ticking clock', () => {
     history.pushState({}, '', '/public');
     await run(3 * SECOND);
     expect(SiteQwalityRUM.getStatus()!.recording).toBe('recording');
+    // The snapshot goes with its segment, 20 s on.
+    await run(20 * SECOND);
     expect(fullSnapshots(SiteQwalityRUM.getStatus()!.session_id)).toBe(1);
     history.pushState({}, '', '/');
   });

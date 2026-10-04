@@ -292,7 +292,8 @@ export function createInstance(opts: InitOptions) {
     !userStopped && configKnown && !latched && replaySpent !== session.id && mayRecord() && (live() || rules.armed);
 
   function startRecording(): void {
-    if (!wantReplay()) return;
+    // A ring no rule can match any more (rules changed) is dropped; nothing of it was sent.
+    if (!wantReplay()) return void (replay && !live() && stopRecording(undefined, true));
     // A buffering recorder streams from its ring once a rule matches.
     if (replay) return void (live() && replay.go());
     if (loading) return;
@@ -307,10 +308,7 @@ export function createInstance(opts: InitOptions) {
         let gone = false;
         handle = start({
           live: live(),
-          sessionId: sid,
-          windowId: session.windowId,
-          pageLoadId: () => session.pageLoadId,
-          decision: () => session.decision,
+          session,
           store: store(),
           replayBase,
           token,
@@ -325,7 +323,7 @@ export function createInstance(opts: InitOptions) {
           now,
           paused: urlPaused ? 'privacy_url' : undefined,
           // Replay never outlasts its session, and learns other tabs' decisions.
-          check: () => (sessionFor(false) ? decide(session.decision) : stopRecording()),
+          check: () => (sessionFor(false) === sid ? decide(session.decision) : stopRecording()),
           onStatus: (state, why) => {
             if (state === 'stopped') {
               gone = true;
@@ -339,6 +337,8 @@ export function createInstance(opts: InitOptions) {
         });
         if (gone) return;
         replay = handle;
+        // Starting reports a state, which can adopt another tab's session: that one records instead.
+        if (sid !== session.id) stopRecording();
       },
       (err) => {
         loading = false;
@@ -377,7 +377,8 @@ export function createInstance(opts: InitOptions) {
       }
       ring = [];
     }
-    if (next.replay) startRecording();
+    // A match streams; a session that could still match buffers (after consent, opt-in, rotation).
+    startRecording();
   }
 
   const rules = createRules({ device: isMobile() ? 'mobile' : 'desktop', release: nonEmpty(opts.version), env: nonEmpty(opts.env) }, decide);

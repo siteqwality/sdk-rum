@@ -27,6 +27,8 @@ export interface Segment {
   fs: boolean;
   /** Stylesheets carried inline; the intake holds them once this segment is acknowledged. */
   css: string[];
+  /** What it holds in memory: `bytes` plus the stylesheet texts kept for acknowledgement. */
+  mem: number;
 }
 
 export interface Entry {
@@ -58,16 +60,17 @@ export class Segmenter {
     const o = this.open;
     if (o && o.bytes + size > SEGMENT_MAX_BYTES && !(e.type === FULL_SNAPSHOT && o.metaFirst && o.json.length === 1)) this.close();
     if (!this.open) {
-      this.open = { json: [], bytes: -1, ft: e.t, lt: e.t, fs: false, css: [], metaFirst: e.type === META };
+      this.open = { json: [], bytes: -1, ft: e.t, lt: e.t, fs: false, css: [], mem: -1, metaFirst: e.type === META };
       if (this.maxAge < Infinity) this.timer = setTimeout(() => (this.close(), this.onAge()), this.maxAge);
     }
     const s = this.open!;
     s.json.push(e.json);
     s.bytes += size;
+    s.mem += size;
     s.lt = Math.max(s.lt, e.t);
     s.ft = Math.min(s.ft, e.t);
     if (e.type === FULL_SNAPSHOT) s.fs = true;
-    if (e.css) s.css.push(...e.css);
+    for (const c of e.css ?? []) s.css.push(c), (s.mem += c.length);
   }
 
   /** Closes the open segment, handing it out. */
@@ -97,6 +100,10 @@ export class Segmenter {
     return this.open ? this.open.bytes : 0;
   }
 
+  get mem(): number {
+    return this.open ? this.open.mem : 0;
+  }
+
   get empty(): boolean {
     return !this.open;
   }
@@ -113,8 +120,13 @@ export class Ring {
   push(s: Segment): void {
     if (s.fs || !this.runs.length) this.runs.push([s]);
     else this.runs[this.runs.length - 1].push(s);
-    this.held += s.bytes;
+    this.held += s.mem;
     while (this.runs.length > 2) this.dropOldest();
+  }
+
+  /** A checkout begins: only the one before it stays. */
+  begin(): void {
+    while (this.runs.length > 1) this.dropOldest();
   }
 
   /** Over the cap with `extra` more on the way: the older checkout goes. */
@@ -122,10 +134,12 @@ export class Ring {
     while (this.runs.length > 1 && this.held + extra > RING_MAX_BYTES) this.dropOldest();
   }
 
-  /** Everything held, oldest first, without a checkout that ended before `staleBefore`. */
-  take(staleBefore: number): Segment[] {
-    const runs = this.runs;
-    if (runs.length > 1 && runs[0][runs[0].length - 1].lt < staleBefore) runs.shift();
+  /**
+   * Everything held, oldest first, without checkouts that ended before `staleBefore`. The last
+   * stays when `keepLast`: later events build on it.
+   */
+  take(staleBefore: number, keepLast = true): Segment[] {
+    const runs = this.runs.filter((r, i) => (keepLast && i === this.runs.length - 1) || r[r.length - 1].lt >= staleBefore);
     this.clear();
     return runs.flat();
   }
@@ -140,6 +154,6 @@ export class Ring {
   }
 
   private dropOldest(): void {
-    for (const s of this.runs.shift() ?? []) this.held -= s.bytes;
+    for (const s of this.runs.shift() ?? []) this.held -= s.mem;
   }
 }

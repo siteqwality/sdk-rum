@@ -11,7 +11,7 @@ vi.mock('../src/replay/gzip-load', () => ({ loadGzip: () => Promise.reject(new E
 let fetchSpy: ReturnType<typeof vi.fn>;
 const seg = (fs: boolean, pad: number): Segment => {
   const json = [JSON.stringify({ type: fs ? 2 : 3, timestamp: 1, pad: 'x'.repeat(pad) })];
-  return { json, bytes: json[0].length, ft: 1, lt: 1, fs, css: [] };
+  return { json, bytes: json[0].length, mem: json[0].length, ft: 1, lt: 1, fs, css: [] };
 };
 async function until(cond: () => boolean): Promise<void> {
   for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setImmediate(r));

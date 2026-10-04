@@ -157,10 +157,13 @@ export class MutationThrottle {
     return true;
   }
 
-  /** Drops happened and the window is back under half: time for one resync checkout. */
-  calm(t: number): boolean {
+  /**
+   * Time for one resync checkout: drops happened and the window is back under half, or drops
+   * have gone on for `stale` ms (a page that never calms must not diverge for long).
+   */
+  calm(t: number, stale = Infinity): boolean {
     this.prune(t);
-    return this.dropped > 0 && this.inWindow < WINDOW_BYTES / 2;
+    return this.dropped > 0 && (this.inWindow < WINDOW_BYTES / 2 || t - this.since >= stale);
   }
 
   private prune(t: number): void {

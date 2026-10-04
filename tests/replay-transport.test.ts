@@ -24,7 +24,8 @@ function pending() {
 function seg(events: unknown[], extra: Partial<Segment> = {}): Segment {
   const json = events.map((e) => JSON.stringify(e));
   const ts = events.map((e) => (e as { timestamp?: number }).timestamp ?? 0);
-  return { json, bytes: json.join(',').length, ft: Math.min(...ts), lt: Math.max(...ts), fs: false, css: [], ...extra };
+  const bytes = json.join(',').length;
+  return { json, bytes, mem: bytes, ft: Math.min(...ts), lt: Math.max(...ts), fs: false, css: [], ...extra };
 }
 const snap = (t = 1, extra: Partial<Segment> = {}) => seg([{ type: 4, timestamp: t }, { type: 2, timestamp: t }], { fs: true, ...extra });
 const inc = (t: number, pad = '') => seg([{ type: 3, timestamp: t, data: { source: 1, pad } }]);
@@ -187,6 +188,39 @@ describe('ReplayTransport v2', () => {
     void t.push(st, snap(5));
     await until(() => fetchSpy.mock.calls.length === 2);
     expect(query(1)).toMatchObject({ fs: '1' });
+  });
+
+  it('a lost change asks the stream for a fresh snapshot, without dropping what follows', async () => {
+    fetchSpy.mockImplementationOnce(() => ok()).mockImplementationOnce(() => fail(400));
+    const lost = vi.fn();
+    const t = make({ lost });
+    const st = fresh();
+    void t.push(st, snap(1));
+    void t.push(st, inc(2));
+    void t.push(st, inc(3));
+    await until(() => fetchSpy.mock.calls.length === 3);
+    expect(lost).toHaveBeenCalledWith(st);
+    expect(urls().map((u) => u.searchParams.get('q'))).toEqual(['0', '1', '2']);
+  });
+
+  it('keeps only the gzip body once compressed, and never counts a segment it no longer holds', async () => {
+    const first = pending();
+    fetchSpy.mockImplementationOnce(() => first.promise);
+    const t = make();
+    const st = fresh();
+    void t.push(st, snap(1));
+    await until(() => fetchSpy.mock.calls.length === 1);
+    void t.push(st, inc(2, 'y'.repeat(500_000)));
+    const internals = t as unknown as { queue: Array<{ text: string; body?: Blob | null }>; queued: number };
+    await until(() => internals.queue[1]?.body !== undefined);
+    expect(internals.queue[1].text).toBe('');
+    expect(internals.queued).toBeLessThan(20_000);
+    // Unloaded before its compression finished: the count stays sane.
+    void t.push(st, inc(3, 'z'.repeat(800_000)));
+    t.unload(null)();
+    await settle();
+    expect(internals.queued).toBeGreaterThanOrEqual(0);
+    first.resolve();
   });
 
   it('warns once on 413', async () => {

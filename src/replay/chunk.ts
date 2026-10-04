@@ -11,15 +11,20 @@ import { isHidden, byteLength, storage } from '../core/util';
 import { createBudget, budgetError, REPLAY_KEY, REPLAY_LIMITS } from '../core/budget';
 import type { SdkConfig } from '../types';
 
+/** What the chunk reads of the core's session: its id and window at start, the rest live. */
+export interface ReplaySession {
+  readonly id: string;
+  readonly windowId: string;
+  /** Renewed by a back-forward cache restore. */
+  readonly pageLoadId: string;
+  /** `r` on each segment names the rule that started replay. */
+  readonly decision: { replay: boolean; rule_id?: string };
+}
+
 export interface ReplayStartOptions {
   /** Stream at once; false holds the last two checkouts in memory until go() (design 5.4). */
   live: boolean;
-  sessionId: string;
-  windowId: string;
-  /** The page load id, which a back-forward cache restore renews. */
-  pageLoadId: () => string;
-  /** The session's rule decision: `r` on each segment names the rule that started replay. */
-  decision: () => { replay: boolean; rule_id?: string };
+  session: ReplaySession;
   /** Where the session's counters live: shared by its tabs, this tab only, or memory. */
   store: 'localStorage' | 'sessionStorage' | undefined;
   replayBase: string;
@@ -67,6 +72,9 @@ let warned = false;
 
 export function startReplay(o: ReplayStartOptions): ReplayHandle {
   kind = o.store;
+  // The session this recording belongs to; the core restarts the chunk for another.
+  const sid = o.session.id;
+  const win = o.session.windowId;
   // 2.0.0 kept a lease and a segment counter shared by tabs; per-window streams need neither.
   for (const k of ['_sq_rl', '_sq_rseq']) storage.del('localStorage', k);
   const ac = new AbortController();
@@ -133,7 +141,7 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
         o.count('replay_tail_dropped');
         return Promise.reject(budgetError());
       }
-      if (!discarded && budget.take(o.sessionId, typeof body === 'string' ? byteLength(body) : body instanceof Blob ? body.size : 0)) return o.fetch(input, init);
+      if (!discarded && budget.take(sid, typeof body === 'string' ? byteLength(body) : body instanceof Blob ? body.size : 0)) return o.fetch(input, init);
       over();
       return Promise.reject(budgetError());
     }) as typeof fetch,
@@ -149,9 +157,9 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     return handle;
   }
 
-  const stream = () => streamFor(o.sessionId, o.windowId, o.pageLoadId());
+  const stream = () => streamFor(sid, win, o.session.pageLoadId);
   const rule = () => {
-    const d = o.decision();
+    const d = o.session.decision;
     return d.replay ? d.rule_id : undefined;
   };
   const listen = (target: EventTarget, type: string, fn: (e: never) => void, capture = false) =>

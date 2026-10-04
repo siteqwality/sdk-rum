@@ -67,6 +67,8 @@ export class ReplayRecorder {
   private sendNow = false;
   private queued = false;
   private resyncAt = -Infinity;
+  /** A resync asked for within RESYNC_MIN_MS of the last: taken once that has passed. */
+  private resyncDue = false;
   private tick: ReturnType<typeof setInterval> | undefined;
 
   start(o: RecorderOptions): void {
@@ -100,7 +102,8 @@ export class ReplayRecorder {
     this.segmenter.close();
     this.buffering = false;
     this.segmenter.maxAge = SEGMENT_MAX_AGE_MS;
-    for (const s of this.ring.take(this.o.now() - RING_STALE_MS) as Tagged[]) this.o.onSegment(s, s.stream);
+    // A paused tab's old checkouts are stale; a recording one's last is the base of what follows.
+    for (const s of this.ring.take(this.o.now() - RING_STALE_MS, !this.paused) as Tagged[]) this.o.onSegment(s, s.stream);
     if (!this.paused) this.status('recording');
   }
 
@@ -199,11 +202,13 @@ export class ReplayRecorder {
 
   /** A checkout outside rrweb's own callback, like rrweb's own, after it returns. */
   private schedule(why: Why): void {
-    if (this.queued || !this.stopRecord) return;
     if (why === 'resync') {
-      if (this.o.now() - this.resyncAt < RESYNC_MIN_MS) return;
-      this.resyncAt = this.o.now();
+      // At most every RESYNC_MIN_MS; one asked for sooner waits for it (the refill tick).
+      if (this.o.now() - this.resyncAt < RESYNC_MIN_MS) return void (this.resyncDue = true);
+      this.resyncDue = false;
     }
+    if (this.queued || !this.stopRecord) return;
+    if (why === 'resync') this.resyncAt = this.o.now();
     this.queued = true;
     queueMicrotask(() => {
       this.queued = false;
@@ -219,10 +224,13 @@ export class ReplayRecorder {
     if (!this.started || this.paused) return;
     this.halt();
     this.segmenter.close();
+    if (this.buffering) this.ring.begin();
     this.stream = this.o.stream();
     this.throttle.reset();
-    // A page's first snapshot, and the first after a pause, go at once: a short view still plays.
-    this.sendNow = why === 'start' || why === 'resume';
+    this.resyncDue = false;
+    // A page load's first snapshot goes at once, so a short view still plays; later ones wait
+    // for their segment (a hidden tab sends what it holds anyway).
+    this.sendNow = why === 'start';
     const generation = this.generation;
     const { record } = this.o;
     const { mirror } = record;
@@ -251,11 +259,13 @@ export class ReplayRecorder {
     const data = this.throttle.tick((id) => mirror.has(id));
     if (data) this.push({ type: INCREMENTAL, timestamp: this.o.now(), data: { source: MUTATION, ...data } }, true);
     this.calm();
+    if (this.resyncDue) this.schedule('resync');
   }
 
+  /** Throttled, and calm again or still hot after RESYNC_MIN_MS: mark the gap and resync. */
   private calm(): void {
     const t = this.o.now();
-    if (!this.throttle.calm(t) || t - this.resyncAt < RESYNC_MIN_MS) return;
+    if (!this.throttle.calm(t, RESYNC_MIN_MS) || t - this.resyncAt < RESYNC_MIN_MS) return;
     this.throttled();
     this.schedule('resync');
   }
@@ -285,6 +295,7 @@ export class ReplayRecorder {
     const snapshot = e.type === FULL_SNAPSHOT;
     cleanDomEvent(e, (a, node) => {
       if (!a) return;
+      this.clean(a);
       const v = a._cssText;
       if (node && typeof v === 'string' && v.length > CSS_REF_MIN) {
         // Only a snapshot names a stylesheet the intake holds; anything else carries it inline.
@@ -292,7 +303,6 @@ export class ReplayRecorder {
         if (ref) a._cssText = ref;
         else css.push(v);
       }
-      this.clean(a);
     });
     const mutation = e.type === INCREMENTAL && e.data?.source === MUTATION;
     if (mutation && !(e = this.throttle.node(e))) return;
@@ -313,7 +323,7 @@ export class ReplayRecorder {
       this.o.count?.('replay_mutations_dropped');
       return;
     }
-    if (this.buffering) this.ring.trim(this.segmenter.bytes + json.length);
+    if (this.buffering) this.ring.trim(this.segmenter.mem + json.length);
     this.segmenter.add({ json, type: e.type, t, css: css?.length ? css : undefined });
     if (e.type === FULL_SNAPSHOT) {
       this.snapshotAt = t;

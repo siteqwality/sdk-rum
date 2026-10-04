@@ -151,7 +151,7 @@ describe('DOM attributes in replay', () => {
       srcset: 'https://x.test/a.png 1x, https://x.test/b.png 2x',
       style: 'background: url(https://x.test/bg.png)',
       title: 'Mail *********',
-      _cssText: '.a{background:url(https://x.test/c.png?t=1)}',
+      _cssText: '.a{background:url(https://x.test/c.png)}',
       rr_width: '10px',
     });
   });

@@ -140,7 +140,7 @@ describe('the replay budget', () => {
     expect(captured.o).toBeDefined();
     expect(typeof captured.o!.send).toBe('function');
     expect(captured.o!.store).toBe('localStorage');
-    expect(captured.o!.windowId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(captured.o!.session.windowId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('a replay cap stops only replay, for the session: errors and views still go', async () => {
@@ -157,7 +157,8 @@ describe('the replay budget', () => {
 
     throwInPage(new Error('still reported'));
     setVisibility('hidden');
-    await settle(10);
+    // gzip runs on real I/O: wait for the send rather than a fixed number of turns.
+    for (let i = 0; i < 100 && !net.events('error').some((e) => e.message === 'still reported'); i++) await new Promise((r) => setTimeout(r, 20));
     expect(net.events('error').map((e) => e.message)).toContain('still reported');
   }, 60_000);
 

@@ -32,6 +32,7 @@ describe('Segmenter', () => {
     s.close();
     expect(out[0].bytes).toBe(`${a.json},${b.json}`.length);
     expect(out[0].css).toEqual(['sheet-a', 'sheet-b']);
+    expect(out[0].mem).toBe(out[0].bytes + 'sheet-a'.length + 'sheet-b'.length);
   });
 
   it(`closes at about ${SEGMENT_MAX_BYTES} bytes and sends a larger event alone`, () => {
@@ -83,7 +84,7 @@ describe('Segmenter', () => {
 });
 
 describe('Ring', () => {
-  const seg = (fs: boolean, ft: number, lt: number, bytes = 100): Segment => ({ json: ['{}'], bytes, ft, lt, fs, css: [] });
+  const seg = (fs: boolean, ft: number, lt: number, bytes = 100): Segment => ({ json: ['{}'], bytes, mem: bytes, ft, lt, fs, css: [] });
 
   it('keeps the current and the previous checkout, oldest first', () => {
     const r = new Ring();
@@ -112,10 +113,30 @@ describe('Ring', () => {
     expect(r.take(0)).toHaveLength(1);
   });
 
-  it('drops a stale older checkout at the trigger', () => {
+  it('drops a stale older checkout at the trigger, and a stale last one only when told', () => {
     const r = new Ring();
     r.push(seg(true, 0, 10));
     r.push(seg(true, 500_000, 500_010));
     expect(r.take(400_000).map((s) => s.ft)).toEqual([500_000]);
+    r.push(seg(true, 0, 10));
+    expect(r.take(400_000)).toHaveLength(1);
+    r.push(seg(true, 0, 10));
+    expect(r.take(400_000, false)).toEqual([]);
+  });
+
+  it('keeps only the previous checkout once a new one begins', () => {
+    const r = new Ring();
+    r.push(seg(true, 0, 10));
+    r.push(seg(true, 10, 20));
+    r.begin();
+    expect(r.take(0).map((s) => s.ft)).toEqual([10]);
+  });
+
+  it('counts the stylesheets a segment keeps for its acknowledgement', () => {
+    const r = new Ring();
+    r.push({ ...seg(true, 0, 10, 1_000), mem: 3_000_000 });
+    r.push({ ...seg(true, 10, 20, 1_000), mem: 2_500_000 });
+    r.trim();
+    expect(r.take(0).map((s) => s.ft)).toEqual([10]);
   });
 });

@@ -96,6 +96,7 @@ describe('ReplayRecorder with rrweb', () => {
     stream.css.ack(segments[0].css);
     recorder.pause('idle');
     recorder.resume();
+    recorder.stop();
     const again = segments.at(-1)!;
     expect(again.json[1]).not.toContain('.c199');
     expect(again.json[1]).toMatch(/"_cssText":"sq-css:[0-9a-f]{16}"/);

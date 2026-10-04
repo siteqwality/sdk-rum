@@ -207,7 +207,12 @@ export function cleanAttributes(
   if (!attrs) return;
   for (const name of Object.keys(attrs)) {
     const v = attrs[name];
-    if (name === '_cssText' || name.startsWith('rr_')) continue;
+    if (name.startsWith('rr_')) continue;
+    // Stylesheets: URLs minimised, nothing scrubbed (digit runs live in fonts and selectors).
+    if (name === '_cssText') {
+      if (typeof v === 'string') attrs[name] = text(v);
+      continue;
+    }
     if (typeof v === 'string') {
       let out = URL_ATTRS.includes(name.toLowerCase())
         ? url(v)

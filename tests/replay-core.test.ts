@@ -7,6 +7,8 @@ import { clearStorage, config, rule, settle, setVisibility, stubNetwork, throwIn
 type Handle = { go: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; resume: ReturnType<typeof vi.fn> };
 
 let captured: { o?: ReplayStartOptions; starts: number; handle?: Handle };
+// Each boot loads a fresh module; earlier instances stay attached to the window.
+let current: { optOut(): void } | null = null;
 
 async function boot(rules: unknown[], init: Record<string, unknown> = {}) {
   vi.resetModules();
@@ -21,6 +23,7 @@ async function boot(rules: unknown[], init: Record<string, unknown> = {}) {
     },
   }));
   const { SiteQwalityRUM: Fresh } = await import('../src/sdk');
+  current = Fresh;
   const net: Net = stubNetwork(config({ rules }));
   Fresh._reset();
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
@@ -33,6 +36,9 @@ const errorRule = rule('replay', [{ kind: 'error' }], { id: 'r_err' });
 
 beforeEach(() => clearStorage());
 afterEach(() => {
+  // An opted-out instance in memory never records again, whatever later tests do.
+  current?.optOut();
+  current = null;
   vi.doUnmock('../src/replay/load-record');
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -45,11 +51,11 @@ describe('the replay ring in the core', () => {
     expect(captured.starts).toBe(1);
     expect(captured.o!.live).toBe(false);
     expect(Fresh.getStatus()).toMatchObject({ recording: 'buffering', sampled: { replay: false } });
-    expect(captured.o!.decision()).toMatchObject({ replay: false });
+    expect(captured.o!.session.decision).toMatchObject({ replay: false });
     throwInPage(new Error('boom'));
     await settle(3);
     expect(captured.handle!.go).toHaveBeenCalledTimes(1);
-    expect(captured.o!.decision()).toEqual({ analyze: true, replay: true, rule_id: 'r_err' });
+    expect(captured.o!.session.decision).toEqual({ analyze: true, replay: true, rule_id: 'r_err' });
     setVisibility('hidden');
     await settle(10);
     // The batch says the session is sampled for replay only once it is.
@@ -108,7 +114,7 @@ describe('the replay ring in the core', () => {
     const { Fresh } = await boot([errorRule]);
     Fresh.startReplay({ force: true });
     expect(captured.handle!.go).toHaveBeenCalledTimes(1);
-    expect(captured.o!.decision().replay).toBe(false);
+    expect(captured.o!.session.decision.replay).toBe(false);
     expect(Fresh.getStatus()!.sampled.replay).toBe(true);
   });
 
@@ -119,11 +125,66 @@ describe('the replay ring in the core', () => {
 
   it('passes the page load id live, so a back-forward cache restore starts a new stream', async () => {
     await boot([errorRule]);
-    const before = captured.o!.pageLoadId();
+    const before = captured.o!.session.pageLoadId;
     const e = new Event('pageshow') as PageTransitionEvent;
     Object.defineProperty(e, 'persisted', { value: true });
     window.dispatchEvent(e);
-    expect(captured.o!.pageLoadId()).not.toBe(before);
+    expect(captured.o!.session.pageLoadId).not.toBe(before);
+  });
+
+  it('starts buffering once consent is granted', async () => {
+    const { Fresh } = await boot([errorRule], { trackingConsent: 'pending' });
+    expect(captured.starts).toBe(0);
+    Fresh.setTrackingConsent('granted');
+    await settle(3);
+    expect(captured.starts).toBe(1);
+    expect(captured.o!.live).toBe(false);
+  });
+
+  it('opting out drops the ring; opting back in buffers again', async () => {
+    const { Fresh } = await boot([errorRule]);
+    Fresh.optOut();
+    expect(captured.handle!.stop).toHaveBeenCalledWith(true);
+    Fresh.optIn();
+    await settle(3);
+    expect(captured.starts).toBe(2);
+    expect(Fresh.getStatus()!.recording).toBe('buffering');
+  });
+
+  it('a new session after inactivity buffers too', async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+    // A memory session: earlier tests' instances share the cookie in this one document.
+    const { Fresh } = await boot([errorRule], { persistence: 'memory' });
+    const first = Fresh.getStatus()!.session_id;
+    vi.setSystemTime(Date.now() + 16 * 60_000);
+    window.dispatchEvent(new Event('pointerdown'));
+    await settle(3);
+    expect(Fresh.getStatus()!.session_id).not.toBe(first);
+    expect(captured.starts).toBe(2);
+    expect(captured.o!.session.id).toBe(Fresh.getStatus()!.session_id);
+    expect(captured.o!.live).toBe(false);
+  });
+
+  it('a config that no longer arms any Replay rule drops the ring', async () => {
+    const { Fresh, net } = await boot([errorRule]);
+    net.config = config({ rules: [], revision: 8 });
+    // A visible tab with a cached config older than 5 min refreshes it.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 6 * 60_000 });
+    setVisibility('visible');
+    await settle(5);
+    expect(captured.handle!.stop).toHaveBeenCalledWith(true);
+    expect(Fresh.getStatus()!.recording).toBe('off');
+  });
+
+  it("the check stops a recorder that belongs to another session than the page's", async () => {
+    await boot([errorRule]);
+    const cookie = /(?:^|;\s*)_sq_s=([^;]*)/.exec(document.cookie)![1].split('|');
+    // An older live session in another tab: this page adopts it.
+    const older = `0199a6b2-7c3e-7f00-8a1b-1c2d3e4f5a6b|${Number(cookie[1]) - 1000}|${Date.now()}|0`;
+    document.cookie = `_sq_s=${older};path=/`;
+    await new Promise((r) => setTimeout(r, 1_100));
+    captured.o!.check();
+    expect(captured.handle!.stop).toHaveBeenCalled();
   });
 
   it('a recorder that failed for the page stays off for the page load', async () => {

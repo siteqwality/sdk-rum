@@ -101,6 +101,23 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
   });
 
+  test('consent granted after load starts the ring, so the error replay still leads the error', async ({ page, intake }) => {
+    intake.config = REPLAY_ON_ERROR;
+    await page.goto(intake.page('consent', `<!doctype html><html><head>${snippet(intake, '/sdk/sdk.min.js', "trackingConsent: 'pending',")}</head><body><p id="t">0</p></body></html>`));
+    await sdkLoaded(page);
+    const status = () => page.evaluate(() => (window as unknown as { SiteQwalityRUM: { getStatus(): { recording: string } } }).SiteQwalityRUM.getStatus().recording);
+    expect(await status()).toBe('off');
+    await page.evaluate(() => (window as unknown as { SiteQwalityRUM: { setTrackingConsent(c: string): void } }).SiteQwalityRUM.setTrackingConsent('granted'));
+    await expect.poll(status).toBe('buffering');
+    await page.waitForTimeout(500);
+    const before = Date.now();
+    await page.evaluate(() => setTimeout(() => {
+      throw new Error('after consent');
+    }));
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(intake.segments()[0].ft).toBeLessThan(before - 300);
+  });
+
   test('a buffering tab that never matches sends no replay, even when it closes', async ({ page, intake }) => {
     intake.config = REPLAY_ON_ERROR;
     await page.goto(intake.page('ring-close', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Quiet</p></body></html>`));

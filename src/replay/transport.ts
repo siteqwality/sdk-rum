@@ -100,7 +100,7 @@ export class ReplayTransport {
 
   private pending(stream: Stream, seg: Segment, rule?: string): Pending {
     const text = `[${seg.json.join(',')}]`;
-    return { stream, q: stream.q++ >>> 0, ft: seg.ft, lt: seg.lt, n: seg.json.length, rule, text, bytes: text.length, fs: seg.fs, css: seg.css, zipped: Promise.resolve() };
+    return { stream, q: stream.q++ >>> 0, ft: seg.ft, lt: seg.lt, n: seg.json.length, rule, text, bytes: seg.mem + 2, fs: seg.fs, css: seg.css, zipped: Promise.resolve() };
   }
 
   /** Queues a closed segment: numbered now, compressed now, sent in order. Never rejects. */
@@ -116,10 +116,12 @@ export class ReplayTransport {
     const p = this.pending(stream, seg, rule);
     p.zipped = compress(p.text).then((b) => {
       p.body = b;
-      if (b) {
-        this.queued += b.size - p.bytes;
-        p.bytes = b.size;
-      }
+      if (!b) return;
+      // The gzip body is all that is kept; the text goes (stylesheets wait for the ack).
+      const bytes = b.size + p.css.reduce((n, c) => n + c.length, 0);
+      if (this.queue.includes(p)) this.queued += bytes - p.bytes;
+      p.bytes = bytes;
+      p.text = '';
     });
     this.queue.push(p);
     this.queued += p.bytes;
@@ -182,16 +184,17 @@ export class ReplayTransport {
     if (p) this.queued -= p.bytes;
   }
 
-  /** A segment that will never be delivered, and what built on it. */
+  /** A segment that will never be delivered, and what built on it; the stream re-snapshots. */
   private drop(p: Pending, tooLarge = false): void {
     this.hooks.count?.('replay_segments_dropped');
     if (tooLarge && !this.warned) {
       this.warned = true;
       console.warn('[SiteQwality RUM] Skipped a replay segment that was too large');
     }
-    if (!p.fs) return;
-    if (tooLarge) return this.hooks.tooLarge?.();
-    this.lose(p.stream);
+    if (p.fs && tooLarge) return this.hooks.tooLarge?.();
+    // A lost snapshot takes what built on it; a lost change leaves a hole until the next one.
+    if (p.fs) this.lose(p.stream);
+    this.hooks.lost?.(p.stream);
   }
 
   /** The stream's snapshot is gone: later segments up to its next snapshot go too. */
@@ -209,7 +212,6 @@ export class ReplayTransport {
     }
     if (!this.queue.some((q) => q.stream === stream && q.fs)) this.lostStream = stream;
     stream.css.clear();
-    this.hooks.lost?.(stream);
   }
 
   private trim(): void {

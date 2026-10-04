@@ -53,10 +53,16 @@ const url = createUrlSanitizer();
 function start(extra: Partial<ReplayStartOptions> = {}): ReplayHandle {
   handle = startReplay({
     live: true,
-    sessionId: SID,
-    windowId: 'w-1',
-    pageLoadId: () => pageLoad,
-    decision: () => decision,
+    session: {
+      id: SID,
+      windowId: 'w-1',
+      get pageLoadId() {
+        return pageLoad;
+      },
+      get decision() {
+        return decision;
+      },
+    },
     store: 'localStorage',
     replayBase: 'https://rp.test',
     token: 't',
@@ -149,6 +155,10 @@ describe('startReplay', () => {
     await run(60_000);
     expect(sent.length).toBe(before);
     visibility('visible');
+    await run(100);
+    // The resumed snapshot waits for its segment: one request per tab switch, not two.
+    expect(sent.length).toBe(before);
+    visibility('hidden');
     await run(100);
     expect(sent.at(-1)!.q.fs).toBe('1');
   });
