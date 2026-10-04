@@ -12,9 +12,9 @@ import {
   SEGMENT_MAX_AGE_MS,
   CHECKOUT_EVERY_MS,
   type ReplaySegment,
+  replayPrivacy,
   type ReplayPrivacy,
 } from '../src/replay/recorder';
-import { replayPrivacy } from '../src/replay/chunk';
 import { MAX_SEGMENT_BYTES } from '../src/replay/transport';
 import { createUrlSanitizer, createTextUrlSanitizer } from '../src/core/url';
 import { createScrubber } from '../src/core/sanitize';
@@ -366,6 +366,25 @@ describe('ReplayRecorder', () => {
     recorder.stop();
     recorder = new ReplayRecorder();
     expect((await start(true)).maskTextSelector).toBe('*');
+  });
+
+  it('stamps every event from the SDK clock, not rrweb\'s Date', async () => {
+    recorder.start({
+      sessionId: SESSION,
+      record: rrweb.record as never,
+      onSegment: (s) => segments.push(s),
+      privacy: { maskInputs: true, maskAllText: false, blockSelector: '' },
+      url,
+      text: createTextUrlSanitizer(url),
+      now: (() => {
+        let t = 1_759_516_050_000;
+        return () => t++;
+      })(),
+    });
+    const { emit } = rrweb.state.options!;
+    emit(meta('https://example.com/', 970_000_000_000));
+    emit(full(0, 970_000_000_000));
+    expect(events(segments[0]).map((e) => e.timestamp)).toEqual([1_759_516_050_000, 1_759_516_050_001]);
   });
 
   it('pauses with a custom sq-pause event and resumes with a full snapshot', async () => {

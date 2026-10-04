@@ -55,7 +55,6 @@ afterEach(() => {
 
 describe('CDN snippet replay', () => {
   it('replays init, early errors with their original times, then setUser', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
     new Function(SNIPPET)();
     stub().init(OPTIONS);
     const t0 = Date.now();
@@ -63,14 +62,14 @@ describe('CDN snippet replay', () => {
     window.dispatchEvent(rejection(new Error('rejected')));
     stub().setUser({ id: 'user_1' });
     expect(win.SiteQwalityRUM!._q).toHaveLength(4);
-    vi.advanceTimersByTime(3_000);
+    await new Promise((r) => setTimeout(r, 300));
     await loadCdn();
     const sent = await sentErrors();
     expect(sent.map((e) => [e.error_type, e.message, e.handling])).toEqual([
       ['TypeError', 'boom', 'unhandled'],
       ['Error', 'rejected', 'unhandledrejection'],
     ]);
-    for (const e of sent) expect(e.t).toBe(t0);
+    for (const e of sent) expect(Math.abs(Number(e.t) - t0)).toBeLessThan(100);
     expect(net.batches.at(-1)!.body.ctx.user).toEqual({ id: 'user_1' });
   });
 
@@ -107,7 +106,7 @@ describe('CDN snippet replay', () => {
     Object.defineProperty(event, 'timeStamp', { value: 5.4 });
     window.dispatchEvent(event);
     await loadCdn();
-    expect((await sentErrors())[0].t).toBe(Math.round(performance.timeOrigin + 5.4));
+    expect(Math.abs(Number((await sentErrors())[0].t) - (performance.timeOrigin + 5.4))).toBeLessThanOrEqual(2);
   });
 
   it('skips bad entries and keeps going', async () => {
@@ -175,16 +174,15 @@ describe('CDN snippet replay', () => {
   });
 
   it('keeps catching page errors between the script load and a deferred init', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
     new Function(SNIPPET)();
     await loadCdn();
     const t0 = Date.now();
     window.dispatchEvent(new ErrorEvent('error', { message: 'Uncaught Error: while waiting', error: new Error('while waiting') }));
-    vi.advanceTimersByTime(2_000);
+    await new Promise((r) => setTimeout(r, 300));
     void api().init(OPTIONS);
     window.dispatchEvent(new ErrorEvent('error', { message: 'Uncaught Error: after init', error: new Error('after init') }));
     const sent = await sentErrors();
-    expect(sent.map((e) => [e.message, e.t === t0])).toEqual([
+    expect(sent.map((e) => [e.message, Math.abs(Number(e.t) - t0) < 100])).toEqual([
       ['while waiting', true],
       ['after init', false],
     ]);

@@ -75,7 +75,7 @@ describe('createSession', () => {
   });
 
   it('rotates an expired session and adopts another tab’s live one', () => {
-    vi.useFakeTimers({ now: 1_000_000_000_000 });
+    vi.useFakeTimers({ now: Date.now() });
     const a = createSession({ mode: 'persist' });
     const first = a.id;
     vi.advanceTimersByTime(INACTIVITY_MS + 1);
@@ -92,7 +92,7 @@ describe('createSession', () => {
   });
 
   it('a busy tab keeps an idle tab’s session alive through the shared cookie', () => {
-    vi.useFakeTimers({ now: 1_000_000_000_000 });
+    vi.useFakeTimers({ now: Date.now() });
     const idle = createSession({ mode: 'persist' });
     const busy = createSession({ mode: 'persist' });
     for (let i = 0; i < 5; i++) {
@@ -154,10 +154,9 @@ describe('createSession', () => {
 
 describe('anonymousId', () => {
   it('lasts 13 months in localStorage', () => {
-    vi.useFakeTimers({ now: 1_000_000_000_000 });
     const id = anonymousId();
     expect(anonymousId()).toBe(id);
-    vi.advanceTimersByTime(396 * 24 * 60 * 60_000);
+    localStorage.setItem('_sq_aid', `${id}|${Date.now() - 396 * 24 * 60 * 60_000}`);
     expect(anonymousId()).not.toBe(id);
   });
 });

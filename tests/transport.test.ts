@@ -83,6 +83,23 @@ describe('batches', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('an urgent event queued while a request is in flight goes as soon as it settles', async () => {
+    const t = make();
+    let release: () => void = () => {};
+    fakeFetch.mockImplementationOnce(async (url: string, init: RequestInit) => {
+      await new Promise<void>((r) => (release = r));
+      calls.push({ url, init, body: JSON.parse(String(init.body)), gzip: false });
+      return new Response('', { status: 202 });
+    });
+    t.push(ev(1), ctx());
+    t.flush();
+    t.push(ev(2), ctx(), true);
+    await vi.advanceTimersByTimeAsync(URGENT_FLUSH_MS);
+    release();
+    await drain();
+    expect(calls.map((c) => c.body.events.map((e) => e.n))).toEqual([[1], [2]]);
+  });
+
   it('splits batches by session and page load, using the latest ctx of each', async () => {
     const t = make();
     t.push(ev(1), ctx('s1', 'p1', { user: undefined }));

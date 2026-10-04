@@ -9,7 +9,7 @@ import alias from '@rollup/plugin-alias';
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const cdnReplayLoader = fileURLToPath(new URL('./src/replay/load-record.cdn.ts', import.meta.url));
 
-// npm: web-vitals and rrweb are dependencies; the replay chunk stays a separate lazy file.
+// npm: rrweb is a dependency; the replay chunk stays a separate lazy file.
 const npm = (format, dir, ext) => ({
   input: 'src/index.ts',
   output: {
@@ -20,7 +20,7 @@ const npm = (format, dir, ext) => ({
     manualChunks: (id) => (/\/src\/replay\/(?!load-record)/.test(id) ? 'replay' : 'core'),
     sourcemap: true,
   },
-  external: [/^web-vitals(\/|$)/, '@rrweb/record'],
+  external: ['@rrweb/record'],
   plugins: [
     resolve({ browser: true }),
     commonjs(),

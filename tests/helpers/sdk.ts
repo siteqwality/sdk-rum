@@ -30,6 +30,8 @@ export interface Net {
   config: unknown;
   batchStatus: number;
   identity: boolean;
+  /** Fetches still running. */
+  pending: number;
 }
 
 export function rule(capture: 'analyze' | 'replay', conditions: unknown[] = [], extra: Record<string, unknown> = {}) {
@@ -57,12 +59,21 @@ export function stubNetwork(cfg: unknown = config()): Net {
     config: cfg,
     batchStatus: 202,
     identity: true,
+    pending: 0,
     events(k) {
       return net.batches.flatMap((b) => b.body.events.filter((e) => !k || e.k === k).map((e) => ({ ...e, ctx: b.body.ctx })));
     },
     fetch: vi.fn(),
   };
   net.fetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+    net.pending++;
+    try {
+      return await answer(input, init);
+    } finally {
+      net.pending--;
+    }
+  });
+  async function answer(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes('/rum/config/v2/')) {
       net.configCalls.push({ url, init });
@@ -84,10 +95,13 @@ export function stubNetwork(cfg: unknown = config()): Net {
     if (url.includes('/fail')) return new Response('{"ok":false}', { status: 500 });
     if (url.includes('/drop')) throw new TypeError('Failed to fetch');
     return new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json', 'x-request-id': 'rid-1' } });
-  });
+  }
   vi.stubGlobal('fetch', net.fetch);
+  current = net;
   return net;
 }
+
+let current: Net | null = null;
 
 export async function settle(rounds = 10): Promise<void> {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setTimeout(r, 0));
@@ -102,6 +116,9 @@ export function setVisibility(state: 'hidden' | 'visible'): void {
 export async function flush(): Promise<void> {
   setVisibility('hidden');
   await settle();
+  // gzip runs on streams; wait for the sends to land (at most 2 s).
+  for (let i = 0; i < 100 && current && current.pending > 0; i++) await new Promise((r) => setTimeout(r, 20));
+  await settle(3);
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
 }
 

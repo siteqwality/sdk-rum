@@ -56,6 +56,8 @@ export function createTransport(o: TransportOptions) {
   let urgentTimer: ReturnType<typeof setTimeout> | null = null;
   let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
   let unloadQueued = false;
+  // An urgent event (an error) is queued: send as soon as the request in flight settles.
+  let urgentQueued = false;
   const backoff = new Backoff();
 
   const interval = setInterval(() => flush(), FLUSH_INTERVAL_MS);
@@ -89,6 +91,7 @@ export function createTransport(o: TransportOptions) {
       n++;
     }
     const entries = queue.splice(0, n);
+    if (!queue.length) urgentQueued = false;
     const ctx = entries[entries.length - 1].c;
     const json = `{"v":2,"sent_at":${now()},"sdk":${JSON.stringify(VERSION)},"ctx":${JSON.stringify(ctx)},"events":[${parts.join(',')}]}`;
     return { entries, json };
@@ -119,7 +122,7 @@ export function createTransport(o: TransportOptions) {
         retryTimer = null;
       }
     } else o.count('rejected_batch');
-    if (queue.length && (isHidden() ? scheduleHidden() : queue.length >= FLUSH_AT)) flush();
+    if (queue.length && (isHidden() ? scheduleHidden() : queue.length >= FLUSH_AT || urgentQueued)) flush();
   }
 
   async function sendOne(): Promise<void> {
@@ -207,8 +210,9 @@ export function createTransport(o: TransportOptions) {
         }
       } else if (isHidden()) scheduleHidden();
       else if (queue.length >= FLUSH_AT) flush();
-      else if (urgent && !urgentTimer) {
-        urgentTimer = setTimeout(() => {
+      else if (urgent) {
+        urgentQueued = true;
+        urgentTimer ||= setTimeout(() => {
           urgentTimer = null;
           flush();
         }, URGENT_FLUSH_MS);

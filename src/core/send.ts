@@ -1,6 +1,8 @@
 // One POST to the intake and what became of it. Retry rules are those of 1.x: 429, 408, 5xx
 // and network errors retry with backoff; 401 and 403 stop; any other 4xx drops the body.
 
+import { now } from './util';
+
 /** Browsers cap keepalive bodies in flight at 64 KiB per page; this leaves headroom. */
 export const KEEPALIVE_MAX_BYTES = 60_000;
 export const BACKOFF_BASE_MS = 2_000;
@@ -77,7 +79,7 @@ export const isRefused = (o: SendOutcome): boolean =>
   o.kind === 'permanent' && (o.status === 401 || o.status === 403);
 
 /** Retry-After as delay seconds or an HTTP-date, in ms from now. */
-export function parseRetryAfter(value: string | null, at: number = Date.now()): number | undefined {
+export function parseRetryAfter(value: string | null, at: number = now()): number | undefined {
   if (!value) return undefined;
   const v = value.trim();
   if (/^\d+$/.test(v)) return Number(v) * 1000;

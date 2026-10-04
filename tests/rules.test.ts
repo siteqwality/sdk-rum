@@ -97,7 +97,7 @@ describe('evaluation', () => {
   });
 
   it('gates the flush on interaction and minimum duration; error rules bypass both', () => {
-    vi.useFakeTimers({ now: 1_000_000 });
+    vi.useFakeTimers({ now: Date.now() });
     const gated = rule('replay', [], { min_duration_ms: 3000, require_interaction: true });
     const { r } = setup([gated], Date.now());
     expect(r.decision.replay).toBe(false);

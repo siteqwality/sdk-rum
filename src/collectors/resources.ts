@@ -28,6 +28,16 @@ export type Resources = ReturnType<typeof startResources>;
 
 const ms = (n: number) => (n > 0 ? Math.round(n) : undefined);
 
+/** Duration and the phases resource timing exposes (zero cross-origin without Timing-Allow-Origin). */
+export const timing = (e: PerformanceResourceTiming) => ({
+  duration_ms: Math.round(e.duration),
+  dns_ms: ms(e.domainLookupEnd - e.domainLookupStart),
+  connect_ms: ms(e.connectEnd - e.connectStart),
+  tls_ms: e.secureConnectionStart > 0 ? ms(e.connectEnd - e.secureConnectionStart) : undefined,
+  ttfb_ms: ms(e.responseStart - e.requestStart),
+  download_ms: ms(e.responseEnd - e.responseStart),
+});
+
 /**
  * Subresources from resource timing (design 5.6): the first 150 of the initial view and the
  * LCP resource one by one, later ones aggregated per view and origin. Own requests and the
@@ -50,12 +60,7 @@ export function startResources(h: Hub, o: ResourcesOptions) {
       view_id: h.viewId(),
       initiator: resourceType(re.initiatorType),
       url: h.url(re.name),
-      duration_ms: Math.round(re.duration),
-      dns_ms: ms(re.domainLookupEnd - re.domainLookupStart),
-      connect_ms: ms(re.connectEnd - re.connectStart),
-      tls_ms: re.secureConnectionStart > 0 ? ms(re.connectEnd - re.secureConnectionStart) : undefined,
-      ttfb_ms: ms(re.responseStart - re.requestStart),
-      download_ms: ms(re.responseEnd - re.responseStart),
+      ...timing(re),
       transfer_bytes: re.transferSize > 0 ? re.transferSize : undefined,
       decoded_bytes: re.decodedBodySize > 0 ? re.decodedBodySize : undefined,
       render_blocking: (re as PerformanceResourceTiming & { renderBlockingStatus?: string }).renderBlockingStatus === 'blocking' || undefined,

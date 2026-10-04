@@ -42,7 +42,8 @@ function clickEvery(target: Element, times: number, gapMs: number) {
 }
 
 beforeEach(() => {
-  vi.useFakeTimers();
+  // Click windows run on performance.now, which pages cannot patch.
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
   document.body.innerHTML = '';
   history.replaceState({}, '', '/page');
 });
@@ -306,7 +307,8 @@ describe('dead clicks', () => {
     const { verdicts } = collector();
     click(el('<button>Delete</button>'));
     // A confirm() held the main thread for 3 s; the timer runs late.
-    vi.setSystemTime(Date.now() + 3_000);
+    const realNow = performance.now.bind(performance);
+    vi.spyOn(performance, 'now').mockImplementation(() => realNow() + 3_000);
     vi.advanceTimersByTime(FRUSTRATION_WINDOW_MS);
     expect(verdicts()).toEqual([undefined]);
   });

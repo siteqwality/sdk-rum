@@ -1,7 +1,5 @@
 // Small helpers shared by every module. Nothing here may throw.
 
-export const now = (): number => Date.now();
-
 export const perfNow = (): number => {
   try {
     return performance.now();
@@ -10,14 +8,29 @@ export const perfNow = (): number => {
   }
 };
 
-/** Epoch ms of a performance timestamp. */
-export const epochOf = (perfTime: number): number => {
+/** Native Date may run ahead of the monotonic clock by system sleep; past this it is not trusted. */
+export const CLOCK_SANITY_MS = 24 * 60 * 60_000;
+let lastNow = 0;
+
+/**
+ * Epoch ms the page cannot skew: Date.now while it agrees with timeOrigin + performance.now within
+ * CLOCK_SANITY_MS (pages patch Date; one shows the year 2000), else the monotonic clock. Small steps
+ * back (clock slews) are held at the last value, so event times never run backwards.
+ */
+export function now(): number {
+  let t = Date.now();
   try {
-    return Math.round(performance.timeOrigin + perfTime);
+    const mono = performance.timeOrigin + performance.now();
+    if (mono > 0 && !(Math.abs(t - mono) <= CLOCK_SANITY_MS)) t = mono;
   } catch {
-    return now();
+    // No performance clock: Date is all there is.
   }
-};
+  t = Math.round(t);
+  return (lastNow = t < lastNow && lastNow - t < 2_000 ? lastNow : t);
+}
+
+/** Epoch ms of a performance timestamp, on the same clock as now(). */
+export const epochOf = (perfTime: number): number => Math.round(now() - (perfNow() - perfTime));
 
 export const isHidden = (): boolean =>
   typeof document !== 'undefined' && document.visibilityState === 'hidden';

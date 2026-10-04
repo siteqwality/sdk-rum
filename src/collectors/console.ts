@@ -1,7 +1,7 @@
 // Console (design 5.6): the configured levels, arguments serialised to depth 3 and 2 KB, 50
 // entries per 10 s per level, identical consecutive lines folded. Output is never changed.
 import { ANALYZE, type Hub } from '../hub';
-import { cut, read } from '../core/util';
+import { cut, read, now, perfNow } from '../core/util';
 
 const LEVELS = ['error', 'warn', 'info', 'log', 'debug'] as const;
 const MAX_ENTRY = 2_048;
@@ -67,16 +67,16 @@ export function startConsole(h: Hub, crumb: (message: string) => void) {
         held.repeat++;
         return;
       }
-      const c = (counts[level] ||= { n: 0, at: Date.now() });
-      if (Date.now() - c.at > RATE_MS) {
+      const c = (counts[level] ||= { n: 0, at: perfNow() });
+      if (perfNow() - c.at > RATE_MS) {
         c.n = 0;
-        c.at = Date.now();
+        c.at = perfNow();
       }
       if (++c.n > RATE) return h.count('console_rate_limited');
       release();
       const err = args.find((a) => a instanceof Error) as Error | undefined;
       const stack = err && typeof err.stack === 'string' ? cut(h.text(err.stack), MAX_ENTRY * 4) : undefined;
-      held = { level, message, stack, t: Date.now(), view: h.viewId(), repeat: 1 };
+      held = { level, message, stack, t: now(), view: h.viewId(), repeat: 1 };
       timer = setTimeout(release, FOLD_MS);
     } finally {
       busy = false;

@@ -1,4 +1,5 @@
 // FNV-1a 32 over UTF-8 (shared with core-rs `common::rum::fingerprint::fnv1a32`) and ids.
+import { now } from './util';
 
 export function fnv1a32(text: string): number {
   let h = 0x811c9dc5;
@@ -62,7 +63,7 @@ export function uuid(): string {
 }
 
 /** A v7 UUID: 48-bit epoch ms, then random bits, so ids sort by time. */
-export function uuid7(ms: number = Date.now()): string {
+export function uuid7(ms: number = now()): string {
   const b = randomBytes(16);
   for (let i = 5; i >= 0; i--) {
     b[i] = ms % 256;

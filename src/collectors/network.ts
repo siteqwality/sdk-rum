@@ -4,7 +4,7 @@ import type { SqEvent } from '../types';
 import { OBSERVE, ANALYZE, type Hub } from '../hub';
 import { uuid, randomBytes, toHex } from '../core/hash';
 import { redactBody, allowedHeaders } from '../core/sanitize';
-import { createExclusionMatcher } from './resources';
+import { createExclusionMatcher, timing } from './resources';
 import { now, perfNow, round, byteLength, pct, read } from '../core/util';
 
 const JOIN_WAIT_MS = 5_000;
@@ -37,7 +37,6 @@ export interface NetworkOptions {
 
 export type Network = ReturnType<typeof startNetwork>;
 
-const ms = (n: number) => (n > 0 ? round(n) : undefined);
 
 function absolute(url: string): string {
   try {
@@ -75,17 +74,10 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
   const waiting: Array<{ req: Req; row: Row; timer: ReturnType<typeof setTimeout> }> = [];
   const used = new WeakSet<PerformanceEntry>();
 
-  function phases(e: PerformanceResourceTiming): Record<string, number | undefined> {
-    return {
-      duration_ms: round(e.duration),
-      dns_ms: ms(e.domainLookupEnd - e.domainLookupStart),
-      connect_ms: ms(e.connectEnd - e.connectStart),
-      tls_ms: e.secureConnectionStart > 0 ? ms(e.connectEnd - e.secureConnectionStart) : undefined,
-      ttfb_ms: ms(e.responseStart - e.requestStart),
-      download_ms: ms(e.responseEnd - e.responseStart),
-      res_bytes: e.encodedBodySize > 0 ? e.encodedBodySize : undefined,
-    };
-  }
+  const phases = (e: PerformanceResourceTiming): Record<string, number | undefined> => ({
+    ...timing(e),
+    res_bytes: e.encodedBodySize > 0 ? e.encodedBodySize : undefined,
+  });
 
   function matches(req: Req, e: PerformanceResourceTiming): boolean {
     return (

@@ -11,7 +11,7 @@ import { createTransport, type Ctx } from './core/transport';
 import { createRules, type RuleInput } from './core/rules';
 import { sampledIn, uuid, toHex } from './core/hash';
 import { parseStack, topFrame, normalisePath, errorKey } from './core/stack';
-import { now, cut, isHidden, storage, strings, on, read, nonEmpty, byteLength } from './core/util';
+import { now, epochOf, cut, isHidden, storage, strings, on, read, nonEmpty, byteLength } from './core/util';
 import { startViews, pageUrl, type Views } from './collectors/views';
 import { startVitals } from './collectors/vitals';
 import { listenErrors, createErrorPipeline, fromValue, fromErrorEvent, fromRejection, isRejectionEvent, type RawError } from './collectors/errors';
@@ -28,11 +28,8 @@ export const RING_MS = 60_000;
 export const RING_MAX = 500;
 const OPT_OUT = '_sq_optout';
 
-// beforeSend output: these never change; these may not be removed; these are re-sanitised.
+// beforeSend never changes these.
 const FIXED = 'k t view_id id seq final error_key'.split(' ');
-const REQUIRED = new Set(
-  'url loading_type navigation_type time_spent_ms active_ms session_active_ms errors actions frustrations error_type message stack handling repeat name action_type selector viewport_w method status initiator duration_ms level'.split(' '),
-);
 
 const warn = (message: string, detail?: unknown) => read(() => console.warn(`[SiteQwality RUM] ${message}`, detail ?? ''));
 
@@ -192,13 +189,11 @@ export function createInstance(opts: InitOptions) {
     }
     const chosen = (r && typeof r === 'object' ? r : draft) as Record<string, unknown>;
     const out = { ...e };
+    // Known fields only, of the same type; a removed field keeps its original value.
     for (const key of Object.keys(e)) {
       const v = read(() => chosen[key]);
-      if (FIXED.includes(key) || (v !== undefined && (typeof v !== typeof e[key] || Array.isArray(v) !== Array.isArray(e[key])))) continue;
-      if (v === undefined) {
-        if (!REQUIRED.has(key)) delete out[key];
-      } else if (typeof v !== 'string') out[key] = v;
-      else out[key] = key === 'url' || key === 'referrer' ? sanitizeUrl(v) : /^(message|stack|name)$/.test(key) ? scrub(sanitizeText(v)) : v;
+      if (FIXED.includes(key) || v === undefined || typeof v !== typeof e[key] || Array.isArray(v) !== Array.isArray(e[key])) continue;
+      out[key] = typeof v !== 'string' ? v : key === 'url' || key === 'referrer' ? sanitizeUrl(v) : /^(message|stack|name)$/.test(key) ? scrub(sanitizeText(v)) : v;
     }
     if ('_h' in e) Object.defineProperty(out, '_h', { value: (e as { _h?: string })._h });
     if (kind === 'error') out.error_key = keyOf(out);
@@ -261,6 +256,7 @@ export function createInstance(opts: InitOptions) {
           text: sanitizeText,
           privacy: cfg.privacy,
           mask: createScrubber(cfg.privacy.pii_patterns, true),
+          now,
           onStatus: (state, why) => {
             if (state === 'stopped') replay = null;
             setRecording(state, why);
@@ -285,7 +281,8 @@ export function createInstance(opts: InitOptions) {
   /** A rule decision, latched for the session and shared with other tabs through the cookie. */
   function decide(d: Decision): void {
     const cur = session.decision;
-    const next = { analyze: cur.analyze || d.analyze, replay: cur.replay || d.replay, rule_id: cur.rule_id || d.rule_id };
+    // rule_id names the rule that started replay, else the one that started Analyze.
+    const next = { analyze: cur.analyze || d.analyze, replay: cur.replay || d.replay, rule_id: d.replay && !cur.replay ? d.rule_id : cur.rule_id || d.rule_id };
     if (next.analyze !== cur.analyze || next.replay !== cur.replay || next.rule_id !== cur.rule_id) {
       session.setDecision(next);
       log('decision', next);
@@ -368,8 +365,8 @@ export function createInstance(opts: InitOptions) {
     if (replay && fresh && JSON.stringify(prev.privacy) !== JSON.stringify(cfg.privacy)) {
       // New privacy settings apply from a fresh snapshot.
       stopRecording();
-      startRecording();
     }
+    startRecording();
   }
 
   const refresh = () =>
@@ -381,6 +378,7 @@ export function createInstance(opts: InitOptions) {
         if (!configKnown) {
           configKnown = true;
           setRules(false);
+          startRecording();
         }
       },
     );
@@ -736,8 +734,9 @@ function eventTime(event: unknown): number {
   const t = now();
   const stamp = read(() => (event as Event).timeStamp);
   if (typeof stamp !== 'number' || !(stamp > 0)) return t;
-  const at = stamp > 1e12 ? stamp : (read(() => performance.timeOrigin) ?? 0) + stamp;
-  return at <= t ? Math.round(at) : t;
+  // Older engines stamp events in epoch ms; trust that only near our own clock.
+  const at = stamp > 1e12 ? Math.round(stamp) : epochOf(stamp);
+  return at <= t && t - at < 3_600_000 ? at : t;
 }
 
 function captureEarly(event: unknown): void {

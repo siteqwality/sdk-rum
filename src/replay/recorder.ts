@@ -1,4 +1,5 @@
 import type { UrlSanitizer } from '../core/url';
+import type { SdkConfig } from '../types';
 import type { record as rrwebRecord } from '@rrweb/record';
 import { byteLength } from '../core/util';
 import { SegmentSequence } from './sequence';
@@ -237,6 +238,39 @@ export interface ReplayPrivacy {
 
 export type ReplayState = 'recording' | 'paused' | 'stopped';
 
+const STRICT_MEDIA = ['img', 'video', 'audio', 'picture', 'svg'];
+
+function valid(list: string[]): string | undefined {
+  const probe = document.createElement('div');
+  return (
+    list
+      .filter((s) => {
+        try {
+          probe.matches(s);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .join(',') || undefined
+  );
+}
+
+/** rrweb privacy from the app's level and selectors (design 7.1); block selectors always win. */
+export function replayPrivacy(p: SdkConfig['privacy'], mask: (s: string) => string): ReplayPrivacy {
+  const strict = p.level === 'strict';
+  return {
+    maskInputs: p.level !== null || p.mask_inputs,
+    maskAllText: strict || p.mask_text,
+    maskSelector: valid(p.mask_selectors),
+    unmaskSelector: strict ? valid(p.unmask_selectors) : undefined,
+    blockSelector: valid([...p.block_selectors, ...(strict ? STRICT_MEDIA : [])]) ?? '',
+    ignoreSelector: valid(p.ignore_input_selectors),
+    scrub: p.pii_patterns.length ? mask : undefined,
+  };
+}
+
+
 const URL_ATTRS = ['href', 'src', 'action', 'formaction', 'poster', 'data', 'background', 'cite', 'ping', 'xlink:href'];
 
 const closest = (el: Element | null, selector?: string) => {
@@ -333,6 +367,8 @@ export interface RecorderOptions {
   url: UrlSanitizer;
   text: (s: string) => string;
   onStatus?: (state: ReplayState, reason?: string) => void;
+  /** The SDK's clock: rrweb stamps events with Date, which pages patch. */
+  now?: () => number;
 }
 
 export class ReplayRecorder {
@@ -343,6 +379,7 @@ export class ReplayRecorder {
   private sanitizeUrl: UrlSanitizer = String;
   private clean: (a?: Record<string, unknown>) => void = () => {};
   private onStatus: RecorderOptions['onStatus'];
+  private now: RecorderOptions['now'];
   /** Bumped on every restart, so a stopped recording's late events are ignored. */
   private generation = 0;
   private snapshotAt = 0;
@@ -364,6 +401,7 @@ export class ReplayRecorder {
     this.record = o.record;
     this.sanitizeUrl = o.url;
     this.onStatus = o.onStatus;
+    this.now = o.now;
     this.clean = (a) => cleanAttributes(a, o.url, o.text, o.privacy.scrub);
     this.options = recordOptions(o.privacy);
     this.capture();
@@ -430,6 +468,7 @@ export class ReplayRecorder {
     if (generation !== this.generation || !this.buffer) return;
     const kept = withoutFrameContent(event, getNode);
     if (kept === null) return;
+    if (this.now) (kept as { timestamp?: number }).timestamp = this.now();
     cleanDomEvent(kept, this.clean);
     if (!this.buffer.add(sanitizeReplayEvent(kept, this.sanitizeUrl))) {
       // Its later events would replay onto another page, so the page stops here.

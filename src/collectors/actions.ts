@@ -1,6 +1,6 @@
 // Actions (design 5.6): clicks, taps, input changes and submits with a name and a stable
 // selector; rage, dead and error clicks by Wave 1 F14, plus click counts and offsets.
-import { cut } from '../core/util';
+import { cut, perfNow as clock } from '../core/util';
 
 export type Frustration = 'rage_click' | 'dead_click' | 'error_click';
 
@@ -212,7 +212,7 @@ export function startActionCollector<C>(o: ActionCollectorOptions<C>): ActionCol
   // Menus often open on pointerdown: a reaction to the press counts for its click.
   listen(document, 'pointerdown mousedown keydown', (e: KeyboardEvent) => {
     lastPress = elementOf(e.target);
-    lastPressAt = Date.now();
+    lastPressAt = clock();
     tabbed = e.key === 'Tab';
     if ((e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') || !lastPress) return;
     const el = resolveTarget(lastPress);
@@ -226,7 +226,7 @@ export function startActionCollector<C>(o: ActionCollectorOptions<C>): ActionCol
   // Focus moving elsewhere is a reaction (a field opened, a dialog), unless the user moved it.
   listen(document, 'focusin', (e: FocusEvent) => {
     const t = elementOf(e.target);
-    const byUser = Date.now() - lastPressAt < 500 && (tabbed || (lastPress && (t?.contains(lastPress) || lastPress.contains(t))));
+    const byUser = clock() - lastPressAt < 500 && (tabbed || (lastPress && (t?.contains(lastPress) || lastPress.contains(t))));
     if (t && !byUser) all().forEach((w) => !w.el.contains(t) && (w.reacted = true));
   });
 
@@ -234,7 +234,7 @@ export function startActionCollector<C>(o: ActionCollectorOptions<C>): ActionCol
     const target = elementOf(e.target);
     if (!target) return;
     const el = resolveTarget(target);
-    const now = Date.now();
+    const now = clock();
     const src = o.ignoreSelectors?.();
     if (src !== ignoreSrc) {
       ignoreSrc = src;
@@ -280,7 +280,7 @@ export function startActionCollector<C>(o: ActionCollectorOptions<C>): ActionCol
         try {
           records();
           // A verdict this late means the page was blocked (alert, confirm, heavy work).
-          if (Date.now() - now > FRUSTRATION_WINDOW_MS + 250) p.reacted = true;
+          if (clock() - now > FRUSTRATION_WINDOW_MS + 250) p.reacted = true;
           settle(p);
         } catch {
           // Monitoring must never break the host page.
