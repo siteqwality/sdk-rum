@@ -53,7 +53,7 @@ const SECRET = /pass|secret|token|auth|api.?key|cookie|session|card|cvv|cvc|ssn/
 export function allowedHeaders(list: readonly string[]): string[] {
   return list
     .map((h) => h.toLowerCase())
-    .filter((h) => !/cookie|token|secret|key|auth/.test(h));
+    .filter((h) => !SECRET.test(h) && !/key/.test(h));
 }
 
 /** A body for capture: secret JSON keys and form fields redacted, patterns scrubbed, cut. */

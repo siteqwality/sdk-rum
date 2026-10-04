@@ -215,6 +215,7 @@ export function createInstance(opts: InitOptions) {
     const fn = opts.beforeSend;
     if (typeof fn !== 'function') return e;
     const draft = JSON.parse(JSON.stringify(e)) as SqEvent;
+    // A promise (beforeSend must be synchronous) has no event fields: the event goes unchanged.
     let r: unknown;
     inHook = true;
     try {
@@ -228,10 +229,6 @@ export function createInstance(opts: InitOptions) {
     if ((r === false || r === null) && kind !== 'view') {
       count('before_send_dropped');
       return null;
-    }
-    if (typeof (r as { then?: unknown } | null)?.then === 'function') {
-      warnOnce('hookAsync', 'beforeSend must return synchronously');
-      r = undefined;
     }
     const chosen = (r && typeof r === 'object' ? r : draft) as Record<string, unknown>;
     const out = { ...e };

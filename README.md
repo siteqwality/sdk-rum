@@ -267,7 +267,7 @@ dropped.
 | File | gzip | Budget |
 |---|---|---|
 | Core `sdk.min.js` | 25.9 KB | 26 KB (CI gate) |
-| Replay chunk `recorder-2.0.0.min.js` | 26.6 KB | 30 KB |
+| Replay chunk `recorder-2.0.0.min.js` | 27.0 KB | 30 KB |
 
 The design estimated 18 KB for the core, leaving out stack parsing and grouping, resource timing and
 the URL minimiser; 26 KB is the accepted 2.0 budget, and CI fails a build past it. Pages that never

@@ -126,6 +126,5 @@ describe('evaluation', () => {
     expect(r.decision.rule_id).toBe('r_a');
     r.input({ k: 'event', name: 'go' });
     expect(r.decision).toEqual({ analyze: true, replay: true, rule_id: 'r_p' });
-    expect(r.replayCandidates()).toBe(true);
   });
 });

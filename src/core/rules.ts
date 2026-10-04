@@ -184,9 +184,5 @@ export function createRules(facts: StaticFacts, onDecision: (d: Decision) => voi
       interacted = true;
       settle();
     },
-    /** Sampled-in rules that can record replay (2.1 starts the replay ring for these). */
-    replayCandidates(): boolean {
-      return states.some((s) => s.rule.capture === 'replay');
-    },
   };
 }

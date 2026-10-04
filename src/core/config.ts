@@ -109,15 +109,13 @@ export const clearCachedConfig = (appId: string): void => storage.del('localStor
 
 /** GET `<base>/rum/config/v2/<app>.json` without credentials or custom headers, 3 s timeout. */
 export function fetchConfig(base: string, appId: string, fetchFn: typeof fetch): Promise<Record<string, unknown>> {
-  const ctl = typeof AbortController === 'function' ? new AbortController() : undefined;
+  const ctl = new AbortController();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      ctl?.abort();
-      reject(new Error('timeout'));
-    }, 3_000);
-    fetchFn(`${base.replace(/\/+$/, '')}/rum/config/v2/${encodeURIComponent(appId)}.json`, { credentials: 'omit', signal: ctl?.signal })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
-      .then((json) => (isObj(json) && json.v === 2 ? resolve(json) : reject(new Error('shape'))), reject)
+    const timer = setTimeout(() => (ctl.abort(), reject(Error('timeout'))), 3_000);
+    fetchFn(`${base.replace(/\/+$/, '')}/rum/config/v2/${encodeURIComponent(appId)}.json`, { credentials: 'omit', signal: ctl.signal })
+      // An error page is never a v2 config.
+      .then((res) => res.json())
+      .then((json) => (isObj(json) && json.v === 2 ? resolve(json) : reject(Error('shape'))), reject)
       .finally(() => clearTimeout(timer));
   });
 }
