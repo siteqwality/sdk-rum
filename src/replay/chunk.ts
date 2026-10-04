@@ -14,6 +14,8 @@ import type { SdkConfig } from '../types';
 
 /** What the chunk reads of the core's session: its id and window at start, the rest live. */
 export interface ReplaySession {
+  /** True only without an explicit Domain cookie; captured before any persistence fallback. */
+  readonly hostOnly?: boolean;
   readonly id: string;
   readonly windowId: string;
   /** Renewed by a back-forward cache restore. */
@@ -76,6 +78,10 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   kind = o.store;
   // The session this recording belongs to; the core restarts the chunk for another.
   const sid = o.session.id;
+  // Origin-local storage and Web Locks cannot bound a shared cross-subdomain session.
+  // Even Domain=currentHost includes descendant hosts. DOM replay remains available.
+  const canvas = o.cfg.capture.canvas?.enabled === true && o.cfg.privacy.level !== 'strict';
+  if (canvas && !o.session.hostOnly) o.count('canvas_cross_origin_budget_unavailable');
   const win = o.session.windowId;
   const capped = () => o.store && storage.get(o.store, CAP_KEY) === sid;
   // 2.0.0 kept a lease and a segment counter shared by tabs; per-window streams need neither.
@@ -189,7 +195,7 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     started = true;
     recorder.start({
       record,
-      canvas: o.cfg.capture.canvas?.enabled === true && o.cfg.privacy.level !== 'strict' ? emit => {
+      canvas: canvas && o.session.hostOnly === true ? emit => {
         let alive = true;
         let stop: (() => void) | undefined;
         void loadCanvas().then(start => {

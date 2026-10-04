@@ -73,7 +73,7 @@ URL with its `Authorization`, `Content-Type` and `x-sq-replay-index` headers.
 | `service`, `env`, `version` | none | Sent with every batch; `version` selects source maps |
 | `trackingConsent` | `'granted'`, or `'pending'` when the app requires consent | See Consent |
 | `persistence` | `'cookie'` | `'localStorage'` or `'memory'` (one page load, nothing stored) |
-| `cookieDomain` | the page's host | Share the session across subdomains, e.g. `'example.com'` |
+| `cookieDomain` | host-only cookie | Share the session across subdomains, e.g. `'example.com'`; any nonempty value disables canvas capture |
 | `hashRouting` | `false` | One page view per `#/route` |
 | `routeName(path)` | none | Route name for a path, e.g. `'/users/:id'` |
 | `allowedQueryParams`, `deniedQueryParams` | none | See URL minimisation |
@@ -271,7 +271,8 @@ enabled. Invalid selectors fail closed. The sampler follows replay consent, GPC,
 URLs, visibility, idle and session boundaries. Canvas configuration changes restart capture from
 a fresh snapshot.
 
-The separate `canvas-2.2.0.min.js` chunk loads only for opted-in non-Strict recording. It samples
+The separate `canvas-2.2.0.min.js` chunk loads only for opted-in non-Strict recording without a
+nonempty explicit `cookieDomain`. It samples
 visible canvases at at most 2 fps, resizes to a maximum side of 1,280 pixels and encodes WebP at
 quality at most 0.4. Off-screen, hidden, zero-size, tainted and unsupported canvases emit no pixels.
 It reads 2D/WebGL output without patching drawing commands or clearing the application's context.
@@ -280,13 +281,19 @@ Canvas stops after reserving at most 20,000,000 serialized frame-event bytes per
 including frames held in the error ring. DOM replay continues. Shared-storage reservations use
 Web Locks across same-origin tabs and survive reloads; without locks or usable storage, that
 canvas capture fails closed. Memory persistence shares a counter within the page only. Different
-origins cannot share this client-side counter, so a hard aggregate cross-subdomain cap requires
-backend enforcement.
+origins cannot share this client-side counter. Any nonempty explicit `cookieDomain` therefore
+disables canvas before its module loads and reports `canvas_cross_origin_budget_unavailable` in
+the drop counters. This includes a domain equal to the current hostname, rejected domain cookies,
+and memory persistence with that option. DOM replay and Observe/Analyze continue. An omitted or
+empty `cookieDomain` keeps the default host-only behavior. Supporting canvas for shared
+cross-subdomain sessions requires an authoritative server budget grant before capture, including
+bytes held in the error ring. The current client guard does not claim a global server-enforced cap.
 
 Frames use native rrweb type 3/source 9 bitmap commands; `sq-canvas-ref` links an element across
 checkouts and the cap emits custom tag `sq-canvas-cap`.
 See [the player contract](docs/plans/2026-10-04-canvas-opt-in.md). This candidate must remain
-unpublished until WP7.2 proves playback, seeking and last-frame retention across checkouts.
+unpublished until player and deployed compactor/API release gates are confirmed. Player PR135
+provides local playback, seeking and last-frame retention proof; production integration is separate.
 
 ## Web Vitals
 

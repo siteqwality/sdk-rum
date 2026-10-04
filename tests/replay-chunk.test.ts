@@ -124,6 +124,23 @@ function visibility(state: 'hidden' | 'visible') {
 
 // jsdom snapshots and real gzip are slow on shared CI runners.
 describe('startReplay', { timeout: 30_000 }, () => {
+  it('reports a canvas-only refusal for a shared-domain session and still sends DOM mutations', async () => {
+    start({ session: { hostOnly: false, id: SID, windowId: 'w-1', pageLoadId: pageLoad, decision }, cfg: normalizeConfig({ capture: { canvas: { enabled: true } } }, 'a') });
+    await mutate('DOM after canvas refusal');
+    visibility('hidden');
+    await until(() => JSON.stringify(sent).includes('DOM after canvas refusal'));
+    expect(JSON.stringify(sent)).toContain('DOM after canvas refusal');
+    expect(counts.filter(c => c === 'canvas_cross_origin_budget_unavailable')).toHaveLength(1);
+    expect(states).toEqual(['recording', 'hidden']);
+    expect(localStorage.getItem('_sq_cb')).toBeNull();
+  });
+
+  it.each([{}, { capture: { canvas: { enabled: true } }, privacy: { level: 'strict' } }])('does not report a domain refusal when canvas is already disabled', cfg => {
+    start({ session: { hostOnly: false, id: SID, windowId: 'w-1', pageLoadId: pageLoad, decision }, cfg: normalizeConfig(cfg, 'a') });
+    expect(states).toEqual(['recording']);
+    expect(counts).not.toContain('canvas_cross_origin_budget_unavailable');
+  });
+
   it('streams this window\'s page load as segments v2: q from 0, the rule, the version', async () => {
     start();
     await mutate('one');

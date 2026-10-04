@@ -65,6 +65,21 @@ not those future player features. Keep this candidate unpublished until that int
 
 The PR body records completed validation and release prerequisites.
 
+## Explicit cookieDomain guard
+
+Any nonempty init `cookieDomain` disables canvas in the lazy replay chunk before the canvas
+module loads. The session exposes a boolean captured when its cookie scope is initialized, so
+later caller mutations cannot bypass the guard. DOM replay and Observe/Analyze
+continue, and the drop counter reports `canvas_cross_origin_budget_unavailable` when an otherwise
+enabled canvas recording is refused. A Domain cookie equal to the current hostname still covers
+descendant hosts, so it receives no exception. Rejected cookies and memory persistence also receive
+no exception when the option is nonempty. Omitted and empty values retain host-only capture.
+
+This closes the configured cross-subdomain budget gap without claiming global enforcement by the
+existing Lambda-local replay counter. Future support needs atomic pre-capture server grants keyed
+by app and session, covering error-ring bytes and idempotent retries across origins. The current
+player implementation is frontend PR135; deployed compactor/API integration remains a release gate.
+
 ## Review focus
 
 1. Late asynchronous frames must never escape a stopped recording or become a new session's pixels.

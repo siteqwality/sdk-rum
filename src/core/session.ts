@@ -192,6 +192,8 @@ export function createSession(opts: SessionOptions) {
   }
 
   return {
+    /** No configured Domain cookie, so the session cannot span configured subdomains. */
+    hostOnly: !domain,
     get id() {
       return rec.id;
     },

@@ -15,6 +15,52 @@ function draw(t){two.fillStyle=t%1000<500?'red':'blue';two.fillRect(0,0,2560,128
 </script>`;
 const frames = (intake: Intake) => intake.segments().flatMap(s => s.events).filter((e: any) => e.type === 3 && e.data?.source === 9) as any[];
 const visible = (page: any) => page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+
+for (const [name, options, ring] of [
+  ['current hostname', "cookieDomain:location.hostname,", false],
+  ['rejected domain cookie', "cookieDomain:'.example.test',", false],
+  ['memory persistence', "cookieDomain:location.hostname,persistence:'memory',", false],
+  ['error ring', "cookieDomain:location.hostname,", true],
+] as const) test(`explicit cookieDomain blocks canvas for ${name} while DOM replay continues`, async ({ page, intake }) => {
+  intake.config = ring ? { ...config(), rules: REPLAY_ON_ERROR.rules } : config();
+  const requested: string[] = [];
+  page.on('request', r => requested.push(r.url()));
+  await page.goto(intake.page('domain-guard', `<!doctype html><body>${dom}<p id="proof"></p>${snippet(intake, '/sdk/sdk.min.js', options)}</body>`));
+  await sdkLoaded(page);
+  await page.waitForTimeout(1100);
+  if (ring) {
+    expect(intake.segments()).toHaveLength(0);
+    await page.evaluate(() => (window as any).SiteQwalityRUM.addError(new Error('release ring')));
+  }
+  await page.evaluate(() => { document.getElementById('proof')!.textContent = 'DOM recording continues'; });
+  await page.waitForTimeout(100);
+  await hide(page);
+  await expect.poll(() => JSON.stringify(intake.segments())).toContain('DOM recording continues');
+  expect(frames(intake)).toEqual([]);
+  expect(requested.filter(u => u.includes('/canvas-'))).toEqual([]);
+  expect(JSON.stringify(intake.segments())).not.toContain('sq-canvas-');
+  expect(await page.evaluate(() => localStorage.getItem('_sq_cb'))).toBeNull();
+  expect(await page.evaluate(() => (window as any).SiteQwalityRUM.getStatus())).toMatchObject({
+    sampled: { analyze: true, replay: true },
+    dropped: { canvas_cross_origin_budget_unavailable: 1 },
+  });
+  await expect.poll(() => intake.events('view_end').length).toBeGreaterThan(0);
+  await visible(page);
+  await page.waitForTimeout(700);
+  await hide(page);
+  expect(frames(intake)).toEqual([]);
+  expect(requested.filter(u => u.includes('/canvas-'))).toEqual([]);
+});
+
+test('empty cookieDomain retains host-only canvas capture', async ({ page, intake }) => {
+  intake.config = config();
+  await page.goto(intake.page('host-only', `<!doctype html><body>${dom}${snippet(intake, '/sdk/sdk.min.js', "cookieDomain:'',")}</body>`));
+  await sdkLoaded(page);
+  await page.waitForTimeout(1100);
+  await hide(page);
+  await expect.poll(() => frames(intake).length).toBeGreaterThan(0);
+});
+
 function canvasIds(intake: Intake) {
   const ids: Record<string, number> = {};
   const walk = (n: any) => { if (n?.tagName === 'canvas' && n.attributes.id) ids[n.attributes.id] = n.id; n?.childNodes?.forEach(walk); };

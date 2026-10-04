@@ -27,9 +27,10 @@ async function boot(rules: unknown[], init: Record<string, unknown> = {}) {
   const net: Net = stubNetwork(config({ rules }));
   Fresh._reset();
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
-  await Fresh.init({ applicationId: 'app-1', clientToken: 't', ingestBase: 'https://in.test', replayBase: 'https://rp.test', configBase: 'https://cdn.test', ...init });
+  const options = { applicationId: 'app-1', clientToken: 't', ingestBase: 'https://in.test', replayBase: 'https://rp.test', configBase: 'https://cdn.test', ...init };
+  await Fresh.init(options);
   await settle(5);
-  return { Fresh, net };
+  return { Fresh, net, options };
 }
 
 const errorRule = rule('replay', [{ kind: 'error' }], { id: 'r_err' });
@@ -46,6 +47,14 @@ afterEach(() => {
 });
 
 describe('the replay ring in the core', () => {
+  it('retains the session cookie domain when caller options change before consent', async () => {
+    const { Fresh, options } = await boot([rule('replay')], { cookieDomain: 'example.test', trackingConsent: 'pending' });
+    Object.assign(options, { cookieDomain: '' });
+    Fresh.setTrackingConsent('granted');
+    await settle(5);
+    expect(captured.o!.session.hostOnly).toBe(false);
+  });
+
   it('an errored-sessions rule loads the recorder at once, buffering; the error makes it stream', async () => {
     const { Fresh, net } = await boot([errorRule]);
     expect(captured.starts).toBe(1);

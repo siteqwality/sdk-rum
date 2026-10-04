@@ -122,7 +122,8 @@ function cdn(req, res) {
     const bytes = fs.readFileSync(file);
     mock.record({
       host: 'cdn', method: req.method, path: url.pathname, url: url.href, kind: 'sdk_asset', status: 200,
-      wireBytes: bytes.length, gzipBytes: zlib.gzipSync(bytes).length, headers: req.headers,
+      // Match scripts/size-budgets.json and the bundle gate: asset sizes use gzip -9.
+      wireBytes: bytes.length, gzipBytes: zlib.gzipSync(bytes, { level: 9 }).length, headers: req.headers,
     });
     return send(res, 200, bytes, { ...cors, 'Content-Type': 'text/javascript; charset=utf-8' });
   }

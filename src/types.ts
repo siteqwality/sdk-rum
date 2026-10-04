@@ -26,7 +26,7 @@ export interface InitOptions {
   trackingConsent?: Consent;
   /** Where the session lives. Default 'cookie' (shared by tabs). */
   persistence?: 'cookie' | 'localStorage' | 'memory';
-  /** Shares the session cookie across subdomains, e.g. 'example.com'. */
+  /** Shares the session cookie across subdomains, e.g. 'example.com'. Nonempty values disable canvas capture because its byte budget is origin-local. DOM replay continues. */
   cookieDomain?: string;
   /** One view per `#/route`. Default false. */
   hashRouting?: boolean;
