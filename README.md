@@ -137,6 +137,7 @@ through a first-party cookie; each tab has its own window id.
 | `_sq_aid` | `localStorage` | Anonymous id, 13 months; not set without consent or under GPC |
 | `_sq_cfg_<app>` | `localStorage` | Cached config |
 | `_sq_bgt`, `_sq_bgr` | as the session | Request budget counters (core, replay) |
+| `_sq_rcap` | as the session | Session id whose replay reached the backend cap; removed on consent withdrawal |
 | `_sq_optout` | `localStorage` | Opt-out |
 
 2.1 no longer uses 2.0's `_sq_rseq` and `_sq_rl` and removes them when replay starts.
@@ -244,10 +245,15 @@ applies the same rules server-side.
   preflight cache. The client token stays in `Authorization`; it is never put in the URL.
   Proxies must allow `authorization`, `content-type`, and `x-sq-replay-index` and return
   `Access-Control-Max-Age` on OPTIONS. Deploy that backend support before SDK 2.1.
-- **Replay refusal**: 401/403 stops replay for this page load with reason `refused`; Observe and
-  Analyze continue. The v2 rollout's `not_enabled` response is currently an empty 403, so the SDK
-  cannot distinguish it from an auth/origin denial and does not retry against v1. A 429, including
-  the backend per-session cap, honours `Retry-After` for all segments and the unload tail.
+- **Replay refusal**: `403 {"reason":"not_enabled"}` falls back to Observe/Analyze-only operation
+  with recording stopped and reason `not_enabled` for this page load. It never retries against v1.
+  Other 401/403 responses, including empty, unknown or malformed 403 bodies, stop replay with
+  reason `refused`. Observe and Analyze continue.
+- **Replay session cap**: `429 {"reason":"session_cap"}` stops capture and delivery with reason
+  `session_cap`, discards queued data and the unload tail, and does not retry for that session.
+  Tabs sharing storage learn the cap before sending and on their next 15-second check; reloads
+  retain it. A new session may record again. Other 429s, including an older backend's bare 429,
+  retain backoff and honour `Retry-After` for all segments and the unload tail.
 
 A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
 watched it sends at most three segments a minute.

@@ -162,7 +162,7 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     expect(fetchSpy.mock.calls.map((c) => index(c).get('q'))).toEqual(['0', '0', '1']);
   });
 
-  it('honours the per-session cap Retry-After through later segments and unload', async () => {
+  it('honours a legacy bare 429 Retry-After through later segments and unload', async () => {
     fetchSpy.mockImplementationOnce(() => fail(429, { 'Retry-After': '3600' }));
     const count = vi.fn();
     const t = make({ count });
@@ -176,6 +176,41 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     await settle();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(count).toHaveBeenCalledWith('replay_tail_dropped', 3);
+    t.stop();
+  });
+
+  it.each([
+    [403, '{"reason":"not_enabled"}', 'not_enabled'],
+    [429, '{"reason":"session_cap"}', 'session_cap'],
+    [403, '{"reason":"session_cap"}', 'refused'],
+    [403, '{"reason":"unknown"}', 'refused'],
+    [403, 'not json', 'refused'],
+    [403, 'null', 'refused'],
+    [401, '{"reason":"not_enabled"}', 'refused'],
+  ])('handles status %s and body %s as terminal %s without retries or an unload tail', async (status, body, reason) => {
+    fetchSpy.mockImplementation(() => Promise.resolve(new Response(body, { status: Number(status), headers: { 'Retry-After': '3600' } })));
+    const refused = vi.fn();
+    const t = make({ refused });
+    const st = fresh();
+    await t.push(st, snap(1));
+    expect(refused).toHaveBeenCalledExactlyOnceWith(reason);
+    await t.push(st, inc(2));
+    t.unload({ stream: st, seg: inc(3) })();
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['{"reason":"not_enabled"}', '{"reason":"unknown"}', 'not json'])('keeps ordinary 429 retry behavior for %s', async (body) => {
+    fetchSpy.mockImplementationOnce(() => Promise.resolve(new Response(body, { status: 429, headers: { 'Retry-After': '10' } })));
+    const refused = vi.fn();
+    const t = make({ refused });
+    await t.push(fresh(), snap(1));
+    expect(refused).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await until(() => fetchSpy.mock.calls.length === 2);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
     t.stop();
   });
 

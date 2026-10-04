@@ -333,7 +333,7 @@ export function createInstance(opts: InitOptions) {
               gone = true;
               if (replay === handle) replay = null;
               // Past its own budget only replay stops, for the rest of the session.
-              if (why === 'replay_budget') replaySpent = sid;
+              if (why === 'replay_budget' || why === 'session_cap') replaySpent = sid;
               else latched = why ?? '';
             }
             setRecording(state, why);

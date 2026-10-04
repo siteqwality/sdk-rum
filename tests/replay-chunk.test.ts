@@ -314,6 +314,33 @@ describe('startReplay', { timeout: 30_000 }, () => {
     expect(localStorage.getItem('_sq_rseq')).toBeNull();
   });
 
+  it('keeps a backend session cap across recorder restarts and allows a new session', async () => {
+    const f = vi.fn(async () => new Response('{"reason":"session_cap"}', { status: 429, headers: { 'Retry-After': '3600' } }));
+    start({ fetch: f as typeof fetch });
+    await until(() => states.includes('session_cap'));
+    expect(states.at(-1)).toBe('session_cap');
+    expect(f).toHaveBeenCalledTimes(1);
+    start({ fetch: f as typeof fetch });
+    await run(61_000);
+    expect(states.at(-1)).toBe('session_cap');
+    expect(f).toHaveBeenCalledTimes(1);
+    start({ session: { id: '01a10521-0000-7000-8000-000000000002', windowId: 'w-1', pageLoadId: 'new-page', decision } });
+    await until(() => sent.length > 0);
+    expect(sent).toHaveLength(1);
+    expect(states.at(-1)).toBe('recording');
+  });
+
+  it('stops an unsent ring when another tab records the session cap', async () => {
+    start({ live: false });
+    localStorage.setItem('_sq_rcap', SID);
+    await run(15_000);
+    expect(states.at(-1)).toBe('session_cap');
+    handle!.go();
+    pagehide();
+    await run(1_000);
+    expect(fetches).toBe(0);
+  });
+
   it('removes every listener and timer when stopped', async () => {
     const check = vi.fn();
     start({ check });

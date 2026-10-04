@@ -18,7 +18,7 @@ export type { Stream };
 interface Pending {
   stream: Stream;
   q: number;
-  /** First and last event times and the event count, for the query. */
+  /** First and last event times and the event count, for the index. */
   ft: number;
   lt: number;
   n: number;
@@ -42,7 +42,7 @@ export interface TransportHooks {
   /** Drop counters for `status`. */
   count?: (name: string, n?: number) => void;
   /** Intake refusal stops capture as well as delivery. */
-  refused?: () => void;
+  refused?: (reason: string) => void;
 }
 
 /** gzip, with fflate where CompressionStream is missing; null when neither works. */
@@ -80,7 +80,24 @@ export class ReplayTransport {
     private fetchFn: typeof fetch,
     private send: typeof coreSend,
     private hooks: TransportHooks = {},
-  ) {}
+  ) {
+    // Replay-specific response reasons stay in the lazy chunk. The core keeps its retry policy.
+    this.fetchFn = async (input, init) => {
+      const res = await fetchFn(input, init);
+      if (res.status === 403 || res.status === 429) {
+        try {
+          const reason = (await res.json())?.reason;
+          if (!this.stopped && ((res.status === 403 && reason === 'not_enabled') || (res.status === 429 && reason === 'session_cap'))) {
+            this.stop();
+            this.hooks.refused?.(reason);
+          }
+        } catch {
+          // Empty, malformed or unreadable responses retain the status-based policy.
+        }
+      }
+      return res;
+    };
+  }
 
   /** Drops everything queued and sends nothing more (consent, opt-out, budget). */
   stop(): void {
@@ -175,7 +192,7 @@ export class ReplayTransport {
       } else if (isRefused(outcome) || outcome.status === 0) {
         // Refused by the intake, or by the request budget: nothing more goes.
         this.stop();
-        if (isRefused(outcome)) this.hooks.refused?.();
+        if (isRefused(outcome)) this.hooks.refused?.('refused');
       } else {
         this.shift();
         this.drop(p, outcome.status === 413);

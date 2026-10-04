@@ -50,6 +50,8 @@ export class Intake {
   readonly pages = new Map<string, string>();
   config: Record<string, unknown> = { v: 2, rules: [] };
   replayStatus = 202;
+  replayBody = '{}';
+  replayRetryAfter = '';
   private server: Server;
   origin = '';
   crossOrigin = '';
@@ -148,7 +150,7 @@ export class Intake {
       const gzip = raw[0] === 0x1f && raw[1] === 0x8b;
       if (gzip) raw = gunzipSync(raw);
       this.received.push({ kind, body: JSON.parse(raw.toString('utf8')), gzip, at: Date.now(), path: url.pathname, query, headers: req.headers, contentType: req.headers['content-type'] });
-      return { status: kind === 'segments' ? this.replayStatus : 202, type: 'application/json', body: '{}', headers: cors };
+      return { status: kind === 'segments' ? this.replayStatus : 202, type: 'application/json', body: kind === 'segments' ? this.replayBody : '{}', headers: { ...cors, ...(kind === 'segments' && this.replayRetryAfter ? { 'retry-after': this.replayRetryAfter, 'access-control-expose-headers': 'retry-after' } : {}) } };
     }
     return { status: 404, type: 'text/plain', body: '' };
   }

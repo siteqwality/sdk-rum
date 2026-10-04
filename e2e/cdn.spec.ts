@@ -100,12 +100,19 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     }
   });
 
-  test('a v2 rollout refusal stops replay while Observe and Analyze continue', async ({ page, intake }) => {
+  for (const [status, body, reason] of [
+    [403, '', 'refused'],
+    [403, '{"reason":"not_enabled"}', 'not_enabled'],
+    [429, '{"reason":"session_cap"}', 'session_cap'],
+    [403, 'not json', 'refused'],
+  ] as const) test(`replay ${status} ${body || 'empty'} stops as ${reason} while Observe and Analyze continue`, async ({ page, intake }) => {
     intake.config = REPLAY_ALL;
-    intake.replayStatus = 403; // Backend not_enabled is an empty 403, indistinguishable from origin/auth refusal.
+    intake.replayStatus = status;
+    intake.replayBody = body;
+    intake.replayRetryAfter = '3600';
     await page.goto(intake.page('rollout-denied', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Page</p></body></html>`));
     await sdkLoaded(page);
-    await expect.poll(() => page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().reason)).toBe('refused');
+    await expect.poll(() => page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().reason)).toBe(reason);
     await page.evaluate(() => {
       (window as any).SiteQwalityRUM.addError(new Error('after replay denial'));
       console.warn('analyze still active');
@@ -117,6 +124,14 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     expect(intake.segments()).toHaveLength(1);
     expect(intake.received.filter((r) => r.kind === 'segments').every((r) => r.path.endsWith('/v2/segments'))).toBe(true);
     expect(await page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().recording)).toBe('stopped');
+    if (reason === 'session_cap') {
+      await page.reload();
+      await sdkLoaded(page);
+      await expect.poll(() => page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().reason)).toBe('session_cap');
+      expect(intake.segments()).toHaveLength(1);
+      await page.evaluate(() => (window as any).SiteQwalityRUM.setTrackingConsent('not-granted'));
+      expect(await page.evaluate(() => localStorage.getItem('_sq_rcap'))).toBeNull();
+    }
   });
 
   test('without CompressionStream the gzip fallback loads beside the recorder', async ({ page, intake }) => {

@@ -269,4 +269,20 @@ describe('the replay ring in the core', () => {
     expect(captured.starts).toBe(1);
     expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'record_failed' });
   });
+
+  it('a session-cap stop blocks forced restarts but a different session may replay', async () => {
+    const { Fresh } = await boot([rule('replay')]);
+    captured.o!.onStatus('stopped', 'session_cap');
+    Fresh.startReplay({ force: true });
+    await settle(3);
+    expect(captured.starts).toBe(1);
+    expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'session_cap' });
+    const cookie = /(?:^|;\s*)_sq_s=([^;]*)/.exec(document.cookie)![1].split('|');
+    document.cookie = `_sq_s=0199a6b2-7c3e-7f00-8a1b-00000000d0d0|${Number(cookie[1]) - 1000}|${Date.now()}|0;path=/`;
+    await new Promise((r) => setTimeout(r, 1_100));
+    Fresh.addAction('new session');
+    await settle(5);
+    expect(captured.starts).toBe(2);
+    expect(Fresh.getStatus().recording).toBe('recording');
+  });
 });

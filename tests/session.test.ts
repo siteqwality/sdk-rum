@@ -141,9 +141,13 @@ describe('createSession', () => {
     expect(s.setMode('persist')).toBe(false);
     expect(cookie()).toContain(s.id);
     anonymousId();
+    localStorage.setItem('_sq_rcap', s.id);
+    sessionStorage.setItem('_sq_rcap', s.id);
     s.clear();
     expect(cookie()).toBeUndefined();
     expect(localStorage.getItem('_sq_aid')).toBeNull();
+    expect(localStorage.getItem('_sq_rcap')).toBeNull();
+    expect(sessionStorage.getItem('_sq_rcap')).toBeNull();
   });
 
   it('a duplicated tab mints its own window id', async () => {

@@ -64,6 +64,7 @@ const IDLE_DEFAULT_MS = 300_000;
 const IDLE_MIN_MS = 60_000;
 const IDLE_MAX_MS = 1_800_000;
 const CHECK_MS = 15_000;
+const CAP_KEY = '_sq_rcap';
 
 // Replay's own request budget, one per page load, so a replay cap never stops errors or views.
 let kind: ReplayStartOptions['store'];
@@ -75,6 +76,7 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   // The session this recording belongs to; the core restarts the chunk for another.
   const sid = o.session.id;
   const win = o.session.windowId;
+  const capped = () => o.store && storage.get(o.store, CAP_KEY) === sid;
   // 2.0.0 kept a lease and a segment counter shared by tabs; per-window streams need neither.
   for (const k of ['_sq_rl', '_sq_rseq']) storage.del('localStorage', k);
   const ac = new AbortController();
@@ -135,6 +137,10 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     o.replayBase,
     o.token,
     ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (capped()) {
+        fail('session_cap');
+        return Promise.reject(budgetError());
+      }
       const body = init?.body;
       // While the page unloads only keepalive outlives it; anything else is counted and dropped.
       if (unloading && !init?.keepalive) {
@@ -149,10 +155,17 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     {
       lost: () => recorder.resync(),
       tooLarge: () => fail('too_large'),
-      refused: () => fail('refused'),
+      refused: (reason) => {
+        if (reason === 'session_cap' && o.store) storage.set(o.store, CAP_KEY, sid);
+        fail(reason);
+      },
       count: o.count,
     },
   );
+  if (capped()) {
+    fail('session_cap');
+    return handle;
+  }
   if (!budget.pageOpen()) {
     over();
     return handle;
@@ -225,6 +238,7 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     apply();
   });
   timer = setInterval(() => {
+    if (capped()) return fail('session_cap');
     if (!idle && o.now() - lastInput >= idleMs) (idle = true), apply();
     o.check();
   }, CHECK_MS);
