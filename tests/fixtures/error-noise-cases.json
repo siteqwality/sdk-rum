@@ -1,0 +1,212 @@
+[
+  {
+    "name": "resize observer, Chrome wording",
+    "message": "ResizeObserver loop completed with undelivered notifications.",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "resize observer with Uncaught prefix",
+    "message": "Uncaught ResizeObserver loop completed with undelivered notifications.",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "resize observer, older wording",
+    "message": "ResizeObserver loop limit exceeded",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "resize observer padded with whitespace",
+    "message": "  ResizeObserver loop limit exceeded \n",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "resize observer with an app frame is still noise",
+    "message": "ResizeObserver loop completed with undelivered notifications.",
+    "stack": "Error\n    at https://shop.example.com/assets/index-4f9a3c.js:1:2345",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "resize observer not at the start",
+    "message": "Error: ResizeObserver loop limit exceeded",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "resize observer in lower case",
+    "message": "resizeobserver loop limit exceeded",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "script error with a period and no stack",
+    "message": "Script error.",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "script error without a period",
+    "message": "Script error",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "script error with Uncaught prefix",
+    "message": "Uncaught Script error.",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "script error padded with whitespace",
+    "message": "  Script error.  ",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "script error with a stack that names no URL",
+    "message": "Script error.",
+    "stack": "Error: Script error.\n    at <anonymous>",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "script error with a real frame",
+    "message": "Script error.",
+    "stack": "Error\n    at load (https://cdn.example.com/app.js:10:20)",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "script error followed by more text",
+    "message": "Script error. Check the console",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "only one Uncaught prefix is stripped",
+    "message": "Uncaught Uncaught Script error.",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "chrome extension frames only, V8",
+    "message": "TypeError: Failed to fetch",
+    "stack": "TypeError: Failed to fetch\n    at chrome-extension://bkkbcggnhapdmkeljlodobbkopceiche/content.js:1:2345\n    at async chrome-extension://bkkbcggnhapdmkeljlodobbkopceiche/content.js:1:999",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "firefox extension frames only, Gecko",
+    "message": "e is undefined",
+    "stack": "fn@moz-extension://3f1c2a9e-0000-4000-8000-000000000000/content.js:10:5\n@moz-extension://3f1c2a9e-0000-4000-8000-000000000000/content.js:20:1\n",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "safari web extension frame, JSC",
+    "message": "TypeError: undefined is not an object",
+    "stack": "global code@safari-web-extension://ABCDEF12-3456/script.js:1:10",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "legacy safari extension frame",
+    "message": "ReferenceError: x is not defined",
+    "stack": "safari-extension://com.example.ext-ABCDE/inject.js:2:3",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "webkit masked url frame",
+    "message": "TypeError: Load failed",
+    "stack": "@webkit-masked-url://hidden/:1:2",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "legacy edge extension frame",
+    "message": "Error: boom",
+    "stack": "Error: boom\n    at ms-browser-extension://abc123/content.js:1:1",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "extension and app frames mixed",
+    "message": "TypeError: Failed to fetch",
+    "stack": "TypeError: Failed to fetch\n    at chrome-extension://abc/content.js:1:2\n    at checkout (https://shop.example.com/assets/index-4f9a3c.js:3:400)",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "real application error",
+    "message": "TypeError: Cannot read properties of undefined (reading 'discount')",
+    "stack": "TypeError: Cannot read properties of undefined (reading 'discount')\n    at applyCoupon (https://shop.example.com/assets/index-4f9a3c.js:1:5120)\n    at HTMLButtonElement.<anonymous> (https://shop.example.com/assets/index-4f9a3c.js:1:6001)",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "extension URL in the message only",
+    "message": "Failed to fetch chrome-extension://abc/x.js",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "no stack, extension filename",
+    "message": "Uncaught TypeError: Cannot read properties of null",
+    "stack": "",
+    "filename": "chrome-extension://bkkbcggnhapdmkeljlodobbkopceiche/content.js",
+    "ignore": true
+  },
+  {
+    "name": "no stack, application filename",
+    "message": "Uncaught TypeError: Cannot read properties of null",
+    "stack": "",
+    "filename": "https://shop.example.com/assets/index-4f9a3c.js",
+    "ignore": false
+  },
+  {
+    "name": "app frames win over an extension filename",
+    "message": "TypeError: x is not a function",
+    "stack": "TypeError: x is not a function\n    at https://shop.example.com/app.js:1:2",
+    "filename": "moz-extension://abc/content.js",
+    "ignore": false
+  },
+  {
+    "name": "eval frame inside an app script",
+    "message": "SyntaxError: Unexpected token",
+    "stack": "SyntaxError: Unexpected token\n    at eval (eval at run (https://shop.example.com/app.js:1:2), <anonymous>:1:1)",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "browser internal scheme is not an extension",
+    "message": "Error: boom",
+    "stack": "Error: boom\n    at chrome://new-tab-page/shared.js:1:2",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "everything empty",
+    "message": "",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  }
+]

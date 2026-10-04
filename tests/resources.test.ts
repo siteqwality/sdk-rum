@@ -3,6 +3,8 @@ import {
   startResourceCollector,
   createOwnRequestMatcher,
   createExclusionMatcher,
+  resourceType,
+  RESOURCE_TYPES,
   type CollectedResource,
 } from '../src/collectors/resources';
 import { createUrlSanitizer } from '../src/privacy/url';
@@ -266,5 +268,48 @@ describe('startResourceCollector', () => {
       '/b',
       '/c',
     ]);
+  });
+});
+
+describe('resource types', () => {
+  it('passes every allowed initiatorType through', () => {
+    for (const type of RESOURCE_TYPES) expect(resourceType(type)).toBe(type);
+    expect(RESOURCE_TYPES).toHaveLength(23);
+  });
+
+  it('maps anything else to other, a page URL included', () => {
+    for (const value of [
+      'https://shop.example.com/profiles/jane?f=secret',
+      'FETCH',
+      '',
+      'font',
+      undefined,
+      null,
+      42,
+    ]) {
+      expect(resourceType(value)).toBe('other');
+    }
+  });
+
+  it('the collector never sends an initiatorType outside the set', () => {
+    let callback: ((list: { getEntries: () => unknown[] }) => void) | null = null;
+    vi.stubGlobal(
+      'PerformanceObserver',
+      class {
+        constructor(cb: typeof callback) {
+          callback = cb;
+        }
+        observe(): void {}
+      },
+    );
+    const seen: CollectedResource[] = [];
+    startResourceCollector((r) => seen.push(r), createUrlSanitizer(), []);
+    callback!({
+      getEntries: () => [
+        { name: 'https://a.example/favicon.ico', initiatorType: 'https://a.example/p?f=1', duration: 1, transferSize: 0 },
+        { name: 'https://a.example/x.css', initiatorType: 'css', duration: 1, transferSize: 0 },
+      ],
+    });
+    expect(seen.map((r) => r.resource_type)).toEqual(['other', 'css']);
   });
 });

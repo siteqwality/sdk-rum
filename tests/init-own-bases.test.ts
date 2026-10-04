@@ -8,7 +8,8 @@ import { startResourceCollector } from '../src/collectors/resources';
  * requests. Every other collector is stubbed: they need browser APIs jsdom
  * does not provide, and only the wiring is under test here.
  */
-vi.mock('../src/collectors/resources', () => ({
+vi.mock('../src/collectors/resources', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/collectors/resources')>()),
   startResourceCollector: vi.fn(),
 }));
 vi.mock('../src/collectors/views', () => ({ startViewCollector: vi.fn() }));
@@ -38,6 +39,7 @@ function ownBases(): readonly string[] {
 describe('init', () => {
   it('passes the default ingest and replay bases to the resource collector', async () => {
     await SiteQwalityRUM.init({ applicationId: 'app-1', clientToken: 'ct_1' });
+    expect((SiteQwalityRUM as unknown as { instance: { started: boolean } }).instance.started).toBe(true);
     expect(ownBases()).toEqual([
       'https://rum.siteqwality.com',
       'https://replay.siteqwality.com',

@@ -4,3 +4,7 @@ dist/
 
 # macOS Finder metadata
 .DS_Store
+
+# Playwright
+test-results/
+playwright-report/

@@ -3,7 +3,8 @@ import { SiteQwalityRUM } from '../src/init';
 import { startResourceCollector } from '../src/collectors/resources';
 
 // Only the exclusions wiring is under test; the collectors are stubbed.
-vi.mock('../src/collectors/resources', () => ({
+vi.mock('../src/collectors/resources', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/collectors/resources')>()),
   startResourceCollector: vi.fn(),
 }));
 vi.mock('../src/collectors/views', () => ({ startViewCollector: vi.fn() }));

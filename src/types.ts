@@ -41,6 +41,18 @@ export interface RumConfig {
    * Only useful alongside `allowedQueryParams`.
    */
   deniedQueryParams?: string[];
+  /** Errors not to send: a case-sensitive substring of the message (trimmed, one
+   * leading `Uncaught ` removed), or a RegExp tested against it. */
+  ignoreErrors?: Array<string | RegExp>;
+  /** Last look at an error: `false` or `null` drops it, an object replaces it, anything
+   * else sends it with in-place changes. A throw sends the original. */
+  beforeSend?: (
+    event: RumErrorEvent,
+    kind: 'error',
+  ) => RumErrorEvent | false | null | void;
+  /** CDN build only: the session-replay recorder URL, for self-hosting or a strict
+   * CSP. Defaults to `recorder-<version>.min.js` beside the SDK script. */
+  recorderUrl?: string;
 }
 
 export interface RumMeasureEvent {
@@ -56,6 +68,8 @@ export interface RumMeasureEvent {
   ttfb_ms?: number;
   load_time_ms?: number;
   dom_ready_ms?: number;
+  /** On views, and on the vital carrying the initial load timings. */
+  loading_type?: 'initial_load' | 'route_change';
   error_count: number;
   action_count: number;
   resource_count: number;
@@ -119,6 +133,8 @@ export interface SdkConfig {
     };
     /** Resource URL rules set in the dashboard; matching entries are not recorded. */
     resource_exclusions?: string[];
+    /** CSS selectors whose clicks never count as rage or dead clicks. */
+    frustration_ignore_selectors?: string[];
   };
 }
 
@@ -126,6 +142,7 @@ export interface ViewEvent {
   view_id: string;
   url: string;
   timestamp: number;
+  loading_type: 'initial_load' | 'route_change';
   load_time_ms?: number;
   dom_ready_ms?: number;
 }

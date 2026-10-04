@@ -1,78 +1,74 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SiteQwalityRUM } from '../src/init';
-import { ContextManager } from '../src/context';
-import { SessionManager } from '../src/session';
-import {
-  createUrlSanitizer,
-  createTextUrlSanitizer,
-} from '../src/privacy/url';
 import type { RumErrorEvent, RumDetailEvent } from '../src/types';
+import {
+  details,
+  errors,
+  init,
+  resetSdk,
+  serveConfig,
+  settle,
+  MATCH_ALL,
+  type Registry,
+} from './helpers/harness';
 
 /**
- * addError/addAction context handling. A minimal instance is assembled by
- * hand (transports stubbed) instead of running full init, which needs
- * browser APIs (PerformanceObserver, rrweb) jsdom does not provide.
- *
- * `Object.create` skips class field initialisers, so every field the handlers
- * read has to be listed in `installInstance`. `sanitizeUrl` and `sanitizeText`
- * are two of them: production builds both at the top of `start()`.
+ * addError/addAction context handling, through the real init with a
+ * match-all rule (so custom actions ship detail) and recording transports.
  */
 
-const errorEnqueue = vi.fn();
-const eventEnqueue = vi.fn();
+const h = vi.hoisted(() => ({
+  transports: [] as Array<{ endpoint: string; events: unknown[] }>,
+}));
 
-function installInstance(ambient: Record<string, string>): void {
-  const context = new ContextManager({
-    applicationId: 'app-1',
-    clientToken: 'token-1',
-  });
+vi.mock('../src/transport', () => ({
+  TransportManager: class {
+    events: unknown[] = [];
+    constructor(public endpoint: string) {
+      h.transports.push(this);
+    }
+    enqueue(event: unknown) {
+      this.events.push(event);
+    }
+  },
+}));
+vi.mock('../src/collectors/vitals', () => ({ startVitalsCollector: vi.fn() }));
+
+const registry = h.transports as Registry;
+
+async function installInstance(ambient: Record<string, string>): Promise<void> {
+  serveConfig([MATCH_ALL]);
+  await init();
+  await settle();
   for (const [k, v] of Object.entries(ambient)) {
-    context.setGlobalAttribute(k, v);
+    SiteQwalityRUM.setGlobalAttribute(k, v);
   }
-
-  const sanitizeUrl = createUrlSanitizer();
-  const inst = Object.create(SiteQwalityRUM.prototype);
-  Object.assign(inst, {
-    session: new SessionManager(),
-    context,
-    options: { applicationId: 'app-1', clientToken: 'token-1' },
-    currentViewId: 'view-1',
-    sessionState: {
-      hasError: false,
-      errorCount: 0,
-      pageCount: 0,
-      actionCount: 0,
-    },
-    detailActive: true, // actions only ship detail when sampling is active
-    sanitizeUrl,
-    sanitizeText: createTextUrlSanitizer(sanitizeUrl),
-    errorTransport: { enqueue: errorEnqueue },
-    eventTransport: { enqueue: eventEnqueue },
-  });
-  (SiteQwalityRUM as unknown as { instance: unknown }).instance = inst;
 }
 
 function lastError(): RumErrorEvent {
-  return errorEnqueue.mock.calls.at(-1)![0] as RumErrorEvent;
+  return errors(registry).at(-1)!;
 }
 
 function lastAction(): RumDetailEvent {
-  return eventEnqueue.mock.calls.at(-1)![0] as RumDetailEvent;
+  return details(registry).filter((e) => e.type === 'action').at(-1)!;
 }
 
 beforeEach(() => {
-  errorEnqueue.mockClear();
-  eventEnqueue.mockClear();
+  vi.useFakeTimers();
+  resetSdk();
+  h.transports.length = 0;
   history.replaceState({}, '', '/checkout?token=abc123&q=knee+surgery#step-2');
 });
 
 afterEach(() => {
-  (SiteQwalityRUM as unknown as { instance: unknown }).instance = null;
+  resetSdk();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('addError context', () => {
-  it('attaches the context argument to custom_attributes', () => {
-    installInstance({ plan: 'free' });
+  it('attaches the context argument to custom_attributes', async () => {
+    await installInstance({ plan: 'free' });
     SiteQwalityRUM.addError(new Error('boom'), { feature: 'checkout' });
 
     const event = lastError();
@@ -84,8 +80,8 @@ describe('addError context', () => {
     });
   });
 
-  it('per-call context wins over ambient attributes on collision', () => {
-    installInstance({ env: 'prod', plan: 'free' });
+  it('per-call context wins over ambient attributes on collision', async () => {
+    await installInstance({ env: 'prod', plan: 'free' });
     SiteQwalityRUM.addError(new Error('boom'), { env: 'canary' });
 
     expect(lastError().custom_attributes).toEqual({
@@ -94,8 +90,8 @@ describe('addError context', () => {
     });
   });
 
-  it('without context, custom_attributes are the ambient attributes only', () => {
-    installInstance({ plan: 'free' });
+  it('without context, custom_attributes are the ambient attributes only', async () => {
+    await installInstance({ plan: 'free' });
     SiteQwalityRUM.addError(new Error('boom'));
 
     expect(lastError().custom_attributes).toEqual({ plan: 'free' });
@@ -103,8 +99,8 @@ describe('addError context', () => {
 });
 
 describe('addAction context', () => {
-  it('attaches the context argument to custom_attributes', () => {
-    installInstance({ plan: 'free' });
+  it('attaches the context argument to custom_attributes', async () => {
+    await installInstance({ plan: 'free' });
     SiteQwalityRUM.addAction('buy-clicked', { sku: 'sq-123' });
 
     const event = lastAction();
@@ -113,15 +109,15 @@ describe('addAction context', () => {
     expect(event.custom_attributes).toEqual({ plan: 'free', sku: 'sq-123' });
   });
 
-  it('per-call context wins over ambient attributes on collision', () => {
-    installInstance({ env: 'prod' });
+  it('per-call context wins over ambient attributes on collision', async () => {
+    await installInstance({ env: 'prod' });
     SiteQwalityRUM.addAction('buy-clicked', { env: 'canary' });
 
     expect(lastAction().custom_attributes).toEqual({ env: 'canary' });
   });
 
-  it('without context, custom_attributes are the ambient attributes only', () => {
-    installInstance({ plan: 'free' });
+  it('without context, custom_attributes are the ambient attributes only', async () => {
+    await installInstance({ plan: 'free' });
     SiteQwalityRUM.addAction('buy-clicked');
 
     expect(lastAction().custom_attributes).toEqual({ plan: 'free' });
@@ -129,8 +125,8 @@ describe('addAction context', () => {
 });
 
 describe('the url stamped on hand-reported events', () => {
-  it('is minimised, not the raw location.href', () => {
-    installInstance({});
+  it('is minimised, not the raw location.href', async () => {
+    await installInstance({});
     SiteQwalityRUM.addError(new Error('boom'));
     SiteQwalityRUM.addAction('buy-clicked');
 
@@ -142,8 +138,8 @@ describe('the url stamped on hand-reported events', () => {
 });
 
 describe('the message and stack of a hand-reported error', () => {
-  it('have their embedded URLs minimised, and keep the rest of the text', () => {
-    installInstance({});
+  it('have their embedded URLs minimised, and keep the rest of the text', async () => {
+    await installInstance({});
 
     const err = new Error(
       'Failed to fetch https://api.example.com/reset?token=tok_9f2',
@@ -163,8 +159,8 @@ describe('the message and stack of a hand-reported error', () => {
 });
 
 describe('setGlobalAttribute / removeGlobalAttribute', () => {
-  it('adds to custom_attributes on errors and actions; per-call context wins', () => {
-    installInstance({});
+  it('adds to custom_attributes on errors and actions; per-call context wins', async () => {
+    await installInstance({});
     SiteQwalityRUM.setGlobalAttribute('plan', 'pro');
     SiteQwalityRUM.setGlobalAttribute('env', 'prod');
 
@@ -175,14 +171,14 @@ describe('setGlobalAttribute / removeGlobalAttribute', () => {
     expect(lastAction().custom_attributes).toEqual({ plan: 'pro', env: 'prod' });
   });
 
-  it('removes an attribute from later events', () => {
-    installInstance({ plan: 'pro', region: 'eu' });
+  it('removes an attribute from later events', async () => {
+    await installInstance({ plan: 'pro', region: 'eu' });
     SiteQwalityRUM.removeGlobalAttribute('plan');
     SiteQwalityRUM.addError(new Error('boom'));
     expect(lastError().custom_attributes).toEqual({ region: 'eu' });
   });
 
-  it('never throws, before init or on bad input', () => {
+  it('never throws, before init or on bad input', async () => {
     const loose = SiteQwalityRUM as unknown as {
       setGlobalAttribute(k: unknown, v: unknown): void;
       removeGlobalAttribute(k: unknown): void;
@@ -190,7 +186,7 @@ describe('setGlobalAttribute / removeGlobalAttribute', () => {
     expect(() => loose.setGlobalAttribute('plan', 'pro')).not.toThrow();
     expect(() => loose.removeGlobalAttribute('plan')).not.toThrow();
 
-    installInstance({});
+    await installInstance({});
     expect(() => loose.setGlobalAttribute(undefined, undefined)).not.toThrow();
     expect(() => loose.setGlobalAttribute({}, 1)).not.toThrow();
     expect(() => loose.removeGlobalAttribute(undefined)).not.toThrow();
@@ -200,8 +196,8 @@ describe('setGlobalAttribute / removeGlobalAttribute', () => {
 });
 
 describe('user on hand-reported events', () => {
-  it('stamps the user id and email', () => {
-    installInstance({});
+  it('stamps the user id and email', async () => {
+    await installInstance({});
     SiteQwalityRUM.setUser({ id: 'user_123', email: 'user@example.com' });
     SiteQwalityRUM.addError(new Error('boom'));
     SiteQwalityRUM.addAction('buy-clicked');
@@ -212,8 +208,8 @@ describe('user on hand-reported events', () => {
     }
   });
 
-  it('omits both when unset', () => {
-    installInstance({});
+  it('omits both when unset', async () => {
+    await installInstance({});
     SiteQwalityRUM.addError(new Error('boom'));
     expect(lastError()).not.toHaveProperty('user_id');
     expect(lastError()).not.toHaveProperty('user_email');

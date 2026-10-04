@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SiteQwalityRUM } from '../src/init';
 
 // Only when replay starts is under test; the collectors and rrweb are stubbed.
-vi.mock('../src/collectors/resources', () => ({ startResourceCollector: vi.fn() }));
+vi.mock('../src/collectors/resources', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/collectors/resources')>()),
+  startResourceCollector: vi.fn(),
+}));
 vi.mock('../src/collectors/views', () => ({ startViewCollector: vi.fn() }));
 vi.mock('../src/collectors/vitals', () => ({ startVitalsCollector: vi.fn() }));
 vi.mock('../src/collectors/errors', () => ({ startErrorCollector: vi.fn() }));

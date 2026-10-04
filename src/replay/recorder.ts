@@ -1,5 +1,5 @@
-import type { record as rrwebRecord } from '@rrweb/record';
 import type { UrlSanitizer } from '../privacy/url';
+import { loadRecord, type RecordFn } from './load-record';
 import { byteLength } from '../send';
 import { SegmentSequence } from './sequence';
 import { MAX_SEGMENT_BYTES, type ReplaySegment } from './transport';
@@ -13,6 +13,9 @@ const RRWEB_INCREMENTAL_EVENT_TYPE = 3;
 const RRWEB_META_EVENT_TYPE = 4;
 const RRWEB_MUTATION_SOURCE = 0;
 const RRWEB_DOCUMENT_NODE_TYPE = 0;
+
+/** Elements whose content and attributes replay never records. */
+export const HIDDEN_INPUT_SELECTOR = 'input[type="hidden" i]';
 
 /** Events in one segment. */
 export const SEGMENT_MAX_EVENTS = 500;
@@ -29,7 +32,7 @@ export const SEGMENT_MAX_AGE_MS = 30_000;
 /** A fresh full snapshot this often, each one starting a new segment. */
 export const CHECKOUT_EVERY_MS = 60_000;
 
-type RecordOptions = NonNullable<Parameters<typeof rrwebRecord>[0]>;
+type RecordOptions = NonNullable<Parameters<RecordFn>[0]>;
 type GetNode = (id: number) => unknown;
 
 interface MaybeMetaEvent {
@@ -176,6 +179,17 @@ export class SegmentBuffer {
     return true;
   }
 
+  /** Drops the open segment unsent. */
+  discard(): void {
+    if (this.ageTimer) {
+      clearTimeout(this.ageTimer);
+      this.ageTimer = null;
+    }
+    this.json = [];
+    this.bytes = 0;
+    this.snapshot = false;
+  }
+
   /** Sends the open segment; `final` when the page is going away. */
   flush(final = false): void {
     if (this.ageTimer) {
@@ -207,7 +221,9 @@ function counter(): () => number {
 }
 
 export class ReplayRecorder {
-  private record: typeof rrwebRecord | null = null;
+  private record: RecordFn | null = null;
+  /** Bumped by every start and stop, so a start overtaken while loading gives up. */
+  private startEpoch = 0;
   private options: RecordOptions = {};
   private stopRecord: (() => void) | null = null;
   private buffer: SegmentBuffer | null = null;
@@ -230,12 +246,14 @@ export class ReplayRecorder {
     onSegment: (segment: ReplaySegment) => void,
     privacySettings: { maskInputs: boolean; maskText: boolean },
     sanitizeUrl: UrlSanitizer,
+    recorderUrl?: string,
   ): Promise<void> {
     if (this.buffer) return; // already recording
+    const epoch = ++this.startEpoch;
 
     // Lazy-loaded so the core bundle stays small; fetched only when replay starts.
-    const { record } = await import('@rrweb/record');
-    if (this.buffer) return;
+    const record = await loadRecord(recorderUrl);
+    if (this.buffer || epoch !== this.startEpoch) return;
     const sequence = new SegmentSequence(sessionId);
     this.buffer = new SegmentBuffer(onSegment, () => sequence.take());
     this.record = record;
@@ -247,6 +265,8 @@ export class ReplayRecorder {
       recordCrossOriginIframes: false,
       recordCanvas: false,
       maskAllInputs: privacySettings.maskInputs,
+      // maskAllInputs skips hidden inputs (CSRF tokens and the like): never record them.
+      blockSelector: HIDDEN_INPUT_SELECTOR,
       maskTextSelector: privacySettings.maskText ? '*' : undefined,
     };
     this.capture();
@@ -259,6 +279,7 @@ export class ReplayRecorder {
 
   /** Stops recording and sends whatever the open segment holds. */
   stop(): void {
+    this.startEpoch++;
     this.generation++;
     this.stopRecord?.();
     this.stopRecord = null;
@@ -293,6 +314,8 @@ export class ReplayRecorder {
     if (kept === null) return;
     if (!this.buffer.add(sanitizeReplayEvent(kept, this.sanitizeUrl))) {
       // Its later events would replay onto another page, so the page stops here.
+      // The Meta event alone cannot play, so nothing of the page is sent.
+      this.buffer.discard();
       this.generation++;
       console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
       queueMicrotask(() => this.stop());

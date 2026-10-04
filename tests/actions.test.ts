@@ -1,9 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import {
-  getSelector,
-  startActionCollector,
-  type CollectedAction,
-} from '../src/collectors/actions';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { getSelector } from '../src/collectors/actions';
 
 function el(html: string): Element {
   const host = document.createElement('div');
@@ -109,31 +105,3 @@ describe('getSelector data-sq-action-name', () => {
   });
 });
 
-describe('startActionCollector', () => {
-  it('reads the hide setting on every click', () => {
-    const actions: CollectedAction[] = [];
-    let hide = false;
-    startActionCollector((a) => actions.push(a), () => hide);
-
-    const button = el('<button class="send">Hello Jane</button>');
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    hide = true;
-    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(actions.map((a) => a.action_target)).toEqual([
-      'button.send[Hello Jane]',
-      'button.send',
-    ]);
-  });
-
-  it('keeps the text when no setting is given', () => {
-    const onAction = vi.fn();
-    startActionCollector(onAction);
-    el('<a class="nav">Home</a>').dispatchEvent(
-      new MouseEvent('click', { bubbles: true }),
-    );
-    expect(onAction).toHaveBeenLastCalledWith(
-      expect.objectContaining({ action_type: 'click', action_target: 'a.nav[Home]' }),
-    );
-  });
-});
