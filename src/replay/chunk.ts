@@ -55,7 +55,7 @@ export interface ReplayHandle {
 }
 
 /** No user input this long pauses recording (design 5.5), within these bounds. */
-export const IDLE_DEFAULT_MS = 300_000;
+const IDLE_DEFAULT_MS = 300_000;
 const IDLE_MIN_MS = 60_000;
 const IDLE_MAX_MS = 1_800_000;
 const CHECK_MS = 15_000;

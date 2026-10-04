@@ -74,5 +74,13 @@ Mock control API (`http://127.0.0.1:4320/__mock`): `POST /reset`, `PUT /apps/<to
   full snapshot.
 - **Two tabs** (`multi-tab.e2e.js`, `subdomains.e2e.js`): two tabs share one session, on one
   origin or on two subdomains through `cookieDomain` (`*.sq.test` maps to the fixture in
-  Chromium); replay records in one at a time and the session's segments never interleave.
+  Chromium). From 2.1 each tab records its own window: every stream (session, window, page load)
+  numbers from 0, opens with a Meta event and a full snapshot, and plays alone.
+- **Replay ring** (`errors.e2e.js`, `privacy.e2e.js`, `replay_on_error`): nothing leaves the page
+  before the first error; then the replay starts 60 to 120 s before it (page clock), and the
+  canaries hold through the ring at every privacy level.
+- **Segments v2** (`server/ingest.js`): every `/v2/segments` request is checked against design 6.4:
+  UUID `s`, `w`, `p`; a u32 `q`; `ft`, `lt` and `n` matching the events; `fs` and `fin` as `1` or
+  absent; the content type matching the encoding; a page load opening with a Meta event; and the
+  same key never sent twice with different events.
 - Tests finish like a user: hide the tab (simulated, headless pages never hide), then close it.

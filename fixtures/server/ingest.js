@@ -100,6 +100,7 @@ export class MockIngest {
     this.seq = 0;
     this.faults = [];
     this.lastAt = new Map();
+    this.segmentKeys = new Map();
   }
 
   register(token, applicationId, spec = {}) {
@@ -293,20 +294,35 @@ export class MockIngest {
     return 202;
   }
 
+  // Design 6.4, strictly: every index field, and each one agreeing with the body.
   checkSegmentV2(rec, raw) {
     if (raw.length > 2 * 1024 * 1024 || rec.bodyBytes > 16 * 1024 * 1024) return 413;
     const q = rec.query;
-    for (const k of ['s', 'w', 'p', 'q', 'ft', 'lt', 'n']) if (q[k] === undefined) rec.problems.push(`query ${k} missing`);
+    for (const k of ['s', 'w', 'p', 'q', 'ft', 'lt', 'n', 'v']) if (q[k] === undefined) rec.problems.push(`query ${k} missing`);
+    for (const k of ['s', 'w', 'p']) if (q[k] !== undefined && !UUID.test(q[k])) rec.problems.push(`query ${k} is not a UUID`);
+    if (!/^\d+$/.test(q.q || '') || Number(q.q) > 0xffffffff) rec.problems.push('query q is not a u32');
+    for (const k of ['fs', 'fin']) if (q[k] !== undefined && q[k] !== '1') rec.problems.push(`query ${k} is neither 1 nor absent`);
+    if (q.r !== undefined && !q.r) rec.problems.push('query r is empty');
+    if (q.v !== undefined && !/^\d+\.\d+\.\d+$/.test(q.v)) rec.problems.push('query v is not an SDK version');
+    const type = rec.headers['content-type'] || '';
+    if (rec.encoding === 'gzip' ? type !== 'application/octet-stream' : type !== 'application/json') rec.problems.push(`content-type ${type} for a ${rec.encoding} body`);
     const events = rec.json;
-    if (!Array.isArray(events)) {
-      rec.problems.push('body is not a JSON array of rrweb events');
+    if (!Array.isArray(events) || events.length === 0) {
+      rec.problems.push('body is not a non-empty JSON array of rrweb events');
       return 400;
     }
     const stats = rrwebStats(events);
+    const ts = events.map((e) => e?.timestamp);
     if (Number(q.n) !== events.length) rec.problems.push(`query n=${q.n} but ${events.length} events`);
-    if (Number(q.ft) > Number(q.lt)) rec.problems.push('query ft is after lt');
+    if (Number(q.ft) !== Math.min(...ts) || Number(q.lt) !== Math.max(...ts)) rec.problems.push(`query ft..lt ${q.ft}..${q.lt} but events span ${Math.min(...ts)}..${Math.max(...ts)}`);
     if ((q.fs === '1') !== stats.fullSnapshots > 0) rec.problems.push('query fs disagrees with the events');
-    rec.segment = { sessionId: q.s, windowId: q.w, pageLoadId: q.p, index: Number(q.q), final: q.fin === '1', ...stats };
+    if (q.q === '0' && events[0]?.type !== RRWEB_META) rec.problems.push('a page load does not open with a Meta event');
+    // The intake dedupes a retried body; the same key with other content is a numbering bug.
+    const key = `${q.s}|${q.w}|${q.p}|${q.q}`;
+    const seen = this.segmentKeys.get(key);
+    if (seen !== undefined && seen !== rec.bodyText) rec.problems.push(`segment ${key} sent twice with different events`);
+    this.segmentKeys.set(key, rec.bodyText);
+    rec.segment = { sessionId: q.s, windowId: q.w, pageLoadId: q.p, index: Number(q.q), final: q.fin === '1', rule: q.r, version: q.v, ...stats };
     return 202;
   }
 

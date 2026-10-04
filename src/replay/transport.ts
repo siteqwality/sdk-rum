@@ -17,7 +17,14 @@ export type { Stream };
 
 interface Pending {
   stream: Stream;
-  url: string;
+  q: number;
+  /** First and last event times and the event count, for the query. */
+  ft: number;
+  lt: number;
+  n: number;
+  rule?: string;
+  /** The last segment of its page load (set at pagehide). */
+  fin?: boolean;
   text: string;
   /** The gzip body once ready; null when it could not be compressed. */
   body?: Blob | null;
@@ -86,13 +93,18 @@ export class ReplayTransport {
     return !this.queue.length && !this.inFlight;
   }
 
-  private url(stream: Stream, seg: Segment, q: number, fin: boolean, rule?: string): string {
-    const qs = `s=${stream.s}&w=${stream.w}&p=${stream.p}&q=${q}&ft=${seg.ft}&lt=${seg.lt}&n=${seg.json.length}${seg.fs ? '&fs=1' : ''}${fin ? '&fin=1' : ''}${rule ? `&r=${encodeURIComponent(rule)}` : ''}&v=${VERSION}`;
+  private url({ stream, q, ft, lt, n, fs, fin, rule }: Pending): string {
+    const qs = `s=${stream.s}&w=${stream.w}&p=${stream.p}&q=${q}&ft=${ft}&lt=${lt}&n=${n}${fs ? '&fs=1' : ''}${fin ? '&fin=1' : ''}${rule ? `&r=${encodeURIComponent(rule)}` : ''}&v=${VERSION}`;
     return `${this.base}/v2/segments?${qs}`;
   }
 
+  private pending(stream: Stream, seg: Segment, rule?: string): Pending {
+    const text = `[${seg.json.join(',')}]`;
+    return { stream, q: stream.q++ >>> 0, ft: seg.ft, lt: seg.lt, n: seg.json.length, rule, text, bytes: text.length, fs: seg.fs, css: seg.css, zipped: Promise.resolve() };
+  }
+
   /** Queues a closed segment: numbered now, compressed now, sent in order. Never rejects. */
-  push(stream: Stream, seg: Segment, rule?: string, fin = false): Promise<void> {
+  push(stream: Stream, seg: Segment, rule?: string): Promise<void> {
     if (this.stopped) return Promise.resolve();
     if (seg.fs) {
       if (this.lostStream === stream) this.lostStream = null;
@@ -101,9 +113,8 @@ export class ReplayTransport {
       this.hooks.count?.('replay_segments_dropped');
       return this.pump();
     }
-    const text = `[${seg.json.join(',')}]`;
-    const p: Pending = { stream, url: this.url(stream, seg, stream.q++ >>> 0, fin, rule), text, bytes: text.length, fs: seg.fs, css: seg.css, zipped: Promise.resolve() };
-    p.zipped = compress(text).then((b) => {
+    const p = this.pending(stream, seg, rule);
+    p.zipped = compress(p.text).then((b) => {
       p.body = b;
       if (b) {
         this.queued += b.size - p.bytes;
@@ -140,7 +151,7 @@ export class ReplayTransport {
         continue;
       }
       this.inFlight = p;
-      const outcome = await this.send(this.fetchFn, p.url, this.token, body, p.body ? 'application/octet-stream' : 'application/json', size);
+      const outcome = await this.send(this.fetchFn, this.url(p), this.token, body, p.body ? 'application/octet-stream' : 'application/json', size);
       this.inFlight = null;
       if (this.stopped || this.queue[0] !== p) continue;
       if (outcome.kind === 'ok') {
@@ -221,10 +232,10 @@ export class ReplayTransport {
     const out = this.queue.filter((p) => p !== this.inFlight);
     this.queue = this.inFlight ? [this.inFlight] : [];
     this.queued = this.inFlight ? this.inFlight.bytes : 0;
-    if (tail) {
-      const text = `[${tail.seg.json.join(',')}]`;
-      out.push({ stream: tail.stream, url: this.url(tail.stream, tail.seg, tail.stream.q++ >>> 0, true, tail.rule), text, bytes: text.length, fs: tail.seg.fs, css: [], zipped: Promise.resolve() });
-    }
+    if (tail) out.push(this.pending(tail.stream, tail.seg, tail.rule));
+    // The last segment of each page load says so, so its compaction need not wait.
+    const ends = new Set<Stream>();
+    for (let i = out.length - 1; i >= 0; i--) if (!ends.has(out[i].stream)) ends.add(out[i].stream), (out[i].fin = true);
     // A snapshot already in flight usually lands: what follows it still goes.
     const lost = new Set<Stream>(this.lostStream ? [this.lostStream] : []);
     const go: Array<() => void> = [];
@@ -239,7 +250,7 @@ export class ReplayTransport {
         continue;
       }
       // The fetch given refuses anything that cannot go with keepalive by then.
-      go.push(() => void this.send(this.fetchFn, p.url, this.token, body, p.body ? 'application/octet-stream' : 'application/json', size));
+      go.push(() => void this.send(this.fetchFn, this.url(p), this.token, body, p.body ? 'application/octet-stream' : 'application/json', size));
     }
     if (dropped) this.hooks.count?.('replay_tail_dropped', dropped);
     return () => go.forEach((f) => f());

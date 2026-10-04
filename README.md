@@ -43,22 +43,25 @@ page errors raised between the script load and a late `init()` (say, after conse
 | Path | Contents | Cache |
 |---|---|---|
 | `rum/v2/sdk.min.js` | Latest 2.x | 1 day |
-| `rum/v2.0.0/sdk.min.js` | This release, immutable; pin it with Subresource Integrity | 1 year |
+| `rum/v2.1.0/sdk.min.js` | This release, immutable; pin it with Subresource Integrity | 1 year |
 | `recorder-<version>.min.js` | The replay chunk, beside the core it belongs to | as its folder |
+| `gzip-<version>.min.js` | gzip for browsers without `CompressionStream` (Safari before 16.4), beside the replay chunk | as its folder |
 
-`rum/v1/` stays on 1.x. The replay chunk is fetched from beside the core; set `recorderUrl` to
-self-host it.
+`rum/v1/` stays on 1.x. The replay chunk is fetched from beside the core, and the gzip fallback
+from beside the replay chunk; set `recorderUrl` to self-host them (keep both files together).
 
 ## Content Security Policy
 
 ```
 script-src  https://cdn.siteqwality.com
-connect-src https://in.siteqwality.com https://replay.siteqwality.com https://cdn.siteqwality.com
+connect-src https://in.siteqwality.com https://in-replay.siteqwality.com https://cdn.siteqwality.com
 ```
 
-`in.siteqwality.com` takes events, `replay.siteqwality.com` replay segments, and the CDN serves
-the script, the replay chunk and the application's config (fetched with `fetch`, hence
-`connect-src`). To proxy through your own domain, set `ingestBase`, `replayBase` and `configBase`.
+`in.siteqwality.com` takes events, `in-replay.siteqwality.com` replay segments (2.0 used
+`replay.siteqwality.com`), and the CDN serves the script, the replay chunk and the application's
+config (fetched with `fetch`, hence `connect-src`). To proxy through your own domain, set
+`ingestBase`, `replayBase` and `configBase`; a replay proxy forwards `POST /v2/segments` with its
+query string.
 
 ## Options
 
@@ -107,7 +110,12 @@ older than 5 minutes. A paused application sends nothing.
 - **Analyze**, once a recording rule matches: every action, request and resource, console output
   and long animation frames. The last 60 s before the match (up to 500 events) are kept in memory
   and sent with it.
-- **Replay**, once a replay rule matches (or `startReplay`): the recorder loads and records.
+- **Replay**, once a replay rule matches (or `startReplay`). When a replay rule could still match
+  this session (it is sampled in, and its device, release and environment conditions hold), the
+  recorder starts at page load and keeps the last two checkouts in memory (60 to 120 s, at most
+  5 MB). A match sends them, then recording streams, so an error replay shows the minute or two
+  before the error. Without a match nothing is sent or stored, and the memory is dropped when
+  the page goes. Without any such rule the recorder is never downloaded.
 
 A rule matches when all its conditions have held at some point in the session (URL, error, failed
 request, frustration, vital, custom event, identified user, attribute, device, release,
@@ -129,8 +137,9 @@ through a first-party cookie; each tab has its own window id.
 | `_sq_aid` | `localStorage` | Anonymous id, 13 months; not set without consent or under GPC |
 | `_sq_cfg_<app>` | `localStorage` | Cached config |
 | `_sq_bgt`, `_sq_bgr` | as the session | Request budget counters (core, replay) |
-| `_sq_rseq`, `_sq_rl` | `localStorage`, or a cookie with `cookieDomain` | Replay segment numbers; which tab records |
 | `_sq_optout` | `localStorage` | Opt-out |
+
+2.1 no longer uses 2.0's `_sq_rseq` and `_sq_rl` and removes them when replay starts.
 
 Nothing is stored while consent is pending or with `persistence: 'memory'`. Withdrawing consent
 removes every key but the opt-out.
@@ -206,19 +215,31 @@ applies the same rules server-side.
   masked with `*` so the layout stays.
 - **Pauses**: while the tab is hidden, after 5 minutes without input (pointer moves count), and on
   never-record URLs, rrweb stops and nothing is sent. It resumes with a full snapshot, and the gap
-  is marked in the replay. Recording never outlives its session.
-- **One tab at a time**: the tabs of a session share it, and the focused, visible tab records. A
-  tab that takes over starts with a full snapshot, so the session plays back in order (`status`
-  reason `other_tab` in the others). With `cookieDomain`, tabs on its subdomains take turns the
-  same way, through a cookie on that domain. Per-tab replay comes with 2.1.
+  is marked in the replay (`sq-pause`). Recording never outlives its session.
+- **Every tab records its own window**: segments carry the session, window and page load ids and
+  number from 0 per page load, so each page load plays alone and the player orders windows.
+  Hidden tabs pause, so in practice the tab in front records.
+- **Error replays**: with a rule such as Errored sessions, every session keeps its last two
+  checkouts in memory (see What is recorded), so the replay starts 60 to 120 s before the error.
 - **Never-record URLs** use the same pattern language as the error lists: a substring of the page
   URL, or `/regex/`. Expressions see the first 4 KB of the text.
-- **Segments** close at 30 s, 500 events or about 750 KB, and when the tab hides or closes; a full
-  snapshot every 3 minutes keeps seeking fast. A page whose snapshot is over 4 MB is not recorded
-  (`status` reason `too_large`).
+- **Diet**: pointer moves sampled at 50 ms, scrolls at 150 ms, media events at 800 ms; an input's
+  value is recorded when it changes (on blur or Enter), masked as the privacy level says. A node
+  that changes more than 100 times is held to about 10 changes a second, its latest state sent
+  once a second, so the replay ends exact. Mutations past 64 KB a second (averaged over 5 s) are
+  dropped, the gap is marked (`sq-throttle`) and a fresh snapshot follows when the page calms,
+  at most every 30 s. Recording never stops for volume.
+- **Stylesheets** are inlined so the player needs nothing from your site; a checkout names a
+  stylesheet over 1 KB that already reached SiteQwality (`sq-css:<hash>`, FNV-1a 64) instead of
+  sending it again. Images, fonts and canvas are never inlined.
+- **Segments** are gzipped and close at 20 s or about 2.5 MB, at a page's first snapshot (sent at
+  once, so a short page view still plays), and when the tab hides. A full snapshot every 3 minutes,
+  taken where a segment closes, keeps seeking fast. On close, what is left goes with keepalive, as
+  JSON, if it is at most 60 KB; anything else is counted in `status`. A page whose snapshot is over
+  4 MB after stylesheet references is not recorded (`status` reason `too_large`).
 
 A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
-watched it sends about two segments a minute.
+watched it sends at most three segments a minute.
 
 ## Web Vitals
 
@@ -248,7 +269,7 @@ matching URLs, redacted, read up to the size cap (event streams never), and give
 - **Request budget**: whatever the cause (a bug, a retry storm, hidden tabs), the SDK makes at
   most 5,000 requests and 100 MB per session (10,000 and 200 MB per page load) for events, config
   and identity, and apart from those 2,500 requests and 250 MB per session (5,000 and 500 MB per
-  page load) for replay. A 4 h session at full activity makes about 1,500 and 600. Past a ceiling
+  page load) for replay. A 4 h session at full activity makes about 1,500 and 720. Past a ceiling
   it stops sending (replay alone, when it is replay's), says so once in the console and in
   `getStatus()` (reason `request_budget` or `replay_budget`), and resumes only in a new session.
 - **Transport**: batches every 10 s or 200 events, errors within 1 s, gzip above 1 KB, everything
@@ -267,11 +288,12 @@ dropped.
 | File | gzip | Budget |
 |---|---|---|
 | Core `sdk.min.js` | 25.9 KB | 26 KB (CI gate) |
-| Replay chunk `recorder-2.0.0.min.js` | 27.0 KB | 30 KB |
+| Replay chunk `recorder-2.1.0.min.js` | 28.6 KB | 30 KB (CI gate) |
+| gzip fallback `gzip-2.1.0.min.js` | 3.3 KB | 9 KB (CI gate) |
 
 The design estimated 18 KB for the core, leaving out stack parsing and grouping, resource timing and
 the URL minimiser; 26 KB is the accepted 2.0 budget, and CI fails a build past it. Pages that never
-replay download only the core.
+replay download only the core; only browsers without `CompressionStream` download the gzip fallback.
 
 ## Migrating from 1.x
 
@@ -303,6 +325,12 @@ SDK sends; see its README.
 
 ## Changelog
 
+- 2.1.0: replay chunk v2. Segments v2 to `POST /v2/segments` on `in-replay.siteqwality.com` (gzip,
+  window and page load ids, a sequence per page load); every tab records its own window (the 2.0
+  one-tab lease is gone); a replay ring from page load, so error replays start 60 to 120 s before
+  the error; the recorder diet (mutation throttling and coalescing, stylesheet references, input,
+  scroll and media sampling); 20 s segments; a keepalive tail on close; a gzip fallback for
+  browsers without `CompressionStream`.
 - 2.0.0: batch v2 to `in.siteqwality.com` (gzip, keepalive tail, urgent errors); config from the
   CDN, cached; cookie sessions shared by tabs with window and page load ids; Observe, Analyze and
   Replay tiers with rules v2 and a 60 s detail ring; consent, GPC and opt-out; errors with cause
@@ -326,7 +354,8 @@ walk this list before any `npm publish`:
 3. `npm pack --dry-run`: only `dist/esm`, `dist/cjs`, `dist/types`, `README.md`, `LICENSE`,
    `package.json`.
 4. Confirm prod serves what 2.x calls: `POST /v2/batch` and `/v2/identity` on `in.siteqwality.com`,
-   `POST /v1/segments` on `replay.siteqwality.com`, and config at
+   `POST /v2/segments` on `in-replay.siteqwality.com` (2.1; its CORS allows `authorization` and
+   `content-type`), and config at
    `https://cdn.siteqwality.com/rum/config/v2/<app>.json` for live applications.
 5. `npm publish` (scoped, public). Requires `@siteqwality` org membership.
 6. `make deploy` uploads `dist/cdn` to `rum/v<version>/` (immutable; refuses to overwrite) and

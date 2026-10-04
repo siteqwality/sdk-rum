@@ -71,10 +71,12 @@ test('a visible tab left idle for an hour pauses replay and goes quiet', async (
   await simulate(page, 40);
   await sleep(1000);
   const late = await requestsSince(s, expired);
-  // About 5 min of recording before the idle pause, then interim view updates until the
-  // session expires at 15 min; 1.0.x sent about 190 replay requests an hour here.
+  // About 5 min of recording before the idle pause (20 s segments from 2.1, design 5.5: a
+  // snapshot, 15 more and the pause), then interim view updates until the session expires at
+  // 15 min; 1.0.x sent about 190 replay requests an hour here.
   const ledger = new Ledger(`Idle hour with a ticking clock, SDK ${SDK.version}`);
-  ledger.check('segments in the first 20 minutes', segments.length <= 16, { detail: `${segments.length} (limit 16)` });
+  const segLimit = SDK.replayV2 ? 18 : 16;
+  ledger.check('segments in the first 20 minutes', segments.length <= segLimit, { detail: `${segments.length} (limit ${segLimit})` });
   ledger.check('requests in the first 20 minutes', during.length <= 24, { detail: `${during.length} (limit 24)` });
   ledger.check('requests in the last 40 minutes', late.length === 0, { detail: `${late.length} (limit 0): ${late.map((r) => r.path).join(', ') || 'none'}` });
   ledger.print(testInfo);

@@ -3,7 +3,8 @@ import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { gzipSync } from 'node:zlib';
+import { gzipSync, gunzipSync } from 'node:zlib';
+import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parse, type Node } from 'acorn';
 
@@ -15,7 +16,7 @@ import { parse, type Node } from 'acorn';
 const LIVE_URL = process.env.SDK_BUNDLE_URL;
 const ROOT = join(__dirname, '..');
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version: string };
-const budgets = JSON.parse(readFileSync(join(ROOT, 'scripts/size-budgets.json'), 'utf8')) as { core: number; replay: number };
+const budgets = JSON.parse(readFileSync(join(ROOT, 'scripts/size-budgets.json'), 'utf8')) as { core: number; replay: number; gzip: number };
 
 let source = '';
 let bundlePath = '';
@@ -126,6 +127,7 @@ describe('CDN core contents', () => {
   it('names the v2 CDN path and the v2 ingest endpoint, and no v1 intake route', () => {
     expect(source).toContain('https://cdn.siteqwality.com/rum/v2/');
     expect(source).toContain('https://in.siteqwality.com');
+    expect(source).toContain('https://in-replay.siteqwality.com');
     expect(source).toContain('/v2/batch');
     expect(source).not.toContain('rum.siteqwality.com');
     expect(source).not.toMatch(/\/v1\/(measure|events|errors|config)/);
@@ -147,5 +149,26 @@ describe.skipIf(!!LIVE_URL)('CDN replay chunk', () => {
     const gzip = gzipSync(recorder, { level: 9 }).length;
     console.log(`recorder-${pkg.version}.min.js: ${recorder.length} B raw, ${gzip} B gzip`);
     expect(gzip).toBeLessThanOrEqual(budgets.replay);
+  });
+
+  it('sends segments v2 and imports the gzip fallback beside itself, never bundled', () => {
+    const recorder = readFileSync(join(ROOT, `dist/cdn/recorder-${pkg.version}.min.js`), 'utf8');
+    expect(recorder).toContain('/v2/segments');
+    expect(recorder).not.toContain('/v1/segments');
+    expect(recorder).toMatch(/import\(new URL\(`gzip-\$\{\w+\}\.min\.js`,import\.meta\.url\)/);
+    expect(recorder).toContain(`"${pkg.version}"`);
+    expect(recorder).not.toContain('fflate');
+  });
+
+  it(`gzip-${pkg.version}.min.js is an ES module whose gzipText makes real gzip, within budget`, async () => {
+    const file = join(ROOT, `dist/cdn/gzip-${pkg.version}.min.js`);
+    const code = readFileSync(file, 'utf8');
+    const gzip = gzipSync(code, { level: 9 }).length;
+    console.log(`gzip-${pkg.version}.min.js: ${code.length} B raw, ${gzip} B gzip`);
+    expect(gzip).toBeLessThanOrEqual(budgets.gzip);
+    const { gzipText } = (await import(pathToFileURL(file).href)) as { gzipText: (s: string) => Blob };
+    const text = JSON.stringify([{ type: 2, data: { node: 'é'.repeat(1000) } }]);
+    const blob = gzipText(text);
+    expect(gunzipSync(Buffer.from(await blob.arrayBuffer())).toString('utf8')).toBe(text);
   });
 });
