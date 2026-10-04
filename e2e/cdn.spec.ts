@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { test, expect, snippet, sdkLoaded, hide, VERSION, REPLAY_ALL, ANALYZE_ALL } from './fixtures';
+import { test, expect, snippet, sdkLoaded, hide, VERSION, REPLAY_ALL, REPLAY_ON_ERROR, ANALYZE_ALL } from './fixtures';
 
 const HOST_GLOBALS = `<script>
   window.$ = function jQuery() {};
@@ -50,13 +50,170 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     await sdkLoaded(page);
     await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
     expect(requested).toContain(`/sdk/recorder-${VERSION}.min.js`);
+    expect(requested.filter((p) => p.includes('gzip-')), 'the gzip fallback is only for browsers without CompressionStream').toEqual([]);
     const [segment] = intake.segments();
-    expect(segment.segment_index).toBe(0);
-    expect(segment.events.map((e) => e.type).slice(0, 2)).toEqual([4, 2]);
-    expect(JSON.stringify(segment.events)).not.toContain('jane@example.com');
     await hide(page);
     await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
-    expect(intake.batches().at(-1)!.ctx.sampling).toMatchObject({ replay: true, rule_id: 'r_all' });
+    const ctx = intake.batches().at(-1)!.ctx;
+    // Design 6.4: index fields in x-sq-replay-index, a gzip JSON array of rrweb events as the body.
+    expect(segment).toMatchObject({ s: ctx.session_id, w: ctx.window_id, p: ctx.page_load_id, q: 0, fs: true, fin: false, r: 'r_all', v: VERSION, gzip: true, contentType: 'application/octet-stream' });
+    expect(segment.n).toBe(segment.events.length);
+    expect(segment.ft).toBe(Math.min(...segment.events.map((e) => e.timestamp)));
+    expect(segment.lt).toBe(Math.max(...segment.events.map((e) => e.timestamp)));
+    expect(segment.events.map((e) => e.type).slice(0, 2)).toEqual([4, 2]);
+    expect(JSON.stringify(segment.events)).not.toContain('jane@example.com');
+    expect(ctx.sampling).toMatchObject({ replay: true, rule_id: 'r_all' });
+  });
+
+  test('successive cross-origin replay segments reuse one preflight with a fixed URL and header index', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
+    const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && r.url().includes('/replay/v2/segments')) requests.push({ url: r.url(), headers: r.headers() });
+    });
+    await page.goto(intake.page('preflight-cache', `<!doctype html><html><head>${snippet(intake, '/sdk/sdk.min.js', `replayBase: '${intake.crossOrigin}/replay',`)}</head><body><p id="value">initial</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => intake.segments().length).toBe(1);
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate((n) => {
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+        document.getElementById('value')!.textContent = `change ${n}`;
+      }, i);
+      await hide(page);
+      await expect.poll(() => intake.segments().length).toBe(i + 2);
+    }
+    expect(new Set(requests.map((r) => r.url))).toEqual(new Set([`${intake.crossOrigin}/replay/v2/segments`]));
+    expect(intake.received.filter((r) => r.kind === 'preflight' && r.path === '/replay/v2/segments')).toHaveLength(1);
+    expect(intake.segments().map((s) => s.q)).toEqual([0, 1, 2, 3]);
+    for (const r of requests) {
+      expect(r.headers.authorization).toBe('Bearer ct_test');
+      expect(r.url).not.toContain('ct_test');
+      expect(r.headers['x-sq-replay-index']).not.toContain('ct_test');
+    }
+    for (const s of intake.segments()) {
+      expect(s.n).toBe(s.events.length);
+      expect(s.ft).toBe(Math.min(...s.events.map((e) => e.timestamp)));
+      expect(s.lt).toBe(Math.max(...s.events.map((e) => e.timestamp)));
+      expect(s.fs).toBe(s.events.some((e) => e.type === 2));
+      expect(s.r).toBe('r_all');
+    }
+  });
+
+  for (const [status, body, reason] of [
+    [403, '', 'refused'],
+    [403, '{"reason":"not_enabled"}', 'not_enabled'],
+    [429, '{"reason":"session_cap"}', 'session_cap'],
+    [403, 'not json', 'refused'],
+  ] as const) test(`replay ${status} ${body || 'empty'} stops as ${reason} while Observe and Analyze continue`, async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
+    intake.replayStatus = status;
+    intake.replayBody = body;
+    intake.replayRetryAfter = '3600';
+    await page.goto(intake.page('rollout-denied', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Page</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().reason)).toBe(reason);
+    await page.evaluate(() => {
+      (window as any).SiteQwalityRUM.addError(new Error('after replay denial'));
+      console.warn('analyze still active');
+      (window as any).SiteQwalityRUM.startReplay({ force: true });
+    });
+    await hide(page);
+    await expect.poll(() => intake.events('error').length).toBeGreaterThan(0);
+    await expect.poll(() => intake.events('console').length).toBeGreaterThan(0);
+    expect(intake.segments()).toHaveLength(1);
+    expect(intake.received.filter((r) => r.kind === 'segments').every((r) => r.path.endsWith('/v2/segments'))).toBe(true);
+    expect(await page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().recording)).toBe('stopped');
+    if (reason === 'session_cap') {
+      await page.reload();
+      await sdkLoaded(page);
+      await expect.poll(() => page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().reason)).toBe('session_cap');
+      expect(intake.segments()).toHaveLength(1);
+      await page.evaluate(() => (window as any).SiteQwalityRUM.setTrackingConsent('not-granted'));
+      expect(await page.evaluate(() => localStorage.getItem('_sq_rcap'))).toBeNull();
+    }
+  });
+
+  test('without CompressionStream the gzip fallback loads beside the recorder', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
+    const requested: string[] = [];
+    page.on('request', (r) => requested.push(new URL(r.url()).pathname));
+    await page.addInitScript(() => {
+      delete (window as unknown as { CompressionStream?: unknown }).CompressionStream;
+    });
+    await page.goto(intake.page('no-cs', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Old Safari</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(requested).toContain(`/sdk/gzip-${VERSION}.min.js`);
+    expect(intake.segments()[0]).toMatchObject({ gzip: true, contentType: 'application/octet-stream', q: 0, fs: true });
+  });
+
+  test('an errored-sessions rule buffers in memory and sends nothing until the error', async ({ page, intake }) => {
+    intake.config = REPLAY_ON_ERROR;
+    await page.goto(intake.page('ring', `<!doctype html><html><head>${snippet(intake)}</head><body><p id="t">0</p><button id="b">Go</button></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { SiteQwalityRUM: { getStatus(): { recording: string } } }).SiteQwalityRUM.getStatus().recording)).toBe('buffering');
+    const before = Date.now();
+    for (let i = 1; i <= 5; i++) {
+      await page.evaluate((n) => (document.getElementById('t')!.textContent = String(n)), i);
+      await page.waitForTimeout(200);
+    }
+    expect(intake.segments(), 'nothing leaves the page before a rule matches').toHaveLength(0);
+    await page.evaluate(() => setTimeout(() => {
+      throw new Error('boom');
+    }));
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    const [first] = intake.segments();
+    expect(first).toMatchObject({ q: 0, fs: true, r: 'r_err' });
+    expect(first.ft, 'the replay starts before the error, at page load').toBeLessThan(before);
+    await hide(page);
+    await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
+  });
+
+  test('consent granted after load starts the ring, so the error replay still leads the error', async ({ page, intake }) => {
+    intake.config = REPLAY_ON_ERROR;
+    await page.goto(intake.page('consent', `<!doctype html><html><head>${snippet(intake, '/sdk/sdk.min.js', "trackingConsent: 'pending',")}</head><body><p id="t">0</p></body></html>`));
+    await sdkLoaded(page);
+    const status = () => page.evaluate(() => (window as unknown as { SiteQwalityRUM: { getStatus(): { recording: string } } }).SiteQwalityRUM.getStatus().recording);
+    expect(await status()).toBe('off');
+    await page.evaluate(() => (window as unknown as { SiteQwalityRUM: { setTrackingConsent(c: string): void } }).SiteQwalityRUM.setTrackingConsent('granted'));
+    await expect.poll(status).toBe('buffering');
+    await page.waitForTimeout(500);
+    const before = Date.now();
+    await page.evaluate(() => setTimeout(() => {
+      throw new Error('after consent');
+    }));
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(intake.segments()[0].ft).toBeLessThan(before - 300);
+  });
+
+  test('a buffering tab that never matches sends no replay, even when it closes', async ({ page, intake }) => {
+    intake.config = REPLAY_ON_ERROR;
+    await page.goto(intake.page('ring-close', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Quiet</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { SiteQwalityRUM: { getStatus(): { recording: string } } }).SiteQwalityRUM.getStatus().recording)).toBe('buffering');
+    await hide(page);
+    await page.close({ runBeforeUnload: true });
+    await expect.poll(() => intake.events('view_end').some((e) => e.final === true)).toBe(true);
+    expect(intake.segments()).toHaveLength(0);
+  });
+
+  test('two tabs of one session each record their own window', async ({ context, intake }) => {
+    intake.config = REPLAY_ALL;
+    const a = await context.newPage();
+    await a.goto(intake.page('tab-a', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Tab A</p></body></html>`));
+    await sdkLoaded(a);
+    const b = await context.newPage();
+    await b.goto(intake.page('tab-b', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Tab B</p></body></html>`));
+    await sdkLoaded(b);
+    await expect.poll(() => new Set(intake.segments().map((s) => s.w)).size, { timeout: 10_000 }).toBe(2);
+    const segs = intake.segments();
+    expect(new Set(segs.map((s) => s.s)).size, 'one session').toBe(1);
+    for (const w of new Set(segs.map((s) => s.w))) {
+      const mine = segs.filter((s) => s.w === w);
+      expect(mine[0]).toMatchObject({ q: 0, fs: true });
+      expect(new Set(mine.map((s) => s.p)).size).toBe(1);
+    }
   });
 
   test('never downloads the replay chunk without a replay rule', async ({ page, intake }) => {

@@ -19,7 +19,7 @@ let failed = false;
 for (const file of files) {
   const source = fs.readFileSync(path.join(root, file));
   const gz = gzip(source);
-  const budget = file === 'dist/cdn/sdk.min.js' ? budgets.core : /dist\/cdn\/recorder-/.test(file) ? budgets.replay : undefined;
+  const budget = file === 'dist/cdn/sdk.min.js' ? budgets.core : /dist\/cdn\/recorder-/.test(file) ? budgets.replay : /dist\/cdn\/gzip-/.test(file) ? budgets.gzip : undefined;
   const over = budget !== undefined && gz > budget;
   failed ||= over;
   const gate = budget === undefined ? '' : `${over ? 'OVER' : 'ok'} (budget ${kb(budget)})`;

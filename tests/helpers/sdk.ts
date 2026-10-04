@@ -23,7 +23,8 @@ export interface Net {
   fetch: ReturnType<typeof vi.fn>;
   configCalls: Array<{ url: string; init?: RequestInit }>;
   batches: Batch[];
-  segments: Array<{ url: string; body: { session_id: string; segment_index: number; events: unknown[] } }>;
+  /** Replay segments v2 (design 6.4): the header's index fields and the events. */
+  segments: Array<{ url: string; q: Record<string, string>; events: Array<{ type: number; timestamp: number }>; gzip: boolean; keepalive?: boolean }>;
   app: Array<{ url: string; init?: RequestInit }>;
   /** Every event sent, with its batch ctx, optionally of one kind. */
   events(k?: string): Array<SqEvent & Record<string, unknown> & { ctx: Batch['body']['ctx'] }>;
@@ -87,8 +88,9 @@ export function stubNetwork(cfg: unknown = config()): Net {
       return new Response('', { status: net.batchStatus });
     }
     if (url.includes('/v2/identity')) return new Response(JSON.stringify({ record: net.identity }), { status: 200 });
-    if (url.includes('/v1/segments')) {
-      net.segments.push({ url, body: JSON.parse(String(init?.body)) });
+    if (url.includes('/v2/segments')) {
+      const { text, gzip } = await decode(init?.body);
+      net.segments.push({ url, q: Object.fromEntries(new URLSearchParams(new Headers(init?.headers).get('x-sq-replay-index') ?? '')), events: JSON.parse(text), gzip, keepalive: init?.keepalive });
       return new Response('', { status: 202 });
     }
     net.app.push({ url, init });

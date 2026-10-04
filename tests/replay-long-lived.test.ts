@@ -28,14 +28,31 @@ function visibility(state: 'hidden' | 'visible'): void {
 }
 
 const requests = () => net.fetch.mock.calls.length;
-const segmentCalls = () => net.fetch.mock.calls.filter((c) => String(c[0]).includes('/v1/segments'));
-const segmentsAt = (n: number) => net.fetch.mock.calls.slice(0, n).filter((c) => String(c[0]).includes('/v1/segments')).length;
-const fullSnapshots = (sid: string) =>
-  net.segments.filter((s) => s.body.session_id === sid && s.body.events.some((e) => (e as { type: number }).type === 2)).length;
+const segmentCalls = () => net.fetch.mock.calls.filter((c) => String(c[0]).includes('/v2/segments'));
+const segmentsAt = (n: number) => net.fetch.mock.calls.slice(0, n).filter((c) => String(c[0]).includes('/v2/segments')).length;
+const fullSnapshots = (sid: string) => net.segments.filter((s) => s.q.s === sid && s.events.some((e) => e.type === 2)).length;
+
+/** Until no send is running and none has started for a few real milliseconds (gzip is real I/O). */
+async function quiet(): Promise<void> {
+  const deadline = performance.now() + 5_000;
+  let last = -1;
+  let since = performance.now();
+  while (performance.now() < deadline) {
+    await new Promise((r) => setImmediate(r));
+    await vi.advanceTimersByTimeAsync(0);
+    const n = net.fetch.mock.calls.length;
+    if (n !== last || net.pending > 0) (last = n), (since = performance.now());
+    else if (performance.now() - since > 30) return;
+  }
+}
 
 /** Advances the fake clock a second at a time, so the page's clock ticks as it would. */
 async function run(ms: number): Promise<void> {
-  for (let t = 0; t < ms; t += SECOND) await vi.advanceTimersByTimeAsync(SECOND);
+  for (let t = 0; t < ms; t += SECOND) {
+    await vi.advanceTimersByTimeAsync(SECOND);
+    for (let i = 0; i < 3; i++) await new Promise((r) => setImmediate(r));
+  }
+  await quiet();
 }
 
 beforeEach(async () => {
@@ -57,8 +74,8 @@ afterEach(() => {
   SiteQwalityRUM._reset();
 });
 
-describe('a long-lived tab with a 1 s ticking clock', () => {
-  it('records while visible and active, with one request per 30 s at most', async () => {
+describe('a long-lived tab with a 1 s ticking clock', { timeout: 60_000 }, () => {
+  it('records while visible and active, with one request per 20 s at most', async () => {
     const sid = SiteQwalityRUM.getStatus()!.session_id;
     expect(SiteQwalityRUM.getStatus()!.recording).toBe('recording');
     expect(fullSnapshots(sid)).toBe(1);
@@ -67,10 +84,10 @@ describe('a long-lived tab with a 1 s ticking clock', () => {
       await run(MINUTE);
       document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     }
-    // 30 s segments plus one 3 min checkout, never a request per tick.
+    // 20 s segments (design 5.5); the 3 min checkout lands where one closes. Never a request per tick.
     const sent = segmentCalls().length - from;
-    expect(sent).toBeGreaterThanOrEqual(6);
-    expect(sent).toBeLessThanOrEqual(11);
+    expect(sent).toBeGreaterThanOrEqual(10);
+    expect(sent).toBeLessThanOrEqual(13);
   });
 
   it('hidden for an hour: nothing is sent, and showing it again resumes with a snapshot', async () => {
@@ -138,6 +155,8 @@ describe('a long-lived tab with a 1 s ticking clock', () => {
     history.pushState({}, '', '/public');
     await run(3 * SECOND);
     expect(SiteQwalityRUM.getStatus()!.recording).toBe('recording');
+    // The snapshot goes with its segment, 20 s on.
+    await run(20 * SECOND);
     expect(fullSnapshots(SiteQwalityRUM.getStatus()!.session_id)).toBe(1);
     history.pushState({}, '', '/');
   });
@@ -151,7 +170,7 @@ describe('a long-lived tab with a 1 s ticking clock', () => {
     }
     // 15 min without input ended the session; pointer moves alone never start a new one.
     expect(SiteQwalityRUM.getStatus()!.recording).toBe('off');
-    expect(new Set(net.segments.map((s) => s.body.session_id))).toEqual(new Set([sid]));
+    expect(new Set(net.segments.map((s) => s.q.s))).toEqual(new Set([sid]));
     const before = requests();
     await run(30 * MINUTE);
     expect(requests() - before).toBe(0);

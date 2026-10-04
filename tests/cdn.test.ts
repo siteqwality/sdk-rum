@@ -51,6 +51,7 @@ afterEach(() => {
   delete win.SiteQwalityRUM;
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe('CDN snippet replay', () => {
@@ -100,6 +101,9 @@ describe('CDN snippet replay', () => {
   });
 
   it('converts a high-resolution event time to epoch milliseconds', async () => {
+    // Keep the two clock samples deterministic even when the runner is descheduled.
+    vi.spyOn(performance, 'now').mockReturnValue(20);
+    vi.spyOn(Date, 'now').mockReturnValue(Math.round(performance.timeOrigin + 20));
     new Function(SNIPPET)();
     stub().init(OPTIONS);
     const event = new ErrorEvent('error', { message: 'Uncaught Error: hr', error: new Error('hr') });

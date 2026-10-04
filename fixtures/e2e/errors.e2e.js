@@ -125,3 +125,41 @@ test('an errored-sessions rule replays what led up to the error', async ({ sq })
   expect(first, 'replay starts before the error, near page load').toBeLessThan(erroredAt - 2500);
   expect(first).toBeLessThan(loadedAt + 1000);
 });
+
+// Phase 2 exit (design 9): an error replay on the fixture starts at least 60 s before the error.
+test('an error replay starts at least 60 s before the error, from the ring', async ({ sq }, testInfo) => {
+  knownGap(!SDK.replayV2, 'before 2.1 there is no replay ring: recording starts at the error (B3)');
+  test.setTimeout(120_000);
+  const s = await sq.start({ spec: { capture: 'replay_on_error' } });
+  // The page clock runs the 60 s buffer checkouts without waiting for them.
+  await s.page.clock.install();
+  const page = await s.open('/errors');
+  await s.waitForConfig();
+  const loadedAt = await page.evaluate(() => Date.now());
+  // 100 s of a user on the page: pointer moves and clicks, a mutation now and then.
+  for (let i = 0; i < 100; i++) {
+    await page.mouse.move(100 + (i % 30) * 5, 150 + (i % 7) * 10);
+    if (i % 10 === 0) await page.getByRole('heading', { name: 'Errors' }).click();
+    await page.clock.runFor(1_000);
+    if (i % 25 === 0) await new Promise((r) => setTimeout(r, 50));
+  }
+  const before = await s.summary();
+  const erroredAt = await page.evaluate(() => Date.now());
+  await page.getByTestId('err-sync').click();
+  await page.clock.runFor(2_000);
+  await s.waitForReplay({ timeout: 15_000 });
+  const c = await s.finish();
+  s.expectHealthy(c);
+
+  const ledger = new Ledger(`Error replay lead, SDK ${SDK.version}`);
+  const segmentsBefore = before.filter((r) => r.segment).length;
+  ledger.check('nothing sent before the error', segmentsBefore === 0, { detail: `${segmentsBefore} segments before the error` });
+  const first = Math.min(...c.replayEvents.map((e) => e.timestamp));
+  const lead = erroredAt - first;
+  ledger.check('replay starts 60 s or more before the error', lead >= 60_000, { detail: `${(lead / 1000).toFixed(1)} s before the error (page loaded ${((erroredAt - loadedAt) / 1000).toFixed(0)} s before it)` });
+  ledger.check('and at most about two minutes before it', lead <= 125_000, { detail: 'the ring keeps the current and previous 60 s checkout' });
+  const opening = c.segments.sort((a, b) => a.index - b.index)[0];
+  ledger.check('the replay opens with a snapshot', opening?.fullSnapshots > 0 && opening.index === 0, { detail: `segment ${opening?.index}, ${opening?.fullSnapshots} snapshots` });
+  ledger.print(testInfo);
+  expect(ledger.failures).toEqual([]);
+});

@@ -53,7 +53,7 @@ export function createInstance(opts: InitOptions) {
   const token = opts.clientToken;
   const trim = (b: string | undefined, d: string) => (b || d).replace(/\/+$/, '');
   const ingestBase = trim(opts.ingestBase, 'https://in.siteqwality.com');
-  const replayBase = trim(opts.replayBase, 'https://replay.siteqwality.com');
+  const replayBase = trim(opts.replayBase, 'https://in-replay.siteqwality.com');
   const configBase = trim(opts.configBase, DEFAULT_CONFIG_BASE);
   const f0 = window.fetch;
   const nativeFetch = ((...a: Parameters<typeof fetch>) => f0.apply(window, a)) as typeof fetch;
@@ -122,7 +122,6 @@ export function createInstance(opts: InitOptions) {
   const dnrIds = new Set<string>();
   // On a never_record_urls page: no Analyze, replay paused (the chunk pauses for hidden and idle).
   let urlPaused = false;
-  let watchdog: ReturnType<typeof setInterval> | undefined;
   let neverRecord = textPatterns(cfg.privacy.never_record_urls);
   let ring: Array<{ e: SqEvent; t: number }> = [];
   let crumbs: Array<Record<string, unknown>> = [];
@@ -132,6 +131,7 @@ export function createInstance(opts: InitOptions) {
   let recording: SdkStatus['recording'] = 'off';
   let reason: string | undefined;
   let replay: ReplayHandle | null = null;
+  let replayEpoch = 0;
   let loading = false;
   let forced = false;
   let userStopped = false;
@@ -185,7 +185,7 @@ export function createInstance(opts: InitOptions) {
       anonymous_id: anon ? anonymousId() : undefined,
       user: Object.keys(u).length ? u : undefined,
       attrs: Object.keys(attrs).length ? attrs : undefined,
-      sampling: { analyze: analyzeOn, replay: recording === 'recording' || recording === 'paused', rule_id: d.rule_id },
+      sampling: { analyze: analyzeOn, replay: d.replay || forced, rule_id: d.rule_id },
       consent,
       viewport: [innerWidth, innerHeight],
       screen: read(() => [screen.width, screen.height]) ?? [0, 0],
@@ -246,8 +246,8 @@ export function createInstance(opts: InitOptions) {
     return out;
   }
 
-  function sessionFor(rotate: boolean): string | null {
-    if (session.sync()) changed();
+  function sessionFor(rotate: boolean, force = false): string | null {
+    if (session.sync(force)) changed();
     if (session.expired()) {
       if (!rotate) return null;
       session.rotate();
@@ -285,60 +285,64 @@ export function createInstance(opts: InitOptions) {
   }
 
   const mayRecord = () => canSend() && consent === 'granted' && !gpc() && !dnr;
-  // A page too large to record, or a recorder that failed to load, stays off for the page load.
+  // A page too large to record, or a recorder that failed, stays off for the page load.
   let latched = '';
+  const live = () => forced || session.decision.replay;
+  // Buffering needs a Replay rule this session could still match; streaming needs a match.
   const wantReplay = () =>
-    !userStopped && configKnown && !latched && replaySpent !== session.id && mayRecord() && (forced || session.decision.replay);
+    !userStopped && configKnown && !latched && replaySpent !== session.id && mayRecord() && (live() || rules.armed);
 
   function startRecording(): void {
-    if (replay || loading || !wantReplay()) return;
+    // A ring no rule can match any more (rules changed) is dropped; nothing of it was sent.
+    if (!wantReplay()) return void (replay && !live() && stopRecording(undefined, true));
+    // A buffering recorder streams from its ring once a rule matches.
+    if (replay) return void (live() && replay.go());
+    if (loading) return;
     loading = true;
     const sid = session.id;
     loadReplay(opts.recorderUrl).then(
       (start) => {
         loading = false;
-        if (replay || sid !== session.id || !wantReplay()) return;
+        if (replay || !wantReplay()) return;
+        // The session changed while the recorder loaded: record that one instead.
+        if (sid !== session.id) return startRecording();
         // A recording can stop inside start() (a page too large to record): never keep that handle.
         let handle: ReplayHandle | undefined;
         let gone = false;
+        const epoch = replayEpoch;
         handle = start({
-          mode: 'stream',
-          sessionId: sid,
-          windowId: session.windowId,
+          live: live(),
+          session,
           store: store(),
-          cookieDomain: session.mode === 'cookie' ? opts.cookieDomain : undefined,
           replayBase,
           token,
           // Replay sends only while it may record.
-          fetch: ((input: RequestInfo | URL, init?: RequestInit) => (mayRecord() ? nativeFetch(input, init) : Promise.reject(budgetError()))) as typeof fetch,
+          fetch: ((input: RequestInfo | URL, init?: RequestInit) => (epoch === replayEpoch && mayRecord() && sessionFor(false, true) === sid ? nativeFetch(input, init) : Promise.reject(budgetError()))) as typeof fetch,
           send,
           url: sanitizeUrl,
           text: sanitizeText,
-          privacy: cfg.privacy,
+          cfg,
           mask: createScrubber(cfg.privacy.pii_patterns, true),
+          count,
           now,
-          idleMs: Math.min(Math.max(cfg.limits.idle_pause_ms || 300_000, 60_000), 1_800_000),
           paused: urlPaused ? 'privacy_url' : undefined,
+          // Replay never outlasts its session, and learns other tabs' decisions.
+          check: () => (sessionFor(false) === sid ? decide(session.decision) : replay === handle && stopRecording()),
           onStatus: (state, why) => {
             if (state === 'stopped') {
               gone = true;
               if (replay === handle) replay = null;
-              if (why === 'too_large') latched = why;
               // Past its own budget only replay stops, for the rest of the session.
-              if (why === 'replay_budget') {
-                replaySpent = sid;
-                count(why);
-                warnOnce(why, 'Replay stopped: replay budget reached');
-              }
+              if (why === 'replay_budget' || why === 'session_cap') replaySpent = sid;
+              else latched = why ?? '';
             }
             setRecording(state, why);
           },
         });
         if (gone) return;
         replay = handle;
-        // Live replay never outlasts its session.
-        clearInterval(watchdog);
-        watchdog = setInterval(() => replay && !sessionFor(false) && stopRecording(), 15_000);
+        // Starting reports a state, which can adopt another tab's session: that one records instead.
+        if (sid !== session.id) stopRecording();
       },
       (err) => {
         loading = false;
@@ -351,7 +355,7 @@ export function createInstance(opts: InitOptions) {
 
   /** `drop` discards what replay has not sent yet (consent, opt-out, budget, do not record). */
   function stopRecording(why?: string, drop = false): void {
-    clearInterval(watchdog);
+    if (drop) replayEpoch++;
     replay?.stop(drop);
     replay = null;
     if (recording !== 'off' || why) setRecording(why ? 'stopped' : 'off', why);
@@ -378,7 +382,8 @@ export function createInstance(opts: InitOptions) {
       }
       ring = [];
     }
-    if (next.replay) startRecording();
+    // A match streams; a session that could still match buffers (after consent, opt-in, rotation).
+    startRecording();
   }
 
   const rules = createRules({ device: isMobile() ? 'mobile' : 'desktop', release: nonEmpty(opts.version), env: nonEmpty(opts.env) }, decide);

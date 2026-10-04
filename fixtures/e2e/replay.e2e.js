@@ -1,6 +1,6 @@
 // Replay under stress: mutation floods, 1 MB of CSS, an oversized page, canvas.
 import { test, expect, knownGap } from './lib/session.js';
-import { SDK, SLOW } from './lib/env.js';
+import { SDK } from './lib/env.js';
 import { Ledger, kb } from './lib/ledger.js';
 import { RRWEB, RRWEB_SOURCE } from './lib/captures.js';
 import { budget } from './lib/budgets.js';
@@ -17,6 +17,8 @@ test('a mutation flood is bounded and recording survives it', async ({ sq }, tes
   const to = Date.now();
   await page.getByTestId('nav-forms').click();
   await page.getByTestId('in-text').fill('typed after the flood');
+  // 2.1 records an input's value when it changes (rrweb input: 'last', design 5.5).
+  await page.getByTestId('in-text').press('Tab');
   const c = await s.finish();
   s.expectHealthy(c);
 
@@ -57,23 +59,29 @@ test('1 MB of CSS is inlined once and compressed on the wire', async ({ sq }, te
   expect(ledger.failures).toEqual([]);
 });
 
-test('later checkouts carry CSS by reference', async ({ sq }) => {
-  test.skip(!SLOW, 'waits for a 60 s checkout: set SQ_SLOW=1');
+test('later checkouts carry CSS by reference', async ({ sq }, testInfo) => {
   knownGap(!SDK.replayV2, 'before 2.1 every checkout re-sends every stylesheet; the 2.1 replay chunk sends sq-css:<hash> references (5.5)');
-  test.setTimeout(240_000);
+  test.setTimeout(120_000);
   const s = await sq.start({ spec: { capture: 'replay' } });
+  // The page clock runs past the 3 minute streaming checkout without waiting for it.
+  await s.page.clock.install();
   const page = await s.open('/mpa/heavy.html');
   await s.waitForReplay();
-  for (let i = 0; i < 70; i++) {
+  for (let i = 0; i < 210; i++) {
     await page.mouse.move(100 + (i % 20) * 10, 200);
-    await page.waitForTimeout(1000);
+    await page.clock.runFor(1_000);
+    if (i % 20 === 0) await new Promise((r) => setTimeout(r, 50));
   }
   const c = await s.finish();
   s.expectHealthy(c);
-  const snapshots = c.replayEventsOf(RRWEB.FULL_SNAPSHOT).map(size);
-  test.info().annotations.push({ type: 'snapshots', description: snapshots.map(kb).join(', ') });
-  expect(snapshots.length, 'a checkout happened').toBeGreaterThanOrEqual(2);
-  expect(snapshots[1], 'the second snapshot references the CSS').toBeLessThan(snapshots[0] * 0.25);
+  const snapshots = c.replayEventsOf(RRWEB.FULL_SNAPSHOT);
+  const sizes = snapshots.map(size);
+  const ledger = new Ledger(`CSS references, SDK ${SDK.version}`);
+  ledger.check('a checkout happened', sizes.length >= 2, { detail: `snapshots ${sizes.map(kb).join(', ')}` });
+  ledger.check('the checkout names the stylesheet', (sizes[1] ?? Infinity) < sizes[0] * 0.25, { detail: `${kb(sizes[1] ?? 0)} vs ${kb(sizes[0])}` });
+  ledger.check('reference format', /"_cssText":"sq-css:[0-9a-f]{16}"/.test(JSON.stringify(snapshots[1] ?? {})), { detail: 'sq-css:<FNV-1a 64 hex>' });
+  ledger.print(testInfo);
+  expect(ledger.failures).toEqual([]);
 });
 
 test('an oversized page stops replay cleanly and keeps everything else', async ({ sq }, testInfo) => {

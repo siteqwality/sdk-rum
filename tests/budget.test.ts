@@ -5,10 +5,14 @@ import { boot, clearStorage, config, rule, settle, setVisibility, stubNetwork, t
 
 const [PAGE_REQ, PAGE_BYTES, SESS_REQ, SESS_BYTES] = CORE_LIMITS;
 const [, , REPLAY_SESS_REQ] = REPLAY_LIMITS;
+let replaySdk: { optOut(): void } | undefined;
 const unit = (kind: () => 'localStorage' | undefined = () => undefined) => createBudget(kind, '_sq_bgt', CORE_LIMITS);
 
 beforeEach(() => clearStorage());
 afterEach(() => {
+  SiteQwalityRUM.optOut();
+  replaySdk?.optOut();
+  replaySdk = undefined;
   vi.unstubAllGlobals();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -122,10 +126,11 @@ describe('the replay budget', () => {
         captured.o = o;
         captured.starts++;
         if (stopsAtOnce) o.onStatus('stopped', 'too_large');
-        return { stop: (d?: boolean) => captured.stops.push(d), pause() {}, resume() {} };
+        return { stop: (d?: boolean) => captured.stops.push(d), pause() {}, resume() {}, go() {} };
       },
     }));
     const { SiteQwalityRUM: Fresh } = await import('../src/sdk');
+    replaySdk = Fresh;
     const net = stubNetwork(config({ rules: [rule('replay')] }));
     Fresh._reset();
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
@@ -140,17 +145,16 @@ describe('the replay budget', () => {
     expect(captured.o).toBeDefined();
     expect(typeof captured.o!.send).toBe('function');
     expect(captured.o!.store).toBe('localStorage');
-    expect(captured.o!.windowId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(captured.o!.session.windowId).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('a replay cap stops only replay, for the session: errors and views still go', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { Fresh, net, captured } = await bootWithReplay();
-    // The chunk reports its budget spent.
+    // The chunk counts and reports its budget spent (its own warning is tested with the chunk).
+    captured.o!.count('replay_budget');
     captured.o!.onStatus('stopped', 'replay_budget');
     expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'replay_budget' });
     expect(Fresh.getStatus()!.dropped.replay_budget).toBe(1);
-    expect(warn.mock.calls.filter((c) => String(c[0]).includes('replay budget reached'))).toHaveLength(1);
     setVisibility('hidden');
     setVisibility('visible');
     await settle(5);
@@ -158,25 +162,24 @@ describe('the replay budget', () => {
 
     throwInPage(new Error('still reported'));
     setVisibility('hidden');
-    await settle(10);
+    // gzip runs on real I/O: wait for the send rather than a fixed number of turns.
+    for (let i = 0; i < 100 && !net.events('error').some((e) => e.message === 'still reported'); i++) await new Promise((r) => setTimeout(r, 20));
     expect(net.events('error').map((e) => e.message)).toContain('still reported');
   }, 60_000);
 
   it('the core budget stops replay too, dropping what it holds', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { Fresh, captured } = await bootWithReplay();
-    expect(await captured.o!.fetch('https://rp.test/v1/segments', { method: 'POST', body: '{"events":[]}' }).then(() => true)).toBe(true);
-    // Spend the core budget through the batch path.
-    for (let i = 0; i < SESS_REQ + 5; i++) {
-      Fresh.addAction(`loop ${i}`);
-      setVisibility('hidden');
-      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
-      if (i % 200 === 0) await settle(1);
-    }
-    await settle(5);
+    expect(await captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '[]' }).then(() => true)).toBe(true);
+    // Another tab exhausted the shared core budget. Exercise the real batch gate without
+    // assuming that each of 5,000 hide events produces a separate request.
+    localStorage.setItem('_sq_bgt', `${Fresh.getStatus()!.session_id}|${SESS_REQ}|0`);
+    Fresh.addAction('over the shared budget');
+    setVisibility('hidden');
+    await vi.waitFor(() => expect(Fresh.getStatus()!.reason).toBe('request_budget'), { timeout: 5_000 });
     expect(Fresh.getStatus()!.reason).toBe('request_budget');
     expect(captured.stops).toContain(true);
-    await expect(captured.o!.fetch('https://rp.test/v1/segments', { method: 'POST', body: '[]' })).rejects.toMatchObject({ name: budgetError().name });
+    await expect(captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '[]' })).rejects.toMatchObject({ name: budgetError().name });
   }, 60_000);
 
   it('a page too large to record stays off for the page load, whatever the tab does', async () => {

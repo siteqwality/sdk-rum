@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage: ./deploy.sh [distribution-id]
 #
 # Requires the siteqwality AWS profile and a build (npm run build). Uploads every file in
-# dist/cdn/ (the core and its versioned replay chunk) to:
+# dist/cdn/ (the core, its versioned replay chunk and the chunk's gzip fallback) to:
 #   rum/v<version>/  pinned and immutable (customers may pin it, with Subresource Integrity)
 #   rum/v<major>/    the latest release of that major line (rum/v2/ for 2.x)
 # Another major line's prefix is never written, so a 2.x deploy leaves rum/v1/ on 1.x.
@@ -24,7 +24,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-if [ ! -f "$DIST_DIR/sdk.min.js" ] || [ ! -f "$DIST_DIR/recorder-${VERSION}.min.js" ]; then
+if [ ! -f "$DIST_DIR/sdk.min.js" ] || [ ! -f "$DIST_DIR/recorder-${VERSION}.min.js" ] || [ ! -f "$DIST_DIR/gzip-${VERSION}.min.js" ]; then
   echo "Error: $DIST_DIR has no ${VERSION} build. Run 'npm run build' first."
   exit 1
 fi

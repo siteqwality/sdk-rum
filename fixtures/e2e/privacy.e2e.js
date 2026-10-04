@@ -9,8 +9,10 @@ import { ORIGINS } from '../server/origins.js';
 
 const v = (id) => CANARIES[id].value;
 
-async function plantedSession(sq, level) {
-  const s = await sq.start({ spec: { capture: 'replay', level } });
+// capture 'replay' streams from page load; 'replay_on_error' (2.1) buffers in memory until the
+// page's first error, then sends the ring.
+async function plantedSession(sq, level, capture = 'replay') {
+  const s = await sq.start({ spec: { capture, level } });
   await site.requests({ clear: true });
   // Arrive from a third-party page whose referrer policy leaks its full URL.
   const target = `${ORIGINS.site}/forms?token=${v('url_query_token')}&plan=pro#access_token=${v('url_fragment_token')}`;
@@ -20,7 +22,7 @@ async function plantedSession(sq, level) {
   await page.waitForURL(/\/forms/);
   await s.waitForSdk();
   expect(await page.evaluate(() => document.referrer)).toContain(v('referrer_token'));
-  await s.waitForReplay();
+  if (capture === 'replay') await s.waitForReplay();
 
   await page.getByTestId('in-text').fill(v('text_input'));
   await page.getByTestId('in-email').fill(v('email_input'));
@@ -49,12 +51,14 @@ async function plantedSession(sq, level) {
   return { s, captures, app: await site.requests() };
 }
 
-for (const level of ['strict', 'balanced', 'relaxed']) {
-  test(`canaries at the ${level} level`, async ({ sq }, testInfo) => {
-    const { s, captures, app } = await plantedSession(sq, level);
+for (const [level, capture] of ['strict', 'balanced', 'relaxed'].flatMap((l) => [[l, 'replay'], [l, 'replay_on_error']])) {
+  const buffered = capture === 'replay_on_error';
+  test(`canaries at the ${level} level${buffered ? ', buffered until an error' : ''}`, async ({ sq }, testInfo) => {
+    test.skip(buffered && !SDK.replayV2, 'the replay ring arrives with 2.1');
+    const { s, captures, app } = await plantedSession(sq, level, capture);
     s.expectHealthy(captures);
 
-    const ledger = new Ledger(`Privacy canaries, ${level}, SDK ${SDK.version}`);
+    const ledger = new Ledger(`Privacy canaries, ${level}${buffered ? ', buffered' : ''}, SDK ${SDK.version}`);
     for (const [id, { value, guard, where }] of Object.entries(CANARIES)) {
       const hits = findCanary(captures, value);
       const want = expectation(guard, SDK, level);
