@@ -122,7 +122,7 @@ describe('the replay budget', () => {
         captured.o = o;
         captured.starts++;
         if (stopsAtOnce) o.onStatus('stopped', 'too_large');
-        return { stop: (d?: boolean) => captured.stops.push(d), pause() {}, resume() {} };
+        return { stop: (d?: boolean) => captured.stops.push(d), pause() {}, resume() {}, go() {} };
       },
     }));
     const { SiteQwalityRUM: Fresh } = await import('../src/sdk');
@@ -164,6 +164,8 @@ describe('the replay budget', () => {
 
   it('the core budget stops replay too, dropping what it holds', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // About 5,000 batches: sent uncompressed, so the test is about the budget, not gzip throughput.
+    vi.stubGlobal('CompressionStream', undefined);
     const { Fresh, captured } = await bootWithReplay();
     expect(await captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '{"events":[]}' }).then(() => true)).toBe(true);
     // Spend the core budget through the batch path.
@@ -173,7 +175,8 @@ describe('the replay budget', () => {
       Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
       if (i % 200 === 0) await settle(1);
     }
-    await settle(5);
+    // Wait for the budget to run out rather than a fixed number of turns.
+    for (let i = 0; i < 250 && Fresh.getStatus()!.reason !== 'request_budget'; i++) await new Promise((r) => setTimeout(r, 20));
     expect(Fresh.getStatus()!.reason).toBe('request_budget');
     expect(captured.stops).toContain(true);
     await expect(captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '[]' })).rejects.toMatchObject({ name: budgetError().name });

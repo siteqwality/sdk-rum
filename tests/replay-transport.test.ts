@@ -73,7 +73,7 @@ afterEach(() => {
 
 const make = (hooks = {}) => new ReplayTransport('https://in-replay.example.com', 'ct_1', fetchSpy as unknown as typeof fetch, send, hooks);
 
-describe('ReplayTransport v2', () => {
+describe('ReplayTransport v2', { timeout: 30_000 }, () => {
   it('puts every 6.4 index field in the query and numbers each page load from 0', async () => {
     const t = make();
     const a = fresh();
@@ -299,7 +299,7 @@ describe('ReplayTransport v2', () => {
   });
 });
 
-describe('ReplayTransport.unload (pagehide)', () => {
+describe('ReplayTransport.unload (pagehide)', { timeout: 30_000 }, () => {
   it('sends what is queued and the tail with keepalive, the tail last and final', async () => {
     const t = make();
     const st = fresh();

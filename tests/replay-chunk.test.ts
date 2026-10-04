@@ -122,7 +122,8 @@ function visibility(state: 'hidden' | 'visible') {
   document.dispatchEvent(new Event('visibilitychange'));
 }
 
-describe('startReplay', () => {
+// jsdom snapshots and real gzip are slow on shared CI runners.
+describe('startReplay', { timeout: 30_000 }, () => {
   it('streams this window\'s page load as segments v2: q from 0, the rule, the version', async () => {
     start();
     await mutate('one');
