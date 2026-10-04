@@ -114,6 +114,10 @@ export function createInstance(opts: InitOptions) {
   let observeIn = true;
   let dnr = false;
   let urlPaused = false;
+  // Replay pauses (design 5.5): rrweb stops while any holds and resumes with a full snapshot.
+  const pauses = new Set<string>(isHidden() ? ['hidden'] : []);
+  let lastActive = now();
+  let watchdog: ReturnType<typeof setInterval> | undefined;
   let neverRecord = createExclusionMatcher(cfg.privacy.never_record_urls);
   let ring: Array<{ e: SqEvent; t: number }> = [];
   let crumbs: Array<Record<string, unknown>> = [];
@@ -176,7 +180,7 @@ export function createInstance(opts: InitOptions) {
       anonymous_id: anon ? anonymousId() : undefined,
       user: Object.keys(u).length ? u : undefined,
       attrs: Object.keys(attrs).length ? attrs : undefined,
-      sampling: { analyze: analyzeOn, replay: recording === 'recording', rule_id: d.rule_id },
+      sampling: { analyze: analyzeOn, replay: recording === 'recording' || recording === 'paused', rule_id: d.rule_id },
       consent,
       viewport: [innerWidth, innerHeight],
       screen: [read(() => screen.width) ?? 0, read(() => screen.height) ?? 0],
@@ -265,14 +269,18 @@ export function createInstance(opts: InitOptions) {
   const wantReplay = () =>
     !userStopped && configKnown && canSend() && consent === 'granted' && !gpc() && !dnr && (forced || session.decision.replay);
 
+  const firstPause = () => pauses.values().next().value as string;
+
   function startRecording(): void {
     if (replay || loading || !wantReplay()) return;
+    if (pauses.size) return setRecording('paused', firstPause());
     loading = true;
     const sid = session.id;
     loadReplay(opts.recorderUrl).then(
       (start) => {
         loading = false;
         if (replay || sid !== session.id || !wantReplay()) return;
+        if (pauses.size) return setRecording('paused', firstPause());
         replay = start({
           mode: 'stream',
           sessionId: sid,
@@ -289,7 +297,8 @@ export function createInstance(opts: InitOptions) {
             setRecording(state, why);
           },
         });
-        if (urlPaused) replay.pause('privacy_url');
+        clearInterval(watchdog);
+        watchdog = setInterval(watch, 15_000);
       },
       (err) => {
         loading = false;
@@ -300,9 +309,31 @@ export function createInstance(opts: InitOptions) {
   }
 
   function stopRecording(why?: string): void {
+    clearInterval(watchdog);
     replay?.stop();
     replay = null;
     if (recording !== 'off' || why) setRecording(why ? 'stopped' : 'off', why);
+  }
+
+  const idleMs = () => Math.min(Math.max(cfg.limits.idle_pause_ms || 300_000, 60_000), 1_800_000);
+
+  /** Live replay never outlasts its session, nor runs on with no user input. */
+  function watch(): void {
+    if (!replay || pauses.size) return;
+    if (!sessionFor(false)) return stopRecording();
+    if (replay && now() - lastActive >= idleMs()) setPause('idle', true);
+  }
+
+  function setPause(why: string, on: boolean): void {
+    if (on === pauses.has(why)) return;
+    if (on) pauses.add(why);
+    else pauses.delete(why);
+    if (!replay) {
+      if (pauses.size) {
+        if (recording === 'paused') setRecording('paused', firstPause());
+      } else startRecording();
+    } else if (pauses.size) replay.pause(firstPause());
+    else replay.resume();
   }
 
   /** A rule decision, latched for the session and shared with other tabs through the cookie. */
@@ -339,7 +370,8 @@ export function createInstance(opts: InitOptions) {
 
   /** A new session (rotated, or another tab's adopted): state, rules and the view start over. */
   function changed(): void {
-    if (overBudget) {
+    // A new session lifts the session ceiling; the page ceiling holds until the next page load.
+    if (overBudget && budget.pageOpen()) {
       overBudget = false;
       transport.block(false);
       reason = undefined;
@@ -357,11 +389,8 @@ export function createInstance(opts: InitOptions) {
   }
 
   function pauseFor(url: string): void {
-    const paused = neverRecord(url);
-    if (paused === urlPaused) return;
-    urlPaused = paused;
-    if (paused) replay?.pause('privacy_url');
-    else replay?.resume();
+    urlPaused = neverRecord(url);
+    setPause('privacy_url', urlPaused);
   }
 
   function applyConfig(raw: unknown, fresh: boolean): void {
@@ -518,6 +547,7 @@ export function createInstance(opts: InitOptions) {
         network?.flush();
       },
       onHistory: () => actions?.noteReaction(),
+      live: (sid) => sessionFor(false) === sid,
     });
   });
   start('vitals', () =>
@@ -586,13 +616,21 @@ export function createInstance(opts: InitOptions) {
   // Input keeps the session alive (at most every 5 s); the SDK's own sends never do.
   const onInput = (e: Event) => {
     const t = now();
+    lastActive = t;
+    // Pointer moves keep replay awake, not the session.
+    if (e.type === 'pointermove') {
+      if (pauses.has('idle') && sessionFor(false)) setPause('idle', false);
+      return;
+    }
     views?.input(t);
     if (e.type !== 'scroll') rules.interaction();
-    if (t - lastInput < 5_000) return;
-    lastInput = t;
-    if (sessionFor(true)) session.touch();
+    if (t - lastInput >= 5_000) {
+      lastInput = t;
+      if (sessionFor(true)) session.touch();
+    }
+    setPause('idle', false);
   };
-  for (const type of ['pointerdown', 'keydown', 'touchstart', 'scroll']) on(window, type, onInput);
+  for (const type of ['pointerdown', 'keydown', 'touchstart', 'scroll', 'pointermove']) on(window, type, onInput);
 
   const flushAll = (final: boolean) => {
     if (final) views?.pagehide();
@@ -607,8 +645,14 @@ export function createInstance(opts: InitOptions) {
     else transport.hide();
   };
   on(document, 'visibilitychange', () => {
-    if (isHidden()) return flushAll(false);
+    if (isHidden()) {
+      setPause('hidden', true);
+      return flushAll(false);
+    }
     if (sessionFor(true)) session.touch();
+    lastActive = now();
+    setPause('hidden', false);
+    setPause('idle', false);
     if (now() - configAt > CONFIG_MAX_AGE_MS) void refresh();
   }, false);
   on(window, 'pagehide', () => flushAll(true), false);
@@ -634,7 +678,7 @@ export function createInstance(opts: InitOptions) {
       const d = session.decision;
       const why =
         reason ??
-        (optedOut ? 'opted_out' : consent !== 'granted' ? 'consent' : gpc() ? 'gpc' : urlPaused ? 'privacy_url' : !d.replay && configKnown ? 'not_sampled' : undefined);
+        (overBudget ? 'request_budget' : optedOut ? 'opted_out' : consent !== 'granted' ? 'consent' : gpc() ? 'gpc' : urlPaused ? 'privacy_url' : !d.replay && configKnown ? 'not_sampled' : undefined);
       return {
         session_id: session.id,
         window_id: session.windowId,

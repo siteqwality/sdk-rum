@@ -30,8 +30,8 @@ const ENVELOPE_BYTES = 128;
 /** Longest a segment stays open before it is sent. */
 export const SEGMENT_MAX_AGE_MS = 30_000;
 
-/** A fresh full snapshot this often, each one starting a new segment. */
-export const CHECKOUT_EVERY_MS = 60_000;
+/** A fresh full snapshot this often while streaming (design 5.4), each starting a segment. */
+export const CHECKOUT_EVERY_MS = 180_000;
 
 export type RecordFn = typeof rrwebRecord;
 type RecordOptions = NonNullable<Parameters<RecordFn>[0]>;

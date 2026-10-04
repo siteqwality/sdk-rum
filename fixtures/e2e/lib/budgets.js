@@ -24,11 +24,17 @@ const show = (value, unit) => (unit === 'bytes' ? kb(value) : String(value));
 // Replay pipeline budgets apply from the replay chunk v2 (WP 2.1); the rest from the 2.0 core.
 const REPLAY_V2 = new Set(['replay.wire_bytes_per_min', 'replay.segments_per_min', 'flood.raw_bytes', 'heavy.snapshot_wire_bytes']);
 
+// 2.0 targets the 2.0 core misses, until the decision they name is made.
+const GAPS_V2 = {
+  'core.gzip_bytes': 'the 2.0 core measures about 25 KB: the 5.2 estimate of 18 KB left out stack parsing, resource timing and the URL minimiser (decision: raise the 5.2 budget or cut features)',
+};
+
 // Checks a measurement against this SDK's limit and prints the 2.0 target beside it.
 export function budget(ledger, key, actual, { detail = '' } = {}) {
   const [target, legacy, unit] = TARGETS[key];
   const v2 = REPLAY_V2.has(key) ? SDK.replayV2 : SDK.v2;
   const limit = v2 ? target : legacy;
   const note = v2 ? `target ${show(target, unit)}` : `1.x limit ${show(legacy, unit)}, 2.0 target ${show(target, unit)}`;
-  return ledger.check(key, actual <= limit, { detail: `${show(actual, unit)} (${note})${detail ? `; ${detail}` : ''}` });
+  const why = SDK.v2 && !REPLAY_V2.has(key) ? GAPS_V2[key] : undefined;
+  return ledger.check(key, actual <= limit, { gap: !!why, why, detail: `${show(actual, unit)} (${note})${detail ? `; ${detail}` : ''}` });
 }

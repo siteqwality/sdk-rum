@@ -61,6 +61,8 @@ export interface ViewsOptions {
   onView: (view: View) => void;
   /** Every history change, URL changed or not (dead-click reactions). */
   onHistory?: () => void;
+  /** Whether a view's session is still live; interim updates stop when it expires. */
+  live?: (sid: string) => boolean;
 }
 
 export type Views = ReturnType<typeof startViews>;
@@ -276,7 +278,7 @@ export function startViews(h: Hub, o: ViewsOptions) {
   }
 
   setInterval(() => {
-    if (!isHidden() && current && !current.ended) emitEnd(current, false);
+    if (!isHidden() && current && !current.ended && (o.live?.(current.sid) ?? true)) emitEnd(current, false);
   }, INTERIM_MS);
 
   return {

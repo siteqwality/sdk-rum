@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RUM fixture: ticking clock</title>
+  <script src="/boot.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main data-fixture-page="ticking-clock">
+    <h1>Ticking clock</h1>
+    <p>Like thesecretsproject.com: the page rewrites a clock every second, so rrweb sees a mutation
+      every second for as long as the tab stays open.</p>
+    <p data-testid="clock"></p>
+    <button data-testid="clock-button">Click</button>
+  </main>
+  <script>
+    var clock = document.querySelector('[data-testid=clock]');
+    setInterval(function () { clock.textContent = new Date().toISOString(); }, 1000);
+    document.querySelector('[data-testid=clock-button]').onclick = function () { this.classList.toggle('on'); };
+    window.fixture.setVisibility = function (state) {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: function () { return state; } });
+      Object.defineProperty(document, 'hidden', { configurable: true, get: function () { return state === 'hidden'; } });
+      document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
+    };
+  </script>
+</body>
+</html>
