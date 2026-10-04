@@ -215,6 +215,57 @@ describe('hash routes', () => {
     expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#/inbox', 'http://localhost:3000/other']);
   });
 
+  // The same table as core-rs common::rum::url_privacy minimise_page_url, so both keep the same routes.
+  const SHARED_PAGE_URLS: Array<[string, string]> = [
+    ['https://a.example/app?x=1#/orders/7?tab=2&email=a@b.c', 'https://a.example/app#/orders/7'],
+    ['https://a.example/app#/orders/7#frag', 'https://a.example/app#/orders/7'],
+    ['https://a.example/app#/', 'https://a.example/app#/'],
+    ['https://a.example/app#!/inbox/42?token=abc', 'https://a.example/app#!/inbox/42'],
+    ['https://u:p@a.example/app#/x', 'https://a.example/app#/x'],
+    ['https://a.example/app#/redirect/https://u:p@h.example/x', 'https://a.example/app#/redirect/https://h.example/x'],
+    ['  https://a.example/app#/x  ', 'https://a.example/app#/x'],
+    ['/app?sid=9#/x?y=1', '/app#/x'],
+    ['#/route/tok_1', '#/route/tok_1'],
+    // OAuth implicit-flow and other parameter fragments are never routes.
+    ['https://a.example/cb#/access_token=ya29.a0Af&token_type=Bearer&expires_in=3599', 'https://a.example/cb'],
+    ['https://a.example/cb#!/id_token=eyJhbGciOi.x.y&state=af0ifjsldkj', 'https://a.example/cb'],
+    ['https://a.example/app#/state=xyz', 'https://a.example/app'],
+    ['https://a.example/app#/a&b', 'https://a.example/app'],
+    ['https://a.example/app#/login?redirect=/x&token=abc', 'https://a.example/app#/login'],
+    ['https://a.example/app#/reset/token=abc?x=1', 'https://a.example/app'],
+    // Not routes: dropped as everywhere else.
+    ['https://a.example/cart#access_token=abc123', 'https://a.example/cart'],
+    ['https://a.example/p#section-2', 'https://a.example/p'],
+    ['https://a.example/p#route/x', 'https://a.example/p'],
+    ['https://a.example/p#!', 'https://a.example/p'],
+    ['https://a.example/p#!!/x', 'https://a.example/p'],
+    ['https://a.example/p#', 'https://a.example/p'],
+    ['https://a.example/p?q=1', 'https://a.example/p'],
+    ['', ''],
+  ];
+
+  for (const [input, expected] of SHARED_PAGE_URLS) {
+    it(`page URL ${JSON.stringify(input)} -> ${JSON.stringify(expected)}`, () => {
+      expect(pageUrl(input, sanitize)).toBe(expected);
+      expect(pageUrl(pageUrl(input, sanitize), sanitize)).toBe(expected);
+    });
+  }
+
+  it('an OAuth redirect into a hash route starts no view', () => {
+    history.replaceState({}, '', '/app#/inbox');
+    const { views } = collect();
+    history.replaceState({}, '', '/app#/access_token=ya29.a0Af&token_type=Bearer');
+    history.pushState({}, '', '/app#/state=xyz');
+    history.pushState({}, '', '/app#/settings');
+    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#/inbox', 'http://localhost:3000/app#/settings']);
+  });
+
+  it('an allowed parameter stays on a route, and never makes it look like a token', () => {
+    const allowTab = createUrlSanitizer({ allowedQueryParams: ['tab'] });
+    expect(pageUrl('https://a.example/app#/orders/7?tab=2', allowTab)).toBe('https://a.example/app#/orders/7?tab=2');
+    expect(pageUrl('https://a.example/app#/state=xyz?tab=2', allowTab)).toBe('https://a.example/app');
+  });
+
   it('minimises a route like a path, allowed query parameters included', () => {
     const allowTab = createUrlSanitizer({ allowedQueryParams: ['tab'] });
     expect(pageUrl('https://a.example/app?x=1#/orders/7?tab=2&email=a@b.c', allowTab)).toBe(

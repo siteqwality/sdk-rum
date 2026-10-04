@@ -131,7 +131,7 @@ past that budget is ignored. Anything else is ignored, never thrown.
 Every URL the SDK captures is minimised in the browser before it is sent:
 
 - the fragment is removed, except a hash route (`#/path` or `#!/path`), which
-  is kept and minimised like a path,
+  is kept and minimised like a path unless it holds `=` or `&` (OAuth tokens),
 - the whole query string is removed,
 - credentials in the authority (`https://user:pass@host/`) are removed,
 - the scheme, host, port and path are kept verbatim.

@@ -1,5 +1,5 @@
 import type { ViewEvent } from '../types';
-import type { UrlSanitizer } from '../privacy/url';
+import { createUrlSanitizer, type UrlSanitizer } from '../privacy/url';
 import { uuid } from '../uuid';
 
 export interface LoadTimings {
@@ -80,13 +80,20 @@ export function startViewCollector(
   return { restart: () => emit('route_change') };
 }
 
-// A hash route (#/path or #!/path) is part of the page, minimised like a path;
-// any other fragment is dropped, as everywhere else.
+const strictUrl = createUrlSanitizer();
+
+// A hash route (#/path or #!/path) is part of the page, minimised like a path, as core-rs
+// minimise_page_url does; any other fragment is dropped, as everywhere else.
 export function pageUrl(href: string, sanitizeUrl: UrlSanitizer): string {
   const base = sanitizeUrl(href);
-  const hash = typeof href === 'string' ? href.indexOf('#') : -1;
-  const route = hash < 0 ? null : /^#(!?)(\/[\s\S]*)$/.exec(href.slice(hash));
-  return route ? `${base}#${route[1]}${sanitizeUrl(route[2])}` : base;
+  if (typeof href !== 'string') return base;
+  const trimmed = href.trim();
+  const at = trimmed.indexOf('#');
+  const route = at < 0 ? null : /^(!?)(\/[\s\S]*)$/.exec(trimmed.slice(at + 1));
+  if (!route) return base;
+  // Parameters or tokens, never a page: #/access_token=...&token_type=Bearer.
+  if (/[=&]/.test(strictUrl(route[2]))) return base;
+  return `${base}#${route[1]}${sanitizeUrl(route[2])}`;
 }
 
 /** Load timings from Navigation Timing, or null until the load event has ended. */

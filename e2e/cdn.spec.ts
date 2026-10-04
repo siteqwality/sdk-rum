@@ -272,7 +272,7 @@ test.describe('page views and frustration in a real browser', () => {
     const url = intake.page('hash', `<!doctype html><html><head>${snippet(intake)}</head><body><h2 id="reviews">Reviews</h2></body></html>`);
     await page.goto(url);
     await sdkLoaded(page);
-    for (const hash of ['#/inbox', '#/inbox/42?token=secret', '#reviews', '#!/settings', '#access_token=abc']) {
+    for (const hash of ['#/inbox', '#/inbox/42?token=secret', '#reviews', '#!/settings', '#access_token=abc', '#/access_token=secret&token_type=Bearer']) {
       await page.evaluate((h) => { location.hash = h; }, hash);
       await page.waitForTimeout(50);
     }
