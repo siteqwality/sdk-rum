@@ -1,135 +1,119 @@
-import { send as coreSend, isRefused, Backoff, KEEPALIVE_MAX_BYTES } from '../core/send';
-import { byteLength } from '../core/util';
+// Replay segments to `POST /v2/segments` (design 6.4): index fields in the query, a gzip JSON
+// array of rrweb events as the body, one request in flight, in order, with the core's retry rules.
+import { isRefused, Backoff, gzip, KEEPALIVE_MAX_BYTES, type send as coreSend } from '../core/send';
+import { byteLength, now } from '../core/util';
+import { VERSION } from '../version';
+import type { Segment } from './segmenter';
+import type { Stream } from './stream';
+import { loadGzip } from './gzip-load';
 
-/** Segments held while one is in flight or while backing off. */
+/** The intake takes at most this on the wire. */
+export const MAX_WIRE_BYTES = 2 * 1024 * 1024;
+/** Segments held while one is in flight or while backing off; past either cap the oldest go. */
 export const MAX_BUFFERED_SEGMENTS = 10;
+export const MAX_BUFFERED_BYTES = 8_000_000;
 
-/** Largest request body sent. A bigger segment is dropped, never sent. */
-export const MAX_SEGMENT_BYTES = 4_000_000;
+export type { Stream };
 
-/**
- * Bytes held the same way, room for a largest segment and others behind it.
- * Past either cap the oldest segments are dropped.
- */
-export const MAX_BUFFERED_BYTES = 2 * MAX_SEGMENT_BYTES;
-
-/** A run of rrweb events, each already serialized, ready to send. */
-export interface ReplaySegment {
-  index: number;
-  /** Each event as JSON. */
-  json: string[];
-  /** UTF-8 bytes of `json` joined by commas. */
-  bytes: number;
-  /** Holds a full snapshot, which the page's later segments build on. */
-  snapshot: boolean;
-  /** The last segment of a page that is going away. */
-  final: boolean;
-}
-
-interface PendingSegment {
+interface Pending {
+  stream: Stream;
   url: string;
-  body: string;
+  text: string;
+  /** The gzip body once ready; null when it could not be compressed. */
+  body?: Blob | null;
+  zipped: Promise<void>;
   bytes: number;
-  snapshot: boolean;
+  fs: boolean;
+  css: string[];
+}
+
+export interface TransportHooks {
+  /** A segment and everything built on its snapshot was lost (the stream must re-snapshot). */
+  lost?: (stream: Stream) => void;
+  /** A snapshot can never fit the intake: replay stops for the page load. */
+  tooLarge?: () => void;
+  /** Drop counters for `status`. */
+  count?: (name: string, n?: number) => void;
+}
+
+/** gzip, with fflate where CompressionStream is missing; null when neither works. */
+async function compress(text: string): Promise<Blob | null> {
+  const native = await gzip(text);
+  if (native) return native;
+  try {
+    return await (await loadGzip())(text);
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Sends replay segments one at a time, in order, with the same failure
- * handling as `TransportManager`: a retryable failure keeps the segment and
- * backs off, any other 4xx drops it, and a 401 or 403 stops replay delivery
- * for the rest of the page.
- *
- * A segment is often past the 64 KiB keepalive cap, where a keepalive request
- * is refused outright; `send` sends those as plain requests instead of
- * silently dropping them.
- *
- * Losing a snapshot segment drops the ones after it until the next snapshot:
- * node ids restart per page load, so they would replay onto another page.
+ * Sends segments one at a time, in order. A retryable failure keeps the segment and backs off
+ * (Retry-After holds everything); 401, 403 and the request budget stop delivery; any other 4xx
+ * drops the segment. Losing a snapshot drops what built on it, until the next snapshot. Retries
+ * resend the same bytes, so the intake's content-addressed write dedupes them.
  */
 export class ReplayTransport {
-  private buffer: PendingSegment[] = [];
-  private bufferedBytes = 0;
+  private queue: Pending[] = [];
+  private queued = 0;
   private sending: Promise<void> | null = null;
-  private inFlight: PendingSegment | null = null;
+  private inFlight: Pending | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private quietUntil = 0;
   private backoff = new Backoff();
   private stopped = false;
-  private snapshotLost = false;
-  private warnedTooLarge = false;
+  private warned = false;
+  private lostStream: Stream | null = null;
 
-  /** `send` is the core's on the CDN, so both share one keepalive budget. */
   constructor(
-    private endpoint: string,
-    private clientToken: string,
-    private fetchFn: typeof fetch = (...a) => fetch(...a),
-    private send: typeof coreSend = coreSend,
+    private base: string,
+    private token: string,
+    private fetchFn: typeof fetch,
+    private send: typeof coreSend,
+    private hooks: TransportHooks = {},
   ) {}
 
-  /** Drops everything queued and sends nothing more (consent withdrawn, opted out, over budget). */
+  /** Drops everything queued and sends nothing more (consent, opt-out, budget). */
   stop(): void {
     this.stopped = true;
-    this.buffer = [];
-    this.bufferedBytes = 0;
+    this.queue = [];
+    this.queued = 0;
     if (this.retryTimer) clearTimeout(this.retryTimer);
     this.retryTimer = null;
   }
 
-  /**
-   * Queues a segment and starts sending if nothing is in flight. The promise
-   * settles when the queue stops moving: everything sent or dropped, or a
-   * failure left the rest waiting on a backoff. It never rejects.
-   */
-  sendSegment(sessionId: string, segment: ReplaySegment): Promise<void> {
+  get idle(): boolean {
+    return !this.queue.length && !this.inFlight;
+  }
+
+  private url(stream: Stream, seg: Segment, q: number, fin: boolean, rule?: string): string {
+    const qs = `s=${stream.s}&w=${stream.w}&p=${stream.p}&q=${q}&ft=${seg.ft}&lt=${seg.lt}&n=${seg.json.length}${seg.fs ? '&fs=1' : ''}${fin ? '&fin=1' : ''}${rule ? `&r=${encodeURIComponent(rule)}` : ''}&v=${VERSION}`;
+    return `${this.base}/v2/segments?${qs}`;
+  }
+
+  /** Queues a closed segment: numbered now, compressed now, sent in order. Never rejects. */
+  push(stream: Stream, seg: Segment, rule?: string, fin = false): Promise<void> {
     if (this.stopped) return Promise.resolve();
-    const head = `{"session_id":${JSON.stringify(sessionId)},"segment_index":${segment.index},"events":[`;
-    const bytes = byteLength(head) + segment.bytes + 2;
-    const url = `${this.endpoint}?session_id=${sessionId}&segment_index=${segment.index}`;
-    if (segment.final) {
-      this.sendFinal(url, head, segment, bytes);
+    if (seg.fs) {
+      if (this.lostStream === stream) this.lostStream = null;
+    } else if (this.lostStream === stream) {
+      // Built on a snapshot that never arrived: it cannot play.
+      this.hooks.count?.('replay_segments_dropped');
       return this.pump();
     }
-    if (segment.snapshot) {
-      this.snapshotLost = false;
-    } else if (this.snapshotLost) {
-      return this.pump();
-    }
-    if (bytes > MAX_SEGMENT_BYTES) {
-      this.warnTooLarge();
-      if (segment.snapshot) this.snapshotLost = true;
-      return this.pump();
-    }
-    this.buffer.push({
-      url,
-      body: `${head}${segment.json.join(',')}]}`,
-      bytes,
-      snapshot: segment.snapshot,
+    const text = `[${seg.json.join(',')}]`;
+    const p: Pending = { stream, url: this.url(stream, seg, stream.q++ >>> 0, fin, rule), text, bytes: text.length, fs: seg.fs, css: seg.css, zipped: Promise.resolve() };
+    p.zipped = compress(text).then((b) => {
+      p.body = b;
+      if (b) {
+        this.queued += b.size - p.bytes;
+        p.bytes = b.size;
+      }
     });
-    this.bufferedBytes += bytes;
+    this.queue.push(p);
+    this.queued += p.bytes;
     this.trim();
     return this.pump();
-  }
-
-  /**
-   * Unloading cancels a plain request, so the last segment goes alone with
-   * keepalive, once its snapshot is in. A larger one is dropped.
-   */
-  private sendFinal(
-    url: string,
-    head: string,
-    segment: ReplaySegment,
-    bytes: number,
-  ): void {
-    const based =
-      segment.snapshot ||
-      (!this.snapshotLost &&
-        !this.inFlight?.snapshot &&
-        !this.buffer.some((s) => s.snapshot));
-    if (!based || bytes > KEEPALIVE_MAX_BYTES) return;
-    void this.send(this.fetchFn, url, this.clientToken, `${head}${segment.json.join(',')}]}`, 'application/json', bytes);
-  }
-
-  private canSend(): boolean {
-    return !this.stopped && this.retryTimer === null && this.buffer.length > 0;
   }
 
   private pump(): Promise<void> {
@@ -137,62 +121,127 @@ export class ReplayTransport {
     return this.sending ?? Promise.resolve();
   }
 
-  /**
-   * Entered only when `canSend()`, so the loop body runs at least once and
-   * `sending` is cleared after an await, never before `pump` has assigned it.
-   */
+  private canSend(): boolean {
+    return !this.stopped && this.retryTimer === null && this.queue.length > 0 && now() >= this.quietUntil;
+  }
+
+  /** Entered only when `canSend()`; one request at a time, in order. */
   private async drain(): Promise<void> {
     do {
-      const segment = this.buffer.shift()!;
-      this.bufferedBytes -= segment.bytes;
-      this.inFlight = segment;
-      const outcome = await this.send(this.fetchFn, segment.url, this.clientToken, segment.body, 'application/json', segment.bytes);
+      const p = this.queue[0];
+      await p.zipped;
+      // Stopped, sent at unload, or trimmed while compressing.
+      if (this.stopped || this.queue[0] !== p) continue;
+      const body = p.body ?? p.text;
+      const size = p.body ? p.body.size : byteLength(p.text);
+      if (size > MAX_WIRE_BYTES) {
+        this.shift();
+        this.drop(p, true);
+        continue;
+      }
+      this.inFlight = p;
+      const outcome = await this.send(this.fetchFn, p.url, this.token, body, p.body ? 'application/octet-stream' : 'application/json', size);
       this.inFlight = null;
-      if (this.stopped) break;
+      if (this.stopped || this.queue[0] !== p) continue;
       if (outcome.kind === 'ok') {
+        this.shift();
         this.backoff.reset();
+        p.stream.css.ack(p.css);
       } else if (outcome.kind === 'retryable') {
-        this.buffer.unshift(segment);
-        this.bufferedBytes += segment.bytes;
-        this.trim();
+        const wait = this.backoff.next(outcome.retryAfterMs);
+        if (outcome.retryAfterMs) this.quietUntil = now() + wait;
         this.retryTimer = setTimeout(() => {
           this.retryTimer = null;
+          this.quietUntil = 0;
           void this.pump();
-        }, this.backoff.next(outcome.retryAfterMs));
+        }, wait);
       } else if (isRefused(outcome) || outcome.status === 0) {
         // Refused by the intake, or by the request budget: nothing more goes.
         this.stop();
       } else {
-        // Any other permanent failure drops just this segment.
-        if (outcome.status === 413) this.warnTooLarge();
-        if (segment.snapshot) this.loseSnapshot();
+        this.shift();
+        this.drop(p, outcome.status === 413);
       }
     } while (this.canSend());
     this.sending = null;
   }
 
-  /** Drops the queued segments that built on a snapshot just dropped. */
-  private loseSnapshot(): void {
-    while (this.buffer.length > 0 && !this.buffer[0].snapshot) {
-      this.bufferedBytes -= this.buffer.shift()!.bytes;
-    }
-    this.snapshotLost = this.buffer.length === 0;
+  private shift(): void {
+    const p = this.queue.shift();
+    if (p) this.queued -= p.bytes;
   }
 
-  private warnTooLarge(): void {
-    if (this.warnedTooLarge) return;
-    this.warnedTooLarge = true;
-    console.warn('[SiteQwality RUM] Skipped a replay segment that was too large');
+  /** A segment that will never be delivered, and what built on it. */
+  private drop(p: Pending, tooLarge = false): void {
+    this.hooks.count?.('replay_segments_dropped');
+    if (tooLarge && !this.warned) {
+      this.warned = true;
+      console.warn('[SiteQwality RUM] Skipped a replay segment that was too large');
+    }
+    if (!p.fs) return;
+    if (tooLarge) return this.hooks.tooLarge?.();
+    this.lose(p.stream);
+  }
+
+  /** The stream's snapshot is gone: later segments up to its next snapshot go too. */
+  private lose(stream: Stream): void {
+    let i = 0;
+    while (i < this.queue.length) {
+      const q = this.queue[i];
+      if (q.stream !== stream || q === this.inFlight) i++;
+      else if (q.fs) break;
+      else {
+        this.queue.splice(i, 1);
+        this.queued -= q.bytes;
+        this.hooks.count?.('replay_segments_dropped');
+      }
+    }
+    if (!this.queue.some((q) => q.stream === stream && q.fs)) this.lostStream = stream;
+    stream.css.clear();
+    this.hooks.lost?.(stream);
   }
 
   private trim(): void {
-    while (
-      this.buffer.length > MAX_BUFFERED_SEGMENTS ||
-      (this.bufferedBytes > MAX_BUFFERED_BYTES && this.buffer.length > 1)
-    ) {
-      const dropped = this.buffer.shift()!;
-      this.bufferedBytes -= dropped.bytes;
-      if (dropped.snapshot) this.loseSnapshot();
+    while (this.queue.length > 1 && (this.queue.length > MAX_BUFFERED_SEGMENTS || this.queued > MAX_BUFFERED_BYTES)) {
+      const i = this.queue[0] === this.inFlight ? 1 : 0;
+      const [p] = this.queue.splice(i, 1);
+      this.queued -= p.bytes;
+      this.drop(p);
     }
+  }
+
+  /**
+   * pagehide, in two steps. This one takes what is queued, then `tail`, and counts what cannot
+   * go (over the keepalive cap, built on a snapshot left behind, or held by a Retry-After). The
+   * returned function sends the rest with keepalive (gzip if ready, else as JSON); it runs after
+   * the core's own tail, which comes first.
+   */
+  unload(tail: { stream: Stream; seg: Segment; rule?: string } | null): () => void {
+    if (this.stopped) return () => {};
+    const out = this.queue.filter((p) => p !== this.inFlight);
+    this.queue = this.inFlight ? [this.inFlight] : [];
+    this.queued = this.inFlight ? this.inFlight.bytes : 0;
+    if (tail) {
+      const text = `[${tail.seg.json.join(',')}]`;
+      out.push({ stream: tail.stream, url: this.url(tail.stream, tail.seg, tail.stream.q++ >>> 0, true, tail.rule), text, bytes: text.length, fs: tail.seg.fs, css: [], zipped: Promise.resolve() });
+    }
+    // A snapshot already in flight usually lands: what follows it still goes.
+    const lost = new Set<Stream>(this.lostStream ? [this.lostStream] : []);
+    const go: Array<() => void> = [];
+    let dropped = 0;
+    for (const p of out) {
+      if (p.fs) lost.delete(p.stream);
+      const body = p.body ?? p.text;
+      const size = p.body ? p.body.size : byteLength(p.text);
+      if (now() < this.quietUntil || lost.has(p.stream) || size > KEEPALIVE_MAX_BYTES) {
+        dropped++;
+        if (p.fs) lost.add(p.stream);
+        continue;
+      }
+      // The fetch given refuses anything that cannot go with keepalive by then.
+      go.push(() => void this.send(this.fetchFn, p.url, this.token, body, p.body ? 'application/octet-stream' : 'application/json', size));
+    }
+    if (dropped) this.hooks.count?.('replay_tail_dropped', dropped);
+    return () => go.forEach((f) => f());
   }
 }

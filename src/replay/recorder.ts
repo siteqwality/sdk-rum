@@ -1,510 +1,340 @@
+// The recorder (design 5.4, 5.5): rrweb restarted for each snapshot, every event cleaned,
+// throttled and serialized once, then segmented. Buffer mode holds the last two checkouts in
+// the ring until go(); stream mode hands segments out as they close.
 import type { UrlSanitizer } from '../core/url';
-import type { SdkConfig } from '../types';
-import type { record as rrwebRecord } from '@rrweb/record';
 import { byteLength } from '../core/util';
-import { SegmentSequence, type SeqStore } from './sequence';
-import { MAX_SEGMENT_BYTES, type ReplaySegment } from './transport';
+import { Segmenter, Ring, FULL_SNAPSHOT, INCREMENTAL, CUSTOM, SEGMENT_MAX_AGE_MS, SEGMENT_MAX_BYTES, RING_STALE_MS, type Segment } from './segmenter';
+import { MutationThrottle } from './throttle';
+import { CSS_REF_MIN } from './css';
+import type { Stream } from './stream';
+import { cleanAttributes, cleanDomEvent, recordOptions, sanitizeReplayEvent, withoutFrameContent, type GetNode, type RecordFn, type ReplayPrivacy, type ReplayState } from './privacy';
 
-export type { ReplaySegment } from './transport';
+export * from './privacy';
 
-// rrweb discriminants, hardcoded so the lazy rrweb chunk stays out of the core
-// bundle. Pinned against rrweb's own enums by `replay-url.test.ts`.
-const RRWEB_FULL_SNAPSHOT_EVENT_TYPE = 2;
-const RRWEB_INCREMENTAL_EVENT_TYPE = 3;
-const RRWEB_META_EVENT_TYPE = 4;
-const RRWEB_MUTATION_SOURCE = 0;
-const RRWEB_DOCUMENT_NODE_TYPE = 0;
+const MUTATION = 0;
 
-/** Elements whose content and attributes replay never records. */
-export const HIDDEN_INPUT_SELECTOR = 'input[type="hidden" i]';
-
-/** Events in one segment. */
-export const SEGMENT_MAX_EVENTS = 500;
-
-/** Request body a segment aims for. A single larger event is sent alone. */
-export const SEGMENT_TARGET_BYTES = 750_000;
-
-/** Room for the request fields around the events. */
-const ENVELOPE_BYTES = 128;
-
-/** Longest a segment stays open before it is sent. */
-export const SEGMENT_MAX_AGE_MS = 30_000;
-
-/** A fresh full snapshot this often while streaming (design 5.4), each starting a segment. */
+/** A full snapshot over this, after CSS references, stops replay for the page load (5.5). */
+export const SNAPSHOT_MAX_BYTES = 4_000_000;
+/** Streaming: a fresh snapshot this often, taken where a segment closes (5.4). */
 export const CHECKOUT_EVERY_MS = 180_000;
+/** Buffering: a checkout this often, or after this much since the last, so the ring stays 60 to 120 s. */
+export const BUFFER_CHECKOUT_MS = 60_000;
+export const BUFFER_CHECKOUT_BYTES = SEGMENT_MAX_BYTES;
+/** A resync after throttling or a lost snapshot comes at most this often. */
+export const RESYNC_MIN_MS = 30_000;
 
-export type RecordFn = typeof rrwebRecord;
-type RecordOptions = NonNullable<Parameters<RecordFn>[0]>;
-type GetNode = (id: number) => unknown;
-
-interface MaybeMetaEvent {
-  type?: number;
-  data?: { href?: unknown };
-}
-
-interface MaybeIncrementalEvent {
-  type?: number;
-  timestamp?: number;
-  data?: {
-    source?: number;
-    id?: number;
-    positions?: Array<{ id?: number }>;
-    adds?: Array<{ parentId?: number; node?: { type?: number } }>;
-    removes?: Array<{ parentId?: number }>;
-    texts?: Array<{ id?: number }>;
-    attributes?: Array<{ id?: number }>;
-  };
-}
-
-/**
- * Sanitise the page URL rrweb embeds in its Meta event.
- *
- * rrweb emits a Meta event on start and on every SPA navigation, carrying the
- * full `location.href` including its query string and fragment. Left alone it
- * reintroduces, inside the replay segment, exactly the data the view collector
- * strips. Rewriting the event after `emit` reaches it needs no rrweb fork.
- *
- * **What this does not reach:** URLs inside the DOM snapshot itself, i.e. the
- * `src` and `href` attributes of the recorded page, are produced by rrweb's
- * serialiser and would need a fork or an upstream option to filter. They are
- * left as recorded.
- */
-export function sanitizeReplayEvent(
-  event: unknown,
-  sanitizeUrl: UrlSanitizer,
-): unknown {
-  const candidate = event as MaybeMetaEvent | null;
-  if (
-    !candidate ||
-    candidate.type !== RRWEB_META_EVENT_TYPE ||
-    !candidate.data ||
-    typeof candidate.data.href !== 'string'
-  ) {
-    return event;
-  }
-  return {
-    ...candidate,
-    data: { ...candidate.data, href: sanitizeUrl(candidate.data.href) },
-  };
-}
-
-/**
- * The event without anything inside an iframe, or null if nothing is left.
- * The player cannot draw frame documents; adding one wipes the page.
- */
-export function withoutFrameContent(
-  event: unknown,
-  getNode: GetNode,
-): unknown {
-  const e = event as MaybeIncrementalEvent | null;
-  const data = e?.data;
-  if (e?.type !== RRWEB_INCREMENTAL_EVENT_TYPE || !data) return event;
-  // A node rrweb no longer knows is kept: only a remove can name one.
-  const inPage = (id: unknown) => {
-    if (typeof id !== 'number') return true;
-    const node = getNode(id) as Node | null;
-    return !node || node === document || node.ownerDocument === document;
-  };
-
-  if (data.source === RRWEB_MUTATION_SOURCE) {
-    const adds = (data.adds ?? []).filter(
-      (a) => a.node?.type !== RRWEB_DOCUMENT_NODE_TYPE && inPage(a.parentId),
-    );
-    const removes = (data.removes ?? []).filter((r) => inPage(r.parentId));
-    const texts = (data.texts ?? []).filter((t) => inPage(t.id));
-    const attributes = (data.attributes ?? []).filter((a) => inPage(a.id));
-    const kept = adds.length + removes.length + texts.length + attributes.length;
-    const total =
-      (data.adds?.length ?? 0) +
-      (data.removes?.length ?? 0) +
-      (data.texts?.length ?? 0) +
-      (data.attributes?.length ?? 0);
-    if (kept === total) return event;
-    if (kept === 0) return null;
-    return { ...e, data: { ...data, adds, removes, texts, attributes } };
-  }
-  if (Array.isArray(data.positions)) {
-    const positions = data.positions.filter((p) => inPage(p.id));
-    if (positions.length === data.positions.length) return event;
-    return positions.length ? { ...e, data: { ...data, positions } } : null;
-  }
-  return inPage(data.id) ? event : null;
-}
-
-/**
- * Groups serialized rrweb events into segments: a Meta event opens one, a full
- * snapshot, the byte target, the event cap or `SEGMENT_MAX_AGE_MS` closes it.
- */
-export class SegmentBuffer {
-  private json: string[] = [];
-  /** Event bytes plus the comma that joins each one. */
-  private bytes = 0;
-  private opensWithMeta = false;
-  private snapshot = false;
-  private ageTimer: ReturnType<typeof setTimeout> | null = null;
-
-  constructor(
-    private onSegment: (segment: ReplaySegment) => void,
-    private nextIndex: () => number = counter(),
-  ) {}
-
-  /** Adds an event. False, and nothing added, for a snapshot too large to send. */
-  add(event: unknown): boolean {
-    const type = typeOf(event);
-    if (type === RRWEB_META_EVENT_TYPE) this.flush();
-    const json = JSON.stringify(event);
-    const size = byteLength(json) + 1;
-    const isSnapshot = type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE;
-    // A full snapshot stays with the Meta event just before it.
-    const withMeta = isSnapshot && this.opensWithMeta && this.json.length === 1;
-    if (isSnapshot && ENVELOPE_BYTES + (withMeta ? this.bytes : 0) + size > MAX_SEGMENT_BYTES) {
-      return false;
-    }
-    if (!withMeta && ENVELOPE_BYTES + this.bytes + size > SEGMENT_TARGET_BYTES) {
-      this.flush();
-    }
-    if (this.json.length === 0) {
-      this.opensWithMeta = type === RRWEB_META_EVENT_TYPE;
-      this.ageTimer = setTimeout(() => this.flush(), SEGMENT_MAX_AGE_MS);
-    }
-    this.json.push(json);
-    this.bytes += size;
-    if (isSnapshot) this.snapshot = true;
-    // The snapshot goes at once, so even a short page view has it delivered.
-    if (
-      isSnapshot ||
-      this.json.length >= SEGMENT_MAX_EVENTS ||
-      ENVELOPE_BYTES + this.bytes >= SEGMENT_TARGET_BYTES
-    ) {
-      this.flush();
-    }
-    return true;
-  }
-
-  /** Drops the open segment unsent. */
-  discard(): void {
-    if (this.ageTimer) {
-      clearTimeout(this.ageTimer);
-      this.ageTimer = null;
-    }
-    this.json = [];
-    this.bytes = 0;
-    this.snapshot = false;
-  }
-
-  /** Sends the open segment; `final` when the page is going away. */
-  flush(final = false): void {
-    if (this.ageTimer) {
-      clearTimeout(this.ageTimer);
-      this.ageTimer = null;
-    }
-    if (this.json.length === 0) return;
-    const segment: ReplaySegment = {
-      index: this.nextIndex(),
-      json: this.json,
-      bytes: this.bytes - 1,
-      snapshot: this.snapshot,
-      final,
-    };
-    this.json = [];
-    this.bytes = 0;
-    this.snapshot = false;
-    this.onSegment(segment);
-  }
-}
-
-function typeOf(event: unknown): unknown {
-  return (event as { type?: unknown } | null)?.type;
-}
-
-function counter(): () => number {
-  let next = 0;
-  return () => next++;
-}
-
-/** Privacy options from the app's level and selectors (design 7.1). */
-export interface ReplayPrivacy {
-  maskInputs: boolean;
-  /** Every text node masked except `unmaskSelector` (Strict, or legacy mask_text). */
-  maskAllText: boolean;
-  maskSelector?: string;
-  unmaskSelector?: string;
-  /** The app's block selectors; Strict adds media. Hidden inputs are always blocked. */
-  blockSelector: string;
-  ignoreSelector?: string;
-  /** PII patterns, masked with `*` to keep the layout. */
-  scrub?: (text: string) => string;
-}
-
-export type ReplayState = 'recording' | 'paused' | 'stopped';
-
-const STRICT_MEDIA = ['img', 'video', 'audio', 'picture', 'svg'];
-
-function valid(list: string[]): string | undefined {
-  const probe = document.createElement('div');
-  return (
-    list
-      .filter((s) => {
-        try {
-          probe.matches(s);
-          return true;
-        } catch {
-          return false;
-        }
-      })
-      .join(',') || undefined
-  );
-}
-
-/** rrweb privacy from the app's level and selectors (design 7.1); block selectors always win. */
-export function replayPrivacy(p: SdkConfig['privacy'], mask: (s: string) => string): ReplayPrivacy {
-  const strict = p.level === 'strict';
-  return {
-    maskInputs: p.level !== null || p.mask_inputs,
-    maskAllText: strict || p.mask_text,
-    maskSelector: valid(p.mask_selectors),
-    unmaskSelector: strict ? valid(p.unmask_selectors) : undefined,
-    blockSelector: valid([...p.block_selectors, ...(strict ? STRICT_MEDIA : [])]) ?? '',
-    ignoreSelector: valid(p.ignore_input_selectors),
-    scrub: p.pii_patterns.length ? mask : undefined,
-  };
-}
-
-
-const URL_ATTRS = ['href', 'src', 'action', 'formaction', 'poster', 'data', 'background', 'cite', 'ping', 'xlink:href'];
-
-const closest = (el: Element | null, selector?: string) => {
-  try {
-    return !!selector && !!el?.closest?.(selector);
-  } catch {
-    return false;
-  }
-};
-
-export function recordOptions(p: ReplayPrivacy): RecordOptions {
-  const stars = (t: string) => t.replace(/\S/g, '*');
-  const masking = p.maskAllText || !!p.maskSelector || !!p.scrub;
-  return {
-    sampling: { mousemove: 50, scroll: 150 },
-    slimDOMOptions: 'all',
-    inlineStylesheet: true,
-    recordCrossOriginIframes: false,
-    recordCanvas: false,
-    maskAllInputs: p.maskInputs,
-    // Password, email, phone and card fields can never be unmasked (7.1).
-    maskInputOptions: { password: true, email: true, tel: true },
-    // Hidden inputs (CSRF tokens) are never recorded, whatever the level.
-    blockSelector: [HIDDEN_INPUT_SELECTOR, p.blockSelector, p.maskInputs ? '' : 'input[autocomplete^="cc-" i]'].filter(Boolean).join(','),
-    ignoreSelector: p.ignoreSelector,
-    maskTextSelector: masking ? '*' : undefined,
-    maskTextFn: masking
-      ? (text: string, el: HTMLElement | null) =>
-          (p.maskAllText ? !closest(el, p.unmaskSelector) : closest(el, p.maskSelector))
-            ? stars(text)
-            : p.scrub
-              ? p.scrub(text)
-              : text
-      : undefined,
-  };
-}
-
-interface SerializedNode {
-  attributes?: Record<string, unknown>;
-  childNodes?: SerializedNode[];
-}
-
-/** URL attributes minimised and the rest PII-scrubbed, in snapshots and mutations, in place. */
-export function cleanAttributes(
-  attrs: Record<string, unknown> | undefined,
-  url: UrlSanitizer,
-  text: (s: string) => string,
-  scrub?: (s: string) => string,
-): void {
-  if (!attrs) return;
-  for (const name of Object.keys(attrs)) {
-    const v = attrs[name];
-    if (name === '_cssText' || name.startsWith('rr_')) continue;
-    if (typeof v === 'string') {
-      let out = URL_ATTRS.includes(name.toLowerCase())
-        ? url(v)
-        : name === 'srcset'
-          ? v.split(',').map((part) => part.trim().replace(/^\S+/, (u) => url(u))).join(', ')
-          : text(v);
-      if (scrub) out = scrub(out);
-      attrs[name] = out;
-    } else if (v && typeof v === 'object') {
-      // A style diff: property to value or [value, priority].
-      for (const [k, sv] of Object.entries(v as Record<string, unknown>)) {
-        if (typeof sv === 'string') (v as Record<string, unknown>)[k] = text(sv);
-      }
-    }
-  }
-}
-
-function cleanNode(n: SerializedNode | undefined, clean: (a?: Record<string, unknown>) => void): void {
-  if (!n) return;
-  clean(n.attributes);
-  if (Array.isArray(n.childNodes)) for (const c of n.childNodes) cleanNode(c, clean);
-}
-
-/** Minimises URLs in DOM attributes of full snapshots and mutations (mutates the event). */
-export function cleanDomEvent(event: unknown, clean: (a?: Record<string, unknown>) => void): void {
-  const e = event as { type?: number; data?: { node?: SerializedNode; source?: number; adds?: Array<{ node?: SerializedNode }>; attributes?: Array<{ attributes?: Record<string, unknown> }> } } | null;
-  const d = e?.data;
-  if (!d) return;
-  if (e.type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE) cleanNode(d.node, clean);
-  else if (e.type === RRWEB_INCREMENTAL_EVENT_TYPE && d.source === RRWEB_MUTATION_SOURCE) {
-    for (const a of d.adds ?? []) cleanNode(a.node, clean);
-    for (const a of d.attributes ?? []) clean(a.attributes);
-  }
-}
+export type Why = 'start' | 'resume' | 'checkout' | 'resync';
 
 export interface RecorderOptions {
-  sessionId: string;
   record: RecordFn;
-  onSegment: (segment: ReplaySegment) => void;
   privacy: ReplayPrivacy;
   url: UrlSanitizer;
   text: (s: string) => string;
-  onStatus?: (state: ReplayState, reason?: string) => void;
   /** The SDK's clock: rrweb stamps events with Date, which pages patch. */
-  now?: () => number;
-  /** Where segment numbers live: shared by the session's tabs, this tab, or memory. */
-  store?: SeqStore;
+  now: () => number;
+  /** The stream new snapshots belong to; a back-forward cache restore starts another. */
+  stream: () => Stream;
+  /** Buffer into the ring until go(). */
+  buffer?: boolean;
+  /** Closed segments, in stream mode (the ring's at go()). */
+  onSegment: (segment: Segment, stream: Stream) => void;
+  onStatus?: (state: ReplayState, reason?: string) => void;
+  count?: (name: string, n?: number) => void;
   /** Starts paused for this reason: nothing is captured until resume(). */
   paused?: string;
 }
 
+interface Tagged extends Segment {
+  stream: Stream;
+}
+
 export class ReplayRecorder {
-  private record: RecordFn | null = null;
-  private options: RecordOptions = {};
+  private o!: RecorderOptions;
+  private options: ReturnType<typeof recordOptions> = {};
   private stopRecord: (() => void) | null = null;
-  private buffer: SegmentBuffer | null = null;
-  private sanitizeUrl: UrlSanitizer = String;
+  private segmenter!: Segmenter;
+  private ring = new Ring();
+  private throttle!: MutationThrottle;
+  private stream!: Stream;
   private clean: (a?: Record<string, unknown>) => void = () => {};
-  private onStatus: RecorderOptions['onStatus'];
-  private now: RecorderOptions['now'];
   /** Bumped on every restart, so a stopped recording's late events are ignored. */
   private generation = 0;
-  private snapshotAt = 0;
-  private checkoutQueued = false;
+  private buffering = false;
   private paused = false;
-  private onPageHide = () => this.buffer?.flush(true);
-  private onPageShow = (event: PageTransitionEvent) => {
-    // Back from the back-forward cache: other pages may have run since.
-    if (event.persisted && !this.paused) this.capture();
-  };
-  private onVisibilityChange = () => {
-    if (document.visibilityState === 'hidden') this.buffer?.flush();
-  };
+  private started = false;
+  private snapshotAt = 0;
+  private sinceSnapshot = 0;
+  private sendNow = false;
+  private queued = false;
+  private resyncAt = -Infinity;
+  private tick: ReturnType<typeof setInterval> | undefined;
 
   start(o: RecorderOptions): void {
-    if (this.buffer) return;
-    const sequence = new SegmentSequence(o.sessionId, o.store);
-    this.buffer = new SegmentBuffer(o.onSegment, () => sequence.take());
-    this.record = o.record;
-    this.sanitizeUrl = o.url;
-    this.onStatus = o.onStatus;
-    this.now = o.now;
-    this.clean = (a) => cleanAttributes(a, o.url, o.text, o.privacy.scrub);
+    if (this.started) return;
+    this.started = true;
+    this.o = o;
+    this.buffering = !!o.buffer;
     this.options = recordOptions(o.privacy);
+    this.clean = (a) => cleanAttributes(a, o.url, o.text, o.privacy.scrub);
+    const { mirror } = o.record;
+    // An svg's children share its bucket, so one animated chart cannot flood.
+    this.throttle = new MutationThrottle((id) => {
+      const n = mirror.getNode(id);
+      const svg = n instanceof Element && n.nodeName !== 'svg' ? n.closest('svg') : null;
+      return svg ? mirror.getId(svg) : id;
+    });
+    this.segmenter = new Segmenter((s) => this.closed(s as Tagged), this.buffering ? Infinity : SEGMENT_MAX_AGE_MS, () => this.due());
     if (o.paused) {
       this.paused = true;
-      this.onStatus?.('paused', o.paused);
-    } else this.capture();
-    window.addEventListener('pagehide', this.onPageHide);
-    window.addEventListener('pageshow', this.onPageShow);
-    document.addEventListener('visibilitychange', this.onVisibilityChange);
+      this.status('paused', o.paused);
+    } else this.capture('start');
   }
 
-  /** Stops recording and sends whatever the open segment holds, or drops it (`discard`). */
+  get recording(): boolean {
+    return !!this.stopRecord;
+  }
+
+  /** A replay rule matched: the ring goes out, oldest first, and segments stream from here. */
+  go(): void {
+    if (!this.started || !this.buffering) return;
+    this.segmenter.close();
+    this.buffering = false;
+    this.segmenter.maxAge = SEGMENT_MAX_AGE_MS;
+    for (const s of this.ring.take(this.o.now() - RING_STALE_MS) as Tagged[]) this.o.onSegment(s, s.stream);
+    if (!this.paused) this.status('recording');
+  }
+
+  /** Stops recording: the open segment is sent (stream mode) or everything is dropped. */
   stop(discard = false): void {
-    this.generation++;
-    this.stopRecord?.();
-    this.stopRecord = null;
-    window.removeEventListener('pagehide', this.onPageHide);
-    window.removeEventListener('pageshow', this.onPageShow);
-    document.removeEventListener('visibilitychange', this.onVisibilityChange);
-    if (discard) this.buffer?.discard();
-    else this.buffer?.flush();
-    this.buffer = null;
+    if (!this.started) return;
+    this.end();
+    this.halt();
+    if (discard || this.buffering) {
+      this.segmenter.discard();
+      this.ring.clear();
+    } else this.segmenter.close();
+    this.started = false;
   }
 
-  /** Pauses on a never-record page; a custom `sq-pause` event marks the gap. */
+  /** Pauses (hidden, idle, never-record page); a custom `sq-pause` event marks the gap. */
   pause(reason: string): void {
-    if (!this.buffer || !this.record) return;
-    if (this.paused) return this.onStatus?.('paused', reason);
+    if (!this.started) return;
+    if (this.paused) return this.status('paused', reason);
     this.paused = true;
-    try {
-      this.record.addCustomEvent('sq-pause', { reason });
-    } catch {
-      // Not recording yet.
-    }
-    this.generation++;
-    this.stopRecord?.();
-    this.stopRecord = null;
-    this.buffer.flush();
-    this.onStatus?.('paused', reason);
+    this.end();
+    this.marker('sq-pause', { reason });
+    this.halt();
+    this.segmenter.close();
+    this.status('paused', reason);
   }
 
   /** Resumes with a full snapshot. */
   resume(): void {
-    if (!this.paused) return;
+    if (!this.started || !this.paused) return;
     this.paused = false;
-    this.capture();
+    this.capture('resume');
+  }
+
+  /** pagehide: rrweb stops; in stream mode the open segment is handed back as the tail. */
+  unload(): Segment & { stream: Stream } | null {
+    if (!this.started) return null;
+    this.end();
+    this.halt();
+    if (this.buffering) {
+      this.segmenter.discard();
+      this.ring.clear();
+      return null;
+    }
+    const tail = this.segmenter.take();
+    return tail && { ...tail, stream: this.stream };
+  }
+
+  /** Back from the back-forward cache, under a new page load. */
+  restore(): void {
+    if (this.started && !this.paused) this.capture('start');
+  }
+
+  /** The stream lost a snapshot: a fresh one, at most every RESYNC_MIN_MS. */
+  resync(): void {
+    this.schedule('resync');
+  }
+
+  private status(state: ReplayState, reason?: string): void {
+    this.o.onStatus?.(state === 'recording' && this.buffering ? 'buffering' : state, reason);
+  }
+
+  /** rrweb and the refill tick stop; nothing more is captured. */
+  private halt(): void {
+    this.generation++;
+    clearInterval(this.tick);
+    try {
+      this.stopRecord?.();
+    } catch {
+      // rrweb failing to stop must not keep us recording.
+    }
+    this.stopRecord = null;
+  }
+
+  private marker(tag: string, payload: Record<string, unknown>): void {
+    try {
+      this.o.record.addCustomEvent(tag, payload);
+    } catch {
+      // Not recording.
+    }
+  }
+
+  private closed(s: Tagged): void {
+    s.stream = this.stream;
+    if (this.buffering) {
+      this.ring.push(s);
+      return;
+    }
+    this.o.onSegment(s, s.stream);
+  }
+
+  /** A streaming segment closed by age: a checkout is due once 3 minutes have passed. */
+  private due(): void {
+    if (!this.buffering && this.o.now() - this.snapshotAt >= CHECKOUT_EVERY_MS) this.schedule('checkout');
+  }
+
+  /** A checkout outside rrweb's own callback, like rrweb's own, after it returns. */
+  private schedule(why: Why): void {
+    if (this.queued || !this.stopRecord) return;
+    if (why === 'resync') {
+      if (this.o.now() - this.resyncAt < RESYNC_MIN_MS) return;
+      this.resyncAt = this.o.now();
+    }
+    this.queued = true;
+    queueMicrotask(() => {
+      this.queued = false;
+      if (this.stopRecord) this.capture(why);
+    });
   }
 
   /**
-   * Restarts rrweb for a fresh snapshot. Unlike rrweb's own checkout, this
-   * leaves one set of observers per iframe instead of one more each time.
+   * Restarts rrweb for a fresh snapshot. Unlike rrweb's own checkout, this leaves one set of
+   * observers per iframe instead of one more each time.
    */
-  private capture(): void {
-    if (!this.buffer || !this.record || this.paused) return;
-    this.stopRecord?.();
-    this.stopRecord = null;
-    this.buffer.flush();
-    const generation = ++this.generation;
-    const { mirror } = this.record;
-    this.stopRecord =
-      this.record({
-        ...this.options,
-        emit: (event) => this.onEvent(event, generation, (id) => mirror.getNode(id)),
-      }) ?? null;
-    // A snapshot too large to send has already stopped this recording.
-    if (generation === this.generation) this.onStatus?.('recording');
+  private capture(why: Why): void {
+    if (!this.started || this.paused) return;
+    this.halt();
+    this.segmenter.close();
+    this.stream = this.o.stream();
+    this.throttle.reset();
+    // A page's first snapshot, and the first after a pause, go at once: a short view still plays.
+    this.sendNow = why === 'start' || why === 'resume';
+    const generation = this.generation;
+    const { record } = this.o;
+    const { mirror } = record;
+    const getNode: GetNode = (id) => mirror.getNode(id);
+    let stop: (() => void) | undefined;
+    try {
+      stop = record({ ...this.options, emit: (event) => this.onEvent(event, generation, getNode) });
+    } catch {
+      stop = undefined;
+    }
+    // A snapshot too large to record has already stopped this recording.
+    if (generation !== this.generation) return void stop?.();
+    if (!stop) {
+      this.started = false;
+      return this.o.onStatus?.('stopped', 'record_failed');
+    }
+    this.stopRecord = stop;
+    this.tick = setInterval(() => this.refill(generation), 1_000);
+    this.status('recording');
+  }
+
+  /** Held node values come back once a second; a calm window after drops resyncs. */
+  private refill(generation: number): void {
+    if (generation !== this.generation) return;
+    const { mirror } = this.o.record;
+    const data = this.throttle.tick((id) => mirror.has(id));
+    if (data) this.push({ type: INCREMENTAL, timestamp: this.o.now(), data: { source: MUTATION, ...data } }, true);
+    this.calm();
+  }
+
+  private calm(): void {
+    const t = this.o.now();
+    if (!this.throttle.calm(t) || t - this.resyncAt < RESYNC_MIN_MS) return;
+    this.throttled();
+    this.schedule('resync');
+  }
+
+  /** Recording pauses or ends: held node values go now, and a throttled run is marked. */
+  private end(): void {
+    if (!this.stopRecord) return;
+    const { mirror } = this.o.record;
+    const data = this.throttle.flush((id) => mirror.has(id));
+    if (data) this.push({ type: INCREMENTAL, timestamp: this.o.now(), data: { source: MUTATION, ...data } }, true);
+    this.throttled();
+  }
+
+  /** Marks where mutations were dropped (the player shows "simplified here"). */
+  private throttled(): void {
+    if (!this.throttle?.dropped) return;
+    this.marker('sq-throttle', { dropped: this.throttle.dropped, since: this.throttle.since });
+    this.throttle.reset();
   }
 
   private onEvent(event: unknown, generation: number, getNode: GetNode): void {
-    if (generation !== this.generation || !this.buffer) return;
-    const kept = withoutFrameContent(event, getNode);
-    if (kept === null) return;
-    if (this.now) (kept as { timestamp?: number }).timestamp = this.now();
-    cleanDomEvent(kept, this.clean);
-    if (!this.buffer.add(sanitizeReplayEvent(kept, this.sanitizeUrl))) {
-      // Its later events would replay onto another page, so the page stops here.
-      // The Meta event alone cannot play, so nothing of the page is sent.
-      this.buffer.discard();
-      this.generation++;
-      console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
-      this.onStatus?.('stopped', 'too_large');
-      queueMicrotask(() => this.stop());
+    if (generation !== this.generation) return;
+    let e = withoutFrameContent(event, getNode) as { type?: number; timestamp?: number; data?: { source?: number } } | null;
+    if (!e) return;
+    e.timestamp = this.o.now();
+    const css: string[] = [];
+    const snapshot = e.type === FULL_SNAPSHOT;
+    cleanDomEvent(e, (a, node) => {
+      if (!a) return;
+      const v = a._cssText;
+      if (node && typeof v === 'string' && v.length > CSS_REF_MIN) {
+        // Only a snapshot names a stylesheet the intake holds; anything else carries it inline.
+        const ref = snapshot ? this.stream.css.ref(v) : null;
+        if (ref) a._cssText = ref;
+        else css.push(v);
+      }
+      this.clean(a);
+    });
+    const mutation = e.type === INCREMENTAL && e.data?.source === MUTATION;
+    if (mutation && !(e = this.throttle.node(e))) return;
+    this.push(sanitizeReplayEvent(e, this.o.url), mutation, css);
+  }
+
+  private push(event: unknown, mutation: boolean, css?: string[]): void {
+    const e = event as { type: number; timestamp: number };
+    const t = e.timestamp;
+    let json: string;
+    try {
+      json = JSON.stringify(event);
+    } catch {
       return;
     }
-    const e = kept as MaybeIncrementalEvent;
-    const at = e.timestamp ?? 0;
-    if (e.type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE) {
-      this.snapshotAt = at;
-    } else if (
-      e.type === RRWEB_INCREMENTAL_EVENT_TYPE &&
-      at - this.snapshotAt > CHECKOUT_EVERY_MS &&
-      !this.checkoutQueued
-    ) {
-      // Outside rrweb's own callback, like its checkout but after it returns.
-      this.checkoutQueued = true;
-      queueMicrotask(() => {
-        this.checkoutQueued = false;
-        this.capture();
-      });
+    if (e.type === FULL_SNAPSHOT && byteLength(json) > SNAPSHOT_MAX_BYTES) return this.tooLarge();
+    if (mutation && !this.throttle.fits(t, json.length)) {
+      this.o.count?.('replay_mutations_dropped');
+      return;
     }
+    if (this.buffering) this.ring.trim(this.segmenter.bytes + json.length);
+    this.segmenter.add({ json, type: e.type, t, css: css?.length ? css : undefined });
+    if (e.type === FULL_SNAPSHOT) {
+      this.snapshotAt = t;
+      this.sinceSnapshot = 0;
+      if (this.sendNow && !this.buffering) this.segmenter.close();
+      return;
+    }
+    if (e.type === CUSTOM) return;
+    this.sinceSnapshot += json.length;
+    if (this.buffering && (t - this.snapshotAt >= BUFFER_CHECKOUT_MS || this.sinceSnapshot >= BUFFER_CHECKOUT_BYTES)) this.schedule('checkout');
+    else if (mutation && this.throttle.dropped) this.calm();
+  }
+
+  /** The page is too large to record: nothing of this snapshot is sent, and replay stops. */
+  private tooLarge(): void {
+    this.halt();
+    // The Meta event alone cannot play.
+    this.segmenter.discard();
+    if (this.buffering) this.ring.clear();
+    this.started = false;
+    console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
+    this.o.onStatus?.('stopped', 'too_large');
   }
 }

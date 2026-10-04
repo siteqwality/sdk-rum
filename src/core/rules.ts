@@ -161,6 +161,10 @@ export function createRules(facts: StaticFacts, onDecision: (d: Decision) => voi
     get decision(): Decision {
       return decision;
     },
+    /** A sampled-in Replay rule this device, release and env allow: the replay ring buffers (5.4). */
+    get armed(): boolean {
+      return states.some((s) => s.rule.capture === 'replay' && s.rule.conditions.every((c, n) => s.held[n] || !/^(device|release|env)$/.test(c.kind)));
+    },
     /** New rules, or a new session: `stored` is the decision already latched for it. */
     set(rules: RecordingRule[], sid: string, started: number, stored: Decision, fresh: boolean): void {
       if (fresh) {

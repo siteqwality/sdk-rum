@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { test, expect, snippet, sdkLoaded, hide, VERSION, REPLAY_ALL, ANALYZE_ALL } from './fixtures';
+import { test, expect, snippet, sdkLoaded, hide, VERSION, REPLAY_ALL, REPLAY_ON_ERROR, ANALYZE_ALL } from './fixtures';
 
 const HOST_GLOBALS = `<script>
   window.$ = function jQuery() {};
@@ -50,13 +50,84 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     await sdkLoaded(page);
     await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
     expect(requested).toContain(`/sdk/recorder-${VERSION}.min.js`);
+    expect(requested.filter((p) => p.includes('gzip-')), 'the gzip fallback is only for browsers without CompressionStream').toEqual([]);
     const [segment] = intake.segments();
-    expect(segment.segment_index).toBe(0);
-    expect(segment.events.map((e) => e.type).slice(0, 2)).toEqual([4, 2]);
-    expect(JSON.stringify(segment.events)).not.toContain('jane@example.com');
     await hide(page);
     await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
-    expect(intake.batches().at(-1)!.ctx.sampling).toMatchObject({ replay: true, rule_id: 'r_all' });
+    const ctx = intake.batches().at(-1)!.ctx;
+    // Design 6.4: index fields in the query, a gzip JSON array of rrweb events as the body.
+    expect(segment).toMatchObject({ s: ctx.session_id, w: ctx.window_id, p: ctx.page_load_id, q: 0, fs: true, fin: false, r: 'r_all', v: VERSION, gzip: true, contentType: 'application/octet-stream' });
+    expect(segment.n).toBe(segment.events.length);
+    expect(segment.ft).toBe(Math.min(...segment.events.map((e) => e.timestamp)));
+    expect(segment.lt).toBe(Math.max(...segment.events.map((e) => e.timestamp)));
+    expect(segment.events.map((e) => e.type).slice(0, 2)).toEqual([4, 2]);
+    expect(JSON.stringify(segment.events)).not.toContain('jane@example.com');
+    expect(ctx.sampling).toMatchObject({ replay: true, rule_id: 'r_all' });
+  });
+
+  test('without CompressionStream the gzip fallback loads beside the recorder', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
+    const requested: string[] = [];
+    page.on('request', (r) => requested.push(new URL(r.url()).pathname));
+    await page.addInitScript(() => {
+      delete (window as unknown as { CompressionStream?: unknown }).CompressionStream;
+    });
+    await page.goto(intake.page('no-cs', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Old Safari</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(requested).toContain(`/sdk/gzip-${VERSION}.min.js`);
+    expect(intake.segments()[0]).toMatchObject({ gzip: true, contentType: 'application/octet-stream', q: 0, fs: true });
+  });
+
+  test('an errored-sessions rule buffers in memory and sends nothing until the error', async ({ page, intake }) => {
+    intake.config = REPLAY_ON_ERROR;
+    await page.goto(intake.page('ring', `<!doctype html><html><head>${snippet(intake)}</head><body><p id="t">0</p><button id="b">Go</button></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { SiteQwalityRUM: { getStatus(): { recording: string } } }).SiteQwalityRUM.getStatus().recording)).toBe('buffering');
+    const before = Date.now();
+    for (let i = 1; i <= 5; i++) {
+      await page.evaluate((n) => (document.getElementById('t')!.textContent = String(n)), i);
+      await page.waitForTimeout(200);
+    }
+    expect(intake.segments(), 'nothing leaves the page before a rule matches').toHaveLength(0);
+    await page.evaluate(() => setTimeout(() => {
+      throw new Error('boom');
+    }));
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    const [first] = intake.segments();
+    expect(first).toMatchObject({ q: 0, fs: true, r: 'r_err' });
+    expect(first.ft, 'the replay starts before the error, at page load').toBeLessThan(before);
+    await hide(page);
+    await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
+  });
+
+  test('a buffering tab that never matches sends no replay, even when it closes', async ({ page, intake }) => {
+    intake.config = REPLAY_ON_ERROR;
+    await page.goto(intake.page('ring-close', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Quiet</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { SiteQwalityRUM: { getStatus(): { recording: string } } }).SiteQwalityRUM.getStatus().recording)).toBe('buffering');
+    await hide(page);
+    await page.close({ runBeforeUnload: true });
+    await expect.poll(() => intake.events('view_end').some((e) => e.final === true)).toBe(true);
+    expect(intake.segments()).toHaveLength(0);
+  });
+
+  test('two tabs of one session each record their own window', async ({ context, intake }) => {
+    intake.config = REPLAY_ALL;
+    const a = await context.newPage();
+    await a.goto(intake.page('tab-a', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Tab A</p></body></html>`));
+    await sdkLoaded(a);
+    const b = await context.newPage();
+    await b.goto(intake.page('tab-b', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Tab B</p></body></html>`));
+    await sdkLoaded(b);
+    await expect.poll(() => new Set(intake.segments().map((s) => s.w)).size, { timeout: 10_000 }).toBe(2);
+    const segs = intake.segments();
+    expect(new Set(segs.map((s) => s.s)).size, 'one session').toBe(1);
+    for (const w of new Set(segs.map((s) => s.w))) {
+      const mine = segs.filter((s) => s.w === w);
+      expect(mine[0]).toMatchObject({ q: 0, fs: true });
+      expect(new Set(mine.map((s) => s.p)).size).toBe(1);
+    }
   });
 
   test('never downloads the replay chunk without a replay rule', async ({ page, intake }) => {

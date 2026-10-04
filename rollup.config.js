@@ -8,8 +8,10 @@ import alias from '@rollup/plugin-alias';
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const cdnReplayLoader = fileURLToPath(new URL('./src/replay/load-record.cdn.ts', import.meta.url));
+const cdnGzipLoader = fileURLToPath(new URL('./src/replay/gzip-load.cdn.ts', import.meta.url));
 
-// npm: rrweb is a dependency; the replay chunk stays a separate lazy file.
+// npm: rrweb and fflate are dependencies; the replay chunk and the gzip fallback stay separate
+// lazy files.
 const npm = (format, dir, ext) => ({
   input: 'src/index.ts',
   output: {
@@ -17,10 +19,10 @@ const npm = (format, dir, ext) => ({
     format,
     entryFileNames: `index.${ext}`,
     chunkFileNames: `[name].${ext}`,
-    manualChunks: (id) => (/\/src\/replay\/(?!load-record)/.test(id) ? 'replay' : 'core'),
+    manualChunks: (id) => (/\/src\/replay\/gzip-fallback/.test(id) ? 'gzip' : /\/src\/replay\/(?!load-record)/.test(id) ? 'replay' : 'core'),
     sourcemap: true,
   },
-  external: ['@rrweb/record'],
+  external: ['@rrweb/record', 'fflate'],
   plugins: [
     resolve({ browser: true }),
     commonjs(),
@@ -48,10 +50,16 @@ export default [
     plugins: cdnPlugins([alias({ entries: [{ find: /^\.\/replay\/load-record$/, replacement: cdnReplayLoader }] })]),
   },
   // CDN replay chunk: an ES module exporting startReplay, versioned so a cached core always
-  // finds its own chunk.
+  // finds its own chunk. It imports the gzip fallback beside itself, by URL.
   {
     input: 'src/replay/chunk.ts',
     output: { file: `dist/cdn/recorder-${version}.min.js`, format: 'es', sourcemap: true },
+    plugins: cdnPlugins([alias({ entries: [{ find: /^\.\/gzip-load$/, replacement: cdnGzipLoader }] })]),
+  },
+  // CDN gzip fallback (fflate), fetched only where CompressionStream is missing.
+  {
+    input: 'src/replay/gzip-fallback.ts',
+    output: { file: `dist/cdn/gzip-${version}.min.js`, format: 'es', sourcemap: true },
     plugins: cdnPlugins(),
   },
 ];

@@ -144,13 +144,12 @@ describe('the replay budget', () => {
   });
 
   it('a replay cap stops only replay, for the session: errors and views still go', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { Fresh, net, captured } = await bootWithReplay();
-    // The chunk reports its budget spent.
+    // The chunk counts and reports its budget spent (its own warning is tested with the chunk).
+    captured.o!.count('replay_budget');
     captured.o!.onStatus('stopped', 'replay_budget');
     expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'replay_budget' });
     expect(Fresh.getStatus()!.dropped.replay_budget).toBe(1);
-    expect(warn.mock.calls.filter((c) => String(c[0]).includes('replay budget reached'))).toHaveLength(1);
     setVisibility('hidden');
     setVisibility('visible');
     await settle(5);
@@ -165,7 +164,7 @@ describe('the replay budget', () => {
   it('the core budget stops replay too, dropping what it holds', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { Fresh, captured } = await bootWithReplay();
-    expect(await captured.o!.fetch('https://rp.test/v1/segments', { method: 'POST', body: '{"events":[]}' }).then(() => true)).toBe(true);
+    expect(await captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '{"events":[]}' }).then(() => true)).toBe(true);
     // Spend the core budget through the batch path.
     for (let i = 0; i < SESS_REQ + 5; i++) {
       Fresh.addAction(`loop ${i}`);
@@ -176,7 +175,7 @@ describe('the replay budget', () => {
     await settle(5);
     expect(Fresh.getStatus()!.reason).toBe('request_budget');
     expect(captured.stops).toContain(true);
-    await expect(captured.o!.fetch('https://rp.test/v1/segments', { method: 'POST', body: '[]' })).rejects.toMatchObject({ name: budgetError().name });
+    await expect(captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '[]' })).rejects.toMatchObject({ name: budgetError().name });
   }, 60_000);
 
   it('a page too large to record stays off for the page load, whatever the tab does', async () => {

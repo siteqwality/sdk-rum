@@ -20,6 +20,27 @@ export interface Received {
   gzip: boolean;
   at: number;
   path: string;
+  query: Record<string, string>;
+  contentType?: string;
+  keepalive?: boolean;
+}
+
+/** A replay segment as `POST /v2/segments` carries it (design 6.4): index fields and events. */
+export interface Segment {
+  s: string;
+  w: string;
+  p: string;
+  q: number;
+  ft: number;
+  lt: number;
+  n: number;
+  fs: boolean;
+  fin: boolean;
+  r?: string;
+  v: string;
+  gzip: boolean;
+  contentType?: string;
+  events: Array<{ type: number; timestamp: number; data?: Record<string, unknown> }>;
 }
 
 /** A local intake and CDN: serves dist/cdn, config v2 and test pages, records every SDK request. */
@@ -74,8 +95,13 @@ export class Intake {
     return this.batches().flatMap((b) => b.events.filter((e) => !k || e.k === k).map((e) => ({ ...e, ctx: b.ctx }))) as Array<T & { ctx: Batch['ctx'] }>;
   }
 
-  segments<T = { session_id: string; segment_index: number; events: Array<{ type: number }> }>(): T[] {
-    return this.received.filter((r) => r.kind === 'segments').map((r) => r.body as T);
+  segments(): Segment[] {
+    return this.received
+      .filter((r) => r.kind === 'segments')
+      .map((r) => {
+        const q = r.query;
+        return { s: q.s, w: q.w, p: q.p, q: Number(q.q), ft: Number(q.ft), lt: Number(q.lt), n: Number(q.n), fs: q.fs === '1', fin: q.fin === '1', r: q.r, v: q.v, gzip: r.gzip, contentType: r.contentType, events: r.body as Segment['events'] };
+      });
   }
 
   private async handle(req: IncomingMessage): Promise<{ status: number; type: string; body: string | Buffer; headers?: Record<string, string> }> {
@@ -84,8 +110,9 @@ export class Intake {
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type', 'access-control-allow-methods': 'POST, GET' };
 
+    const query = Object.fromEntries(url.searchParams);
     if (req.method === 'OPTIONS') {
-      this.received.push({ kind: 'preflight', body: null, gzip: false, at: Date.now(), path: url.pathname });
+      this.received.push({ kind: 'preflight', body: null, gzip: false, at: Date.now(), path: url.pathname, query });
       return { status: 204, type: 'text/plain', body: '', headers: cors };
     }
     // /sdk/ sends CORS headers as the CDN does; /sdk-nocors/ does not.
@@ -108,17 +135,17 @@ export class Intake {
       return { status: 200, type: 'image/png', body: png };
     }
     if (/^\/cdn\/rum\/config\/v2\/[^/]+\.json$/.test(url.pathname)) {
-      this.received.push({ kind: 'config', body: null, gzip: false, at: Date.now(), path: url.pathname });
+      this.received.push({ kind: 'config', body: null, gzip: false, at: Date.now(), path: url.pathname, query });
       return { status: 200, type: 'application/json', body: JSON.stringify(this.config), headers: { 'access-control-allow-origin': '*' } };
     }
-    const kind = url.pathname === '/rum/v2/batch' ? 'batch' : url.pathname === '/replay/v1/segments' ? 'segments' : null;
+    const kind = url.pathname === '/rum/v2/batch' ? 'batch' : url.pathname === '/replay/v2/segments' ? 'segments' : null;
     if (kind && req.method === 'POST') {
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(chunk as Buffer);
       let raw = Buffer.concat(chunks);
       const gzip = raw[0] === 0x1f && raw[1] === 0x8b;
       if (gzip) raw = gunzipSync(raw);
-      this.received.push({ kind, body: JSON.parse(raw.toString('utf8')), gzip, at: Date.now(), path: url.pathname });
+      this.received.push({ kind, body: JSON.parse(raw.toString('utf8')), gzip, at: Date.now(), path: url.pathname, query, contentType: req.headers['content-type'] });
       return { status: 202, type: 'application/json', body: '{}', headers: cors };
     }
     return { status: 404, type: 'text/plain', body: '' };
@@ -174,4 +201,5 @@ export async function hide(page: Page): Promise<void> {
 }
 
 export const REPLAY_ALL = { v: 2, rules: [{ id: 'r_all', capture: 'replay', sample_rate: 1, conditions: [], min_duration_ms: 0, require_interaction: false }] };
+export const REPLAY_ON_ERROR = { v: 2, rules: [{ id: 'r_err', capture: 'replay', sample_rate: 1, conditions: [{ kind: 'error' }], min_duration_ms: 0, require_interaction: false }] };
 export const ANALYZE_ALL = { v: 2, rules: [{ id: 'r_an', capture: 'analyze', sample_rate: 1, conditions: [], min_duration_ms: 0, require_interaction: false }] };
