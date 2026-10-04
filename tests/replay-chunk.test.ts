@@ -257,9 +257,9 @@ describe('startReplay', { timeout: 30_000 }, () => {
     start();
     await run(100);
     await until(() => sent.length >= 2);
-    const qs = sent.map((s) => Number(s.q.q));
-    expect(new Set(qs).size).toBe(qs.length);
-    expect(qs).toEqual([...qs].sort((a, b) => a - b));
+    // Two recorders' sends may land in either order; the intake orders by q, which never repeats.
+    const qs = sent.map((s) => Number(s.q.q)).sort((a, b) => a - b);
+    expect(qs).toEqual(qs.map((_, i) => i));
   });
 
   it('stop() delivers the open segment; stop(true) drops it', async () => {
