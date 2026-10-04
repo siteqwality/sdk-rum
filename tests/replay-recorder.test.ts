@@ -100,6 +100,7 @@ beforeEach(() => {
 
 afterEach(() => {
   recorder.stop(true);
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -237,6 +238,40 @@ describe('ReplayRecorder, buffering (design 5.4)', () => {
     }
     expect(now - t0).toBeLessThan(BUFFER_CHECKOUT_MS);
     expect(record.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('drops the older checkout when a large open snapshot puts the serialized ring over 5 MB', async () => {
+    start({ buffer: true, node: { type: 0, id: 1, pad: '界'.repeat(1_000_000) } });
+    move();
+    await advance(61_000);
+    move();
+    await advance(1);
+    recorder.go();
+    expect(segments.filter((s) => s.fs)).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(segments.flatMap(evs)))).toBeLessThanOrEqual(5_000_000);
+  });
+
+  it('resnapshots instead of retaining one checkout whose changes exceed the ring cap', async () => {
+    const record = start({ buffer: true, node: { type: 0, id: 1, pad: 'x'.repeat(3_800_000) } });
+    for (let i = 0; i < 5; i++) {
+      adds(300_000);
+      await advance(WINDOW_MS);
+    }
+    recorder.go();
+    expect(record.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(segments[0].fs).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(segments.flatMap(evs)))).toBeLessThanOrEqual(5_000_000);
+  });
+
+  it('keeps a terminal snapshot failure when a match races a ring-cap resnapshot', () => {
+    const node = { type: 0, id: 1, pad: 'x'.repeat(3_800_000) };
+    start({ buffer: true, node });
+    adds(1_300_000); // Drops the oversized run and queues a replacement checkout.
+    node.pad = 'x'.repeat(SNAPSHOT_MAX_BYTES);
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    recorder.go(); // A match before that microtask must not overwrite too_large with recording.
+    expect(states.at(-1)).toEqual(['stopped', 'too_large']);
+    expect(segments).toEqual([]);
   });
 
   it('never sends a ring that never matched: stop and unload drop it', () => {

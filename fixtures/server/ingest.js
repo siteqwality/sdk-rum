@@ -161,7 +161,7 @@ export class MockIngest {
       return send(res, 204, '', {
         ...CORS,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'authorization, content-type',
+        'Access-Control-Allow-Headers': 'authorization, content-type, x-sq-replay-index',
         'Access-Control-Max-Age': '7200',
       });
     }
@@ -264,8 +264,8 @@ export class MockIngest {
 
   checkSegmentV1(rec) {
     const { session_id: sid, segment_index: idx } = rec.query;
-    if (!UUID.test(sid || '')) rec.problems.push('query session_id is not a UUID');
-    if (!/^\d+$/.test(idx || '') || Number(idx) > 0xffffffff) rec.problems.push('query segment_index is not a u32');
+    if (!UUID.test(sid || '')) rec.problems.push('index session_id is not a UUID');
+    if (!/^\d+$/.test(idx || '') || Number(idx) > 0xffffffff) rec.problems.push('index segment_index is not a u32');
     const body = rec.json;
     if (!body || !Array.isArray(body.events)) {
       rec.problems.push('body has no events array');
@@ -297,13 +297,16 @@ export class MockIngest {
   // Design 6.4, strictly: every index field, and each one agreeing with the body.
   checkSegmentV2(rec, raw) {
     if (raw.length > 2 * 1024 * 1024 || rec.bodyBytes > 16 * 1024 * 1024) return 413;
-    const q = rec.query;
-    for (const k of ['s', 'w', 'p', 'q', 'ft', 'lt', 'n', 'v']) if (q[k] === undefined) rec.problems.push(`query ${k} missing`);
-    for (const k of ['s', 'w', 'p']) if (q[k] !== undefined && !UUID.test(q[k])) rec.problems.push(`query ${k} is not a UUID`);
-    if (!/^\d+$/.test(q.q || '') || Number(q.q) > 0xffffffff) rec.problems.push('query q is not a u32');
-    for (const k of ['fs', 'fin']) if (q[k] !== undefined && q[k] !== '1') rec.problems.push(`query ${k} is neither 1 nor absent`);
-    if (q.r !== undefined && !q.r) rec.problems.push('query r is empty');
-    if (q.v !== undefined && !/^\d+\.\d+\.\d+$/.test(q.v)) rec.problems.push('query v is not an SDK version');
+    const q = Object.fromEntries(new URLSearchParams(rec.headers['x-sq-replay-index'] || ''));
+    if (Object.keys(rec.query).length) rec.problems.push('v2 index must not vary the request URL');
+    if (!rec.headers['x-sq-replay-index']) rec.problems.push('x-sq-replay-index missing');
+    if (Buffer.byteLength(rec.headers['x-sq-replay-index'] || '') > 2048) rec.problems.push('x-sq-replay-index exceeds 2048 bytes');
+    for (const k of ['s', 'w', 'p', 'q', 'ft', 'lt', 'n', 'v']) if (q[k] === undefined) rec.problems.push(`index ${k} missing`);
+    for (const k of ['s', 'w', 'p']) if (q[k] !== undefined && !UUID.test(q[k])) rec.problems.push(`index ${k} is not a UUID`);
+    if (!/^\d+$/.test(q.q || '') || Number(q.q) > 0xffffffff) rec.problems.push('index q is not a u32');
+    for (const k of ['fs', 'fin']) if (q[k] !== undefined && q[k] !== '1') rec.problems.push(`index ${k} is neither 1 nor absent`);
+    if (q.r !== undefined && !q.r) rec.problems.push('index r is empty');
+    if (q.v !== undefined && !/^\d+\.\d+\.\d+$/.test(q.v)) rec.problems.push('index v is not an SDK version');
     const type = rec.headers['content-type'] || '';
     if (rec.encoding === 'gzip' ? type !== 'application/octet-stream' : type !== 'application/json') rec.problems.push(`content-type ${type} for a ${rec.encoding} body`);
     const events = rec.json;
@@ -313,9 +316,9 @@ export class MockIngest {
     }
     const stats = rrwebStats(events);
     const ts = events.map((e) => e?.timestamp);
-    if (Number(q.n) !== events.length) rec.problems.push(`query n=${q.n} but ${events.length} events`);
-    if (Number(q.ft) !== Math.min(...ts) || Number(q.lt) !== Math.max(...ts)) rec.problems.push(`query ft..lt ${q.ft}..${q.lt} but events span ${Math.min(...ts)}..${Math.max(...ts)}`);
-    if ((q.fs === '1') !== stats.fullSnapshots > 0) rec.problems.push('query fs disagrees with the events');
+    if (Number(q.n) !== events.length) rec.problems.push(`index n=${q.n} but ${events.length} events`);
+    if (Number(q.ft) !== Math.min(...ts) || Number(q.lt) !== Math.max(...ts)) rec.problems.push(`index ft..lt ${q.ft}..${q.lt} but events span ${Math.min(...ts)}..${Math.max(...ts)}`);
+    if ((q.fs === '1') !== stats.fullSnapshots > 0) rec.problems.push('index fs disagrees with the events');
     if (q.q === '0' && events[0]?.type !== RRWEB_META) rec.problems.push('a page load does not open with a Meta event');
     // The intake dedupes a retried body; the same key with other content is a numbering bug.
     const key = `${q.s}|${q.w}|${q.p}|${q.q}`;

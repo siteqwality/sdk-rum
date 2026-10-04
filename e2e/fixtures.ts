@@ -21,6 +21,7 @@ export interface Received {
   at: number;
   path: string;
   query: Record<string, string>;
+  headers?: IncomingMessage['headers'];
   contentType?: string;
   keepalive?: boolean;
 }
@@ -48,6 +49,7 @@ export class Intake {
   readonly received: Received[] = [];
   readonly pages = new Map<string, string>();
   config: Record<string, unknown> = { v: 2, rules: [] };
+  replayStatus = 202;
   private server: Server;
   origin = '';
   crossOrigin = '';
@@ -99,7 +101,7 @@ export class Intake {
     return this.received
       .filter((r) => r.kind === 'segments')
       .map((r) => {
-        const q = r.query;
+        const q = Object.fromEntries(new URLSearchParams(String(r.headers?.['x-sq-replay-index'] ?? '')));
         return { s: q.s, w: q.w, p: q.p, q: Number(q.q), ft: Number(q.ft), lt: Number(q.lt), n: Number(q.n), fs: q.fs === '1', fin: q.fin === '1', r: q.r, v: q.v, gzip: r.gzip, contentType: r.contentType, events: r.body as Segment['events'] };
       });
   }
@@ -108,7 +110,7 @@ export class Intake {
     const url = new URL(req.url ?? '/', this.origin);
     const delay = Number(url.searchParams.get('delay') ?? 0);
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type', 'access-control-allow-methods': 'POST, GET' };
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, x-sq-replay-index', 'access-control-allow-methods': 'POST, GET', 'access-control-max-age': '7200' };
 
     const query = Object.fromEntries(url.searchParams);
     if (req.method === 'OPTIONS') {
@@ -145,8 +147,8 @@ export class Intake {
       let raw = Buffer.concat(chunks);
       const gzip = raw[0] === 0x1f && raw[1] === 0x8b;
       if (gzip) raw = gunzipSync(raw);
-      this.received.push({ kind, body: JSON.parse(raw.toString('utf8')), gzip, at: Date.now(), path: url.pathname, query, contentType: req.headers['content-type'] });
-      return { status: 202, type: 'application/json', body: '{}', headers: cors };
+      this.received.push({ kind, body: JSON.parse(raw.toString('utf8')), gzip, at: Date.now(), path: url.pathname, query, headers: req.headers, contentType: req.headers['content-type'] });
+      return { status: kind === 'segments' ? this.replayStatus : 202, type: 'application/json', body: '{}', headers: cors };
     }
     return { status: 404, type: 'text/plain', body: '' };
   }

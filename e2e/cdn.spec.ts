@@ -55,7 +55,7 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     await hide(page);
     await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
     const ctx = intake.batches().at(-1)!.ctx;
-    // Design 6.4: index fields in the query, a gzip JSON array of rrweb events as the body.
+    // Design 6.4: index fields in x-sq-replay-index, a gzip JSON array of rrweb events as the body.
     expect(segment).toMatchObject({ s: ctx.session_id, w: ctx.window_id, p: ctx.page_load_id, q: 0, fs: true, fin: false, r: 'r_all', v: VERSION, gzip: true, contentType: 'application/octet-stream' });
     expect(segment.n).toBe(segment.events.length);
     expect(segment.ft).toBe(Math.min(...segment.events.map((e) => e.timestamp)));
@@ -63,6 +63,60 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     expect(segment.events.map((e) => e.type).slice(0, 2)).toEqual([4, 2]);
     expect(JSON.stringify(segment.events)).not.toContain('jane@example.com');
     expect(ctx.sampling).toMatchObject({ replay: true, rule_id: 'r_all' });
+  });
+
+  test('successive cross-origin replay segments reuse one preflight with a fixed URL and header index', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
+    const requests: Array<{ url: string; headers: Record<string, string> }> = [];
+    page.on('request', (r) => {
+      if (r.method() === 'POST' && r.url().includes('/replay/v2/segments')) requests.push({ url: r.url(), headers: r.headers() });
+    });
+    await page.goto(intake.page('preflight-cache', `<!doctype html><html><head>${snippet(intake, '/sdk/sdk.min.js', `replayBase: '${intake.crossOrigin}/replay',`)}</head><body><p id="value">initial</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => intake.segments().length).toBe(1);
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate((n) => {
+        Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+        document.getElementById('value')!.textContent = `change ${n}`;
+      }, i);
+      await hide(page);
+      await expect.poll(() => intake.segments().length).toBe(i + 2);
+    }
+    expect(new Set(requests.map((r) => r.url))).toEqual(new Set([`${intake.crossOrigin}/replay/v2/segments`]));
+    expect(intake.received.filter((r) => r.kind === 'preflight' && r.path === '/replay/v2/segments')).toHaveLength(1);
+    expect(intake.segments().map((s) => s.q)).toEqual([0, 1, 2, 3]);
+    for (const r of requests) {
+      expect(r.headers.authorization).toBe('Bearer ct_test');
+      expect(r.url).not.toContain('ct_test');
+      expect(r.headers['x-sq-replay-index']).not.toContain('ct_test');
+    }
+    for (const s of intake.segments()) {
+      expect(s.n).toBe(s.events.length);
+      expect(s.ft).toBe(Math.min(...s.events.map((e) => e.timestamp)));
+      expect(s.lt).toBe(Math.max(...s.events.map((e) => e.timestamp)));
+      expect(s.fs).toBe(s.events.some((e) => e.type === 2));
+      expect(s.r).toBe('r_all');
+    }
+  });
+
+  test('a v2 rollout refusal stops replay while Observe and Analyze continue', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
+    intake.replayStatus = 403; // Backend not_enabled is an empty 403, indistinguishable from origin/auth refusal.
+    await page.goto(intake.page('rollout-denied', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Page</p></body></html>`));
+    await sdkLoaded(page);
+    await expect.poll(() => page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().reason)).toBe('refused');
+    await page.evaluate(() => {
+      (window as any).SiteQwalityRUM.addError(new Error('after replay denial'));
+      console.warn('analyze still active');
+      (window as any).SiteQwalityRUM.startReplay({ force: true });
+    });
+    await hide(page);
+    await expect.poll(() => intake.events('error').length).toBeGreaterThan(0);
+    await expect.poll(() => intake.events('console').length).toBeGreaterThan(0);
+    expect(intake.segments()).toHaveLength(1);
+    expect(intake.received.filter((r) => r.kind === 'segments').every((r) => r.path.endsWith('/v2/segments'))).toBe(true);
+    expect(await page.evaluate(() => (window as any).SiteQwalityRUM.getStatus().recording)).toBe('stopped');
   });
 
   test('without CompressionStream the gzip fallback loads beside the recorder', async ({ page, intake }) => {

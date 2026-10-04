@@ -160,6 +160,20 @@ describe('send', () => {
     expect(init).toMatchObject({ method: 'POST', keepalive: true, credentials: 'omit', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ct' } });
   });
 
+  it('adds index headers without allowing case-insensitive auth or content-type overrides', async () => {
+    const f = vi.fn().mockResolvedValue(response(202));
+    await send(f as unknown as typeof fetch, 'https://in.test/v2/segments', 'ct', '[]', 'application/json', 2, {
+      'x-sq-replay-index': 's=session&q=0',
+      authorization: 'Bearer wrong',
+      AUTHORIZATION: 'Bearer also-wrong',
+      'content-TYPE': 'text/plain',
+    });
+    const headers = new Headers(f.mock.calls[0][1].headers);
+    expect(headers.get('authorization')).toBe('Bearer ct');
+    expect(headers.get('content-type')).toBe('application/json');
+    expect(headers.get('x-sq-replay-index')).toBe('s=session&q=0');
+  });
+
   it('shares one keepalive budget across requests in flight', async () => {
     const releases: Array<(r: unknown) => void> = [];
     const f = vi.fn(() => new Promise((r) => releases.push(r)));

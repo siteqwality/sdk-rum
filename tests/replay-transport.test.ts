@@ -57,7 +57,8 @@ async function until(cond: () => boolean, ms = 5_000): Promise<void> {
 const settle = () => until(() => false, 50);
 
 const urls = () => fetchSpy.mock.calls.map((c) => new URL(String(c[0])));
-const query = (i: number) => Object.fromEntries(urls()[i].searchParams);
+const index = (call: unknown[]) => new URLSearchParams(new Headers((call[1] as RequestInit).headers).get('x-sq-replay-index') ?? '');
+const query = (i: number) => Object.fromEntries(index(fetchSpy.mock.calls[i]));
 
 beforeEach(() => {
   fetchSpy = vi.fn(() => ok());
@@ -74,7 +75,7 @@ afterEach(() => {
 const make = (hooks = {}) => new ReplayTransport('https://in-replay.example.com', 'ct_1', fetchSpy as unknown as typeof fetch, send, hooks);
 
 describe('ReplayTransport v2', { timeout: 30_000 }, () => {
-  it('puts every 6.4 index field in the query and numbers each page load from 0', async () => {
+  it('puts every 6.4 index field in the header on one fixed URL and numbers each page load from 0', async () => {
     const t = make();
     const a = fresh();
     const b = fresh();
@@ -87,6 +88,18 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     expect(query(1)).toEqual({ s: a.s, w: 'win-1', p: a.p, q: '1', ft: '150', lt: '150', n: '1', r: 'r_err', v: VERSION });
     expect(query(2)).toMatchObject({ s: b.s, p: b.p, q: '0', fs: '1' });
     expect(query(2).r).toBeUndefined();
+    expect(new Set(urls().map(String))).toEqual(new Set(['https://in-replay.example.com/v2/segments']));
+  });
+
+  it.each(['r'.repeat(2048), '\ud800', 'r&injected=1'])('omits a malformed rule id so the index stays within the backend header contract', async (rule) => {
+    const t = make();
+    await t.push(fresh(), snap(1), rule);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const header = new Headers(fetchSpy.mock.calls[0][1].headers).get('x-sq-replay-index')!;
+    expect(Buffer.byteLength(header)).toBeLessThanOrEqual(2048);
+    expect(query(0).r).toBeUndefined();
+    expect(query(0).injected).toBeUndefined();
+    expect(urls()[0].search).toBe('');
   });
 
   it('sends a gzip JSON array of rrweb events, with the token and no cookies', async () => {
@@ -94,7 +107,7 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     void t.push(fresh(), snap(5));
     await until(() => fetchSpy.mock.calls.length === 1);
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
-    expect(init.headers).toEqual({ 'Content-Type': 'application/octet-stream', Authorization: 'Bearer ct_1' });
+    expect(init.headers).toMatchObject({ 'Content-Type': 'application/octet-stream', Authorization: 'Bearer ct_1' });
     expect(init.credentials).toBe('omit');
     expect(typeof (init.body as Blob).size).toBe('number');
     expect(JSON.parse(await decode(init.body))).toEqual([{ type: 4, timestamp: 5 }, { type: 2, timestamp: 5 }]);
@@ -113,7 +126,7 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     first.resolve();
     await until(() => fetchSpy.mock.calls.length === 3);
-    expect(urls().map((u) => u.searchParams.get('q'))).toEqual(['0', '1', '2']);
+    expect(fetchSpy.mock.calls.map((c) => index(c).get('q'))).toEqual(['0', '1', '2']);
   });
 
   it.each([
@@ -146,7 +159,24 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1_000);
     await until(() => fetchSpy.mock.calls.length === 3);
-    expect(urls().map((u) => u.searchParams.get('q'))).toEqual(['0', '0', '1']);
+    expect(fetchSpy.mock.calls.map((c) => index(c).get('q'))).toEqual(['0', '0', '1']);
+  });
+
+  it('honours the per-session cap Retry-After through later segments and unload', async () => {
+    fetchSpy.mockImplementationOnce(() => fail(429, { 'Retry-After': '3600' }));
+    const count = vi.fn();
+    const t = make({ count });
+    const st = fresh();
+    await t.push(st, snap(1));
+    void t.push(st, inc(2));
+    await vi.advanceTimersByTimeAsync(3_599_000);
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    t.unload({ stream: st, seg: inc(3) })();
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(count).toHaveBeenCalledWith('replay_tail_dropped', 3);
+    t.stop();
   });
 
   it('acknowledges inline stylesheets once the intake accepted their segment', async () => {
@@ -201,7 +231,7 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     void t.push(st, inc(3));
     await until(() => fetchSpy.mock.calls.length === 3);
     expect(lost).toHaveBeenCalledWith(st);
-    expect(urls().map((u) => u.searchParams.get('q'))).toEqual(['0', '1', '2']);
+    expect(fetchSpy.mock.calls.map((c) => index(c).get('q'))).toEqual(['0', '1', '2']);
   });
 
   it('keeps only the gzip body once compressed, and never counts a segment it no longer holds', async () => {
@@ -315,8 +345,8 @@ describe('ReplayTransport.unload (pagehide)', { timeout: 30_000 }, () => {
     const [, queued, tail] = fetchSpy.mock.calls;
     expect(queued[1].keepalive).toBe(true);
     expect(tail[1].keepalive).toBe(true);
-    expect(new URL(String(tail[0])).searchParams.get('fin')).toBe('1');
-    expect(new URL(String(tail[0])).searchParams.get('q')).toBe('2');
+    expect(index(tail).get('fin')).toBe('1');
+    expect(index(tail).get('q')).toBe('2');
     // Not yet compressed: the tail goes as JSON.
     expect(tail[1].headers['Content-Type']).toBe('application/json');
     expect(JSON.parse(tail[1].body)).toEqual([{ type: 3, timestamp: 3, data: { source: 1, pad: '' } }]);

@@ -5,10 +5,14 @@ import { boot, clearStorage, config, rule, settle, setVisibility, stubNetwork, t
 
 const [PAGE_REQ, PAGE_BYTES, SESS_REQ, SESS_BYTES] = CORE_LIMITS;
 const [, , REPLAY_SESS_REQ] = REPLAY_LIMITS;
+let replaySdk: { optOut(): void } | undefined;
 const unit = (kind: () => 'localStorage' | undefined = () => undefined) => createBudget(kind, '_sq_bgt', CORE_LIMITS);
 
 beforeEach(() => clearStorage());
 afterEach(() => {
+  SiteQwalityRUM.optOut();
+  replaySdk?.optOut();
+  replaySdk = undefined;
   vi.unstubAllGlobals();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -126,6 +130,7 @@ describe('the replay budget', () => {
       },
     }));
     const { SiteQwalityRUM: Fresh } = await import('../src/sdk');
+    replaySdk = Fresh;
     const net = stubNetwork(config({ rules: [rule('replay')] }));
     Fresh._reset();
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
@@ -164,19 +169,14 @@ describe('the replay budget', () => {
 
   it('the core budget stops replay too, dropping what it holds', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    // About 5,000 batches: sent uncompressed, so the test is about the budget, not gzip throughput.
-    vi.stubGlobal('CompressionStream', undefined);
     const { Fresh, captured } = await bootWithReplay();
-    expect(await captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '{"events":[]}' }).then(() => true)).toBe(true);
-    // Spend the core budget through the batch path.
-    for (let i = 0; i < SESS_REQ + 5; i++) {
-      Fresh.addAction(`loop ${i}`);
-      setVisibility('hidden');
-      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
-      if (i % 200 === 0) await settle(1);
-    }
-    // Wait for the budget to run out rather than a fixed number of turns.
-    for (let i = 0; i < 250 && Fresh.getStatus()!.reason !== 'request_budget'; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(await captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '[]' }).then(() => true)).toBe(true);
+    // Another tab exhausted the shared core budget. Exercise the real batch gate without
+    // assuming that each of 5,000 hide events produces a separate request.
+    localStorage.setItem('_sq_bgt', `${Fresh.getStatus()!.session_id}|${SESS_REQ}|0`);
+    Fresh.addAction('over the shared budget');
+    setVisibility('hidden');
+    await vi.waitFor(() => expect(Fresh.getStatus()!.reason).toBe('request_budget'), { timeout: 5_000 });
     expect(Fresh.getStatus()!.reason).toBe('request_budget');
     expect(captured.stops).toContain(true);
     await expect(captured.o!.fetch('https://rp.test/v2/segments', { method: 'POST', body: '[]' })).rejects.toMatchObject({ name: budgetError().name });

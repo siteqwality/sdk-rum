@@ -131,6 +131,7 @@ export function createInstance(opts: InitOptions) {
   let recording: SdkStatus['recording'] = 'off';
   let reason: string | undefined;
   let replay: ReplayHandle | null = null;
+  let replayEpoch = 0;
   let loading = false;
   let forced = false;
   let userStopped = false;
@@ -245,8 +246,8 @@ export function createInstance(opts: InitOptions) {
     return out;
   }
 
-  function sessionFor(rotate: boolean): string | null {
-    if (session.sync()) changed();
+  function sessionFor(rotate: boolean, force = false): string | null {
+    if (session.sync(force)) changed();
     if (session.expired()) {
       if (!rotate) return null;
       session.rotate();
@@ -308,6 +309,7 @@ export function createInstance(opts: InitOptions) {
         // A recording can stop inside start() (a page too large to record): never keep that handle.
         let handle: ReplayHandle | undefined;
         let gone = false;
+        const epoch = replayEpoch;
         handle = start({
           live: live(),
           session,
@@ -315,7 +317,7 @@ export function createInstance(opts: InitOptions) {
           replayBase,
           token,
           // Replay sends only while it may record.
-          fetch: ((input: RequestInfo | URL, init?: RequestInit) => (mayRecord() ? nativeFetch(input, init) : Promise.reject(budgetError()))) as typeof fetch,
+          fetch: ((input: RequestInfo | URL, init?: RequestInit) => (epoch === replayEpoch && mayRecord() && sessionFor(false, true) === sid ? nativeFetch(input, init) : Promise.reject(budgetError()))) as typeof fetch,
           send,
           url: sanitizeUrl,
           text: sanitizeText,
@@ -325,7 +327,7 @@ export function createInstance(opts: InitOptions) {
           now,
           paused: urlPaused ? 'privacy_url' : undefined,
           // Replay never outlasts its session, and learns other tabs' decisions.
-          check: () => (sessionFor(false) === sid ? decide(session.decision) : stopRecording()),
+          check: () => (sessionFor(false) === sid ? decide(session.decision) : replay === handle && stopRecording()),
           onStatus: (state, why) => {
             if (state === 'stopped') {
               gone = true;
@@ -353,6 +355,7 @@ export function createInstance(opts: InitOptions) {
 
   /** `drop` discards what replay has not sent yet (consent, opt-out, budget, do not record). */
   function stopRecording(why?: string, drop = false): void {
+    if (drop) replayEpoch++;
     replay?.stop(drop);
     replay = null;
     if (recording !== 'off' || why) setRecording(why ? 'stopped' : 'off', why);

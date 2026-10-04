@@ -222,6 +222,45 @@ describe('the replay ring in the core', () => {
     expect(captured.o!.session.id).toBe('0199a6b2-7c3e-7f00-8a1b-00000000a0a0');
   });
 
+  it('rechecks the shared session immediately before sending replay', async () => {
+    const { Fresh, net } = await boot([errorRule]);
+    const old = captured.o!;
+    const cookie = /(?:^|;\s*)_sq_s=([^;]*)/.exec(document.cookie)![1].split('|');
+    // Force an earlier cached read, then replace the cookie within the one-second read cache.
+    old.check();
+    document.cookie = `_sq_s=0199a6b2-7c3e-7f00-8a1b-00000000b0b0|${Number(cookie[1]) - 1000}|${Date.now()}|0;path=/`;
+    await expect(old.fetch('https://rp.test/v2/segments', { body: '[]' })).rejects.toMatchObject({ name: 'SqBudget' });
+    await settle(5);
+    expect(net.segments).toHaveLength(0);
+    expect(Fresh.getStatus().session_id).toBe('0199a6b2-7c3e-7f00-8a1b-00000000b0b0');
+    expect(captured.starts).toBe(2);
+    expect(Fresh.getStatus().recording).toBe('buffering');
+  });
+
+  it('never lets a retired recorder retry old data after consent is withdrawn and granted again', async () => {
+    const { Fresh, net } = await boot([errorRule]);
+    const old = captured.o!;
+    Fresh.stopReplay(); // May leave an authorized final segment backing off.
+    Fresh.setTrackingConsent('not-granted');
+    Fresh.setTrackingConsent('granted');
+    await expect(old.fetch('https://rp.test/v2/segments', { body: '[]' })).rejects.toMatchObject({ name: 'SqBudget' });
+    expect(net.segments).toHaveLength(0);
+  });
+
+  it('a check that adopts another session does not stop its replacement recorder', async () => {
+    const { Fresh } = await boot([errorRule]);
+    const old = captured.o!;
+    const cookie = /(?:^|;\s*)_sq_s=([^;]*)/.exec(document.cookie)![1].split('|');
+    document.cookie = `_sq_s=0199a6b2-7c3e-7f00-8a1b-00000000c0c0|${Number(cookie[1]) - 1000}|${Date.now()}|0;path=/`;
+    await new Promise((r) => setTimeout(r, 1_100));
+    old.check();
+    await settle(5);
+    expect(captured.starts).toBe(2);
+    old.check();
+    expect(captured.handle!.stop).not.toHaveBeenCalled();
+    expect(Fresh.getStatus().recording).toBe('buffering');
+  });
+
   it('a recorder that failed for the page stays off for the page load', async () => {
     const { Fresh } = await boot([errorRule]);
     captured.o!.onStatus('stopped', 'record_failed');

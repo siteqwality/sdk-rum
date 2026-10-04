@@ -1,4 +1,4 @@
-// Replay segments to `POST /v2/segments` (design 6.4): index fields in the query, a gzip JSON
+// Replay segments to `POST /v2/segments` (design 6.4): index fields in x-sq-replay-index, a gzip JSON
 // array of rrweb events as the body, one request in flight, in order, with the core's retry rules.
 import { isRefused, Backoff, gzip, KEEPALIVE_MAX_BYTES, type send as coreSend } from '../core/send';
 import { byteLength, now } from '../core/util';
@@ -41,6 +41,8 @@ export interface TransportHooks {
   tooLarge?: () => void;
   /** Drop counters for `status`. */
   count?: (name: string, n?: number) => void;
+  /** Intake refusal stops capture as well as delivery. */
+  refused?: () => void;
 }
 
 /** gzip, with fflate where CompressionStream is missing; null when neither works. */
@@ -93,12 +95,14 @@ export class ReplayTransport {
     return !this.queue.length && !this.inFlight;
   }
 
-  private url({ stream, q, ft, lt, n, fs, fin, rule }: Pending): string {
+  private headers({ stream, q, ft, lt, n, fs, fin, rule }: Pending): Record<string, string> {
     const qs = `s=${stream.s}&w=${stream.w}&p=${stream.p}&q=${q}&ft=${ft}&lt=${lt}&n=${n}${fs ? '&fs=1' : ''}${fin ? '&fin=1' : ''}${rule ? `&r=${encodeURIComponent(rule)}` : ''}&v=${VERSION}`;
-    return `${this.base}/v2/segments?${qs}`;
+    return { 'x-sq-replay-index': qs };
   }
 
   private pending(stream: Stream, seg: Segment, rule?: string): Pending {
+    // Match ingest's optional rule-id grammar; malformed config must not bloat or break headers.
+    if (rule && !/^[\w.:-]{1,64}$/.test(rule)) rule = undefined;
     const text = `[${seg.json.join(',')}]`;
     return { stream, q: stream.q++ >>> 0, ft: seg.ft, lt: seg.lt, n: seg.json.length, rule, text, bytes: seg.mem + 2, fs: seg.fs, css: seg.css, zipped: Promise.resolve() };
   }
@@ -153,7 +157,7 @@ export class ReplayTransport {
         continue;
       }
       this.inFlight = p;
-      const outcome = await this.send(this.fetchFn, this.url(p), this.token, body, p.body ? 'application/octet-stream' : 'application/json', size);
+      const outcome = await this.send(this.fetchFn, `${this.base}/v2/segments`, this.token, body, p.body ? 'application/octet-stream' : 'application/json', size, this.headers(p));
       this.inFlight = null;
       if (this.stopped || this.queue[0] !== p) continue;
       if (outcome.kind === 'ok') {
@@ -171,6 +175,7 @@ export class ReplayTransport {
       } else if (isRefused(outcome) || outcome.status === 0) {
         // Refused by the intake, or by the request budget: nothing more goes.
         this.stop();
+        if (isRefused(outcome)) this.hooks.refused?.();
       } else {
         this.shift();
         this.drop(p, outcome.status === 413);
@@ -252,7 +257,7 @@ export class ReplayTransport {
         continue;
       }
       // The fetch given refuses anything that cannot go with keepalive by then.
-      go.push(() => void this.send(this.fetchFn, this.url(p), this.token, body, p.body ? 'application/octet-stream' : 'application/json', size));
+      go.push(() => void this.send(this.fetchFn, `${this.base}/v2/segments`, this.token, body, p.body ? 'application/octet-stream' : 'application/json', size, this.headers(p)));
     }
     if (dropped) this.hooks.count?.('replay_tail_dropped', dropped);
     return () => go.forEach((f) => f());

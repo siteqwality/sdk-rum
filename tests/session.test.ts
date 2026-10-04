@@ -112,6 +112,19 @@ describe('createSession', () => {
     expect(a.decision).toEqual({ analyze: true, replay: true, rule_id: 'r_9' });
   });
 
+  it('keeps the replay rule attribution when another tab upgrades an Analyze decision', () => {
+    const a = createSession({ mode: 'persist' });
+    a.setDecision({ analyze: true, replay: false, rule_id: 'r_analyze' });
+    const b = createSession({ mode: 'persist' });
+    b.setDecision({ analyze: true, replay: true, rule_id: 'r_replay' });
+    a.sync(true);
+    expect(a.decision).toEqual({ analyze: true, replay: true, rule_id: 'r_replay' });
+    // A stale Analyze-only writer cannot overwrite a replay's attribution either.
+    b.setDecision({ analyze: true, replay: false, rule_id: 'r_analyze' });
+    a.sync(true);
+    expect(a.decision).toEqual({ analyze: true, replay: true, rule_id: 'r_replay' });
+  });
+
   it('adopts a 1.1 session and its rule decision on upgrade', () => {
     const id = '6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
     sessionStorage.setItem('sq_rum_session', JSON.stringify({ id, started: Date.now() - 1000, lastActivity: Date.now() }));

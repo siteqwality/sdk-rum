@@ -239,6 +239,15 @@ applies the same rules server-side.
   taken where a segment closes, keeps seeking fast. On close, what is left goes with keepalive, as
   JSON, if it is at most 60 KB; anything else is counted in `status`. A page whose snapshot is over
   4 MB after stylesheet references is not recorded (`status` reason `too_large`).
+  Segments POST to the fixed `/v2/segments` URL. Index fields (`s,w,p,q,ft,lt,n,fs,fin,r,v`)
+  use one URLSearchParams-encoded `x-sq-replay-index` header (at most 2,048 bytes), so sends reuse the CORS
+  preflight cache. The client token stays in `Authorization`; it is never put in the URL.
+  Proxies must allow `authorization`, `content-type`, and `x-sq-replay-index` and return
+  `Access-Control-Max-Age` on OPTIONS. Deploy that backend support before SDK 2.1.
+- **Replay refusal**: 401/403 stops replay for this page load with reason `refused`; Observe and
+  Analyze continue. The v2 rollout's `not_enabled` response is currently an empty 403, so the SDK
+  cannot distinguish it from an auth/origin denial and does not retry against v1. A 429, including
+  the backend per-session cap, honours `Retry-After` for all segments and the unload tail.
 
 A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
 watched it sends at most three segments a minute.

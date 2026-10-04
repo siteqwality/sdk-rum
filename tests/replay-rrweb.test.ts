@@ -124,7 +124,8 @@ describe('ReplayRecorder with rrweb', () => {
 
   it('sends nothing at all for a page whose snapshot is too large', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    document.body.innerHTML = `<p id="p">hello</p><div>${'x'.repeat(SNAPSHOT_MAX_BYTES)}</div>`;
+    document.body.innerHTML = '<p id="p">hello</p><div id="large"></div>';
+    document.getElementById('large')!.textContent = 'x'.repeat(SNAPSHOT_MAX_BYTES);
     start();
     await settle();
     // rrweb snapshots inside record(): the stop is the last word, never a later 'recording'.

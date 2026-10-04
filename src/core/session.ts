@@ -233,7 +233,7 @@ export function createSession(opts: SessionOptions) {
         rec.dec = {
           analyze: rec.dec.analyze || s.dec.analyze,
           replay: rec.dec.replay || s.dec.replay,
-          rule_id: rec.dec.rule_id || s.dec.rule_id,
+          rule_id: s.dec.replay && !rec.dec.replay ? s.dec.rule_id : rec.dec.rule_id || s.dec.rule_id,
         };
         return false;
       }

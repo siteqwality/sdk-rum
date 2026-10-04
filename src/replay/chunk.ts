@@ -149,6 +149,7 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     {
       lost: () => recorder.resync(),
       tooLarge: () => fail('too_large'),
+      refused: () => fail('refused'),
       count: o.count,
     },
   );

@@ -23,7 +23,7 @@ export interface Net {
   fetch: ReturnType<typeof vi.fn>;
   configCalls: Array<{ url: string; init?: RequestInit }>;
   batches: Batch[];
-  /** Replay segments v2 (design 6.4): the query's index fields and the events. */
+  /** Replay segments v2 (design 6.4): the header's index fields and the events. */
   segments: Array<{ url: string; q: Record<string, string>; events: Array<{ type: number; timestamp: number }>; gzip: boolean; keepalive?: boolean }>;
   app: Array<{ url: string; init?: RequestInit }>;
   /** Every event sent, with its batch ctx, optionally of one kind. */
@@ -90,7 +90,7 @@ export function stubNetwork(cfg: unknown = config()): Net {
     if (url.includes('/v2/identity')) return new Response(JSON.stringify({ record: net.identity }), { status: 200 });
     if (url.includes('/v2/segments')) {
       const { text, gzip } = await decode(init?.body);
-      net.segments.push({ url, q: Object.fromEntries(new URL(url).searchParams), events: JSON.parse(text), gzip, keepalive: init?.keepalive });
+      net.segments.push({ url, q: Object.fromEntries(new URLSearchParams(new Headers(init?.headers).get('x-sq-replay-index') ?? '')), events: JSON.parse(text), gzip, keepalive: init?.keepalive });
       return new Response('', { status: 202 });
     }
     net.app.push({ url, init });

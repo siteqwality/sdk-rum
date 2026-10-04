@@ -35,13 +35,16 @@ export function send(
   body: string | Blob,
   contentType: string,
   size: number,
+  extraHeaders?: Record<string, string>,
 ): Promise<SendOutcome> {
   const keepalive = keepaliveFits(size);
   let request: Promise<Response>;
   try {
+    const headers: Record<string, string> = { 'Content-Type': contentType, Authorization: `Bearer ${token}` };
+    for (const k in extraHeaders) if (!/^(authorization|content-type)$/i.test(k)) headers[k] = extraHeaders[k];
     request = fetchFn(url, {
       method: 'POST',
-      headers: { 'Content-Type': contentType, Authorization: `Bearer ${token}` },
+      headers,
       body,
       keepalive,
       credentials: 'omit',

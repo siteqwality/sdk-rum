@@ -11,6 +11,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  SiteQwalityRUM.optOut();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -107,13 +108,15 @@ describe('Observe and Analyze', () => {
     expect(SiteQwalityRUM.getStatus()?.sampled.analyze).toBe(false);
     SiteQwalityRUM.addAction('checkout');
     await flush();
+    // Compression may still be running before the fetch spy can count a pending request.
+    await vi.waitFor(() => expect(net.events('action')).toHaveLength(1), { timeout: 5_000 });
     const actions = net.events('action');
     expect(actions).toHaveLength(1);
     expect(actions[0]).toMatchObject({ action_type: 'click', name: 'Buy', selector: '#buy' });
     expect(net.events('custom')[0]).toMatchObject({ name: 'checkout' });
     expect(net.batches.at(-1)!.body.ctx.sampling).toMatchObject({ analyze: true, rule_id: 'r_analyze_1' });
     button.remove();
-  });
+  }, 15_000);
 
   it('keeps the rule decision for the session across page loads in the cookie', async () => {
     await boot({}, stubNetwork(config({ rules: [rule('analyze')] })));

@@ -4,7 +4,7 @@
 import type { UrlSanitizer } from '../core/url';
 import { byteLength } from '../core/util';
 import { KEEPALIVE_MAX_BYTES } from '../core/send';
-import { Segmenter, Ring, FULL_SNAPSHOT, INCREMENTAL, CUSTOM, SEGMENT_MAX_AGE_MS, SEGMENT_MAX_BYTES, RING_STALE_MS, type Segment } from './segmenter';
+import { Segmenter, Ring, FULL_SNAPSHOT, INCREMENTAL, CUSTOM, SEGMENT_MAX_AGE_MS, SEGMENT_MAX_BYTES, RING_STALE_MS, RING_MAX_BYTES, type Segment } from './segmenter';
 import { MutationThrottle } from './throttle';
 import { CSS_REF_MIN } from './css';
 import type { Stream } from './stream';
@@ -61,6 +61,7 @@ export class ReplayRecorder {
   /** Bumped on every restart, so a stopped recording's late events are ignored. */
   private generation = 0;
   private buffering = false;
+  private ringLost = false;
   private paused = false;
   private started = false;
   private snapshotAt = 0;
@@ -106,7 +107,8 @@ export class ReplayRecorder {
     this.segmenter.maxAge = SEGMENT_MAX_AGE_MS;
     // A paused tab's old checkouts are stale; a recording one's last is the base of what follows.
     for (const s of this.ring.take(this.o.now() - RING_STALE_MS, !this.paused) as Tagged[]) this.o.onSegment(s, s.stream);
-    if (!this.paused) this.status('recording');
+    if (this.ringLost) this.capture('start');
+    if (this.started && !this.paused) this.status('recording');
   }
 
   /** Stops recording: the open segment is sent (stream mode) or everything is dropped. */
@@ -231,6 +233,7 @@ export class ReplayRecorder {
     this.throttle.reset();
     this.resyncDue = false;
     this.why = why;
+    this.ringLost = false;
     const generation = this.generation;
     const { record } = this.o;
     const { mirror } = record;
@@ -310,6 +313,7 @@ export class ReplayRecorder {
   }
 
   private push(event: unknown, mutation: boolean, css?: string[]): void {
+    if (this.ringLost) return;
     const e = event as { type: number; timestamp: number };
     const t = e.timestamp;
     let json: string;
@@ -318,13 +322,24 @@ export class ReplayRecorder {
     } catch {
       return;
     }
-    if (e.type === FULL_SNAPSHOT && byteLength(json) > SNAPSHOT_MAX_BYTES) return this.tooLarge();
-    if (mutation && !this.throttle.fits(t, json.length)) {
+    const bytes = byteLength(json);
+    if (e.type === FULL_SNAPSHOT && bytes > SNAPSHOT_MAX_BYTES) return this.tooLarge();
+    if (mutation && !this.throttle.fits(t, bytes)) {
       this.o.count?.('replay_mutations_dropped');
       return;
     }
-    if (this.buffering) this.ring.trim(this.segmenter.mem + json.length);
-    this.segmenter.add({ json, type: e.type, t, css: css?.length ? css : undefined });
+    this.segmenter.add({ json, bytes, type: e.type, t, css: css?.length ? css : undefined });
+    if (this.buffering) {
+      // The open snapshot is already a replacement base, so even the last closed run can go.
+      this.ring.trim(this.segmenter.bytes + 2, this.segmenter.fs);
+      if (this.ring.bytes + this.segmenter.bytes + 2 > RING_MAX_BYTES) {
+        this.ring.clear();
+        this.segmenter.discard();
+        this.ringLost = true;
+        this.schedule('checkout');
+        return;
+      }
+    }
     // A page load's first snapshot goes at once, so a short view still plays. After a pause or a
     // loss, the snapshot's segment goes once it outgrows the unload path (gzip may not finish
     // before a close, and the rest builds on it); periodic checkouts wait for their segment.
@@ -336,7 +351,7 @@ export class ReplayRecorder {
       return;
     }
     if (e.type === CUSTOM) return;
-    this.sinceSnapshot += json.length;
+    this.sinceSnapshot += bytes;
     if (this.buffering && (t - this.snapshotAt >= BUFFER_CHECKOUT_MS || this.sinceSnapshot >= BUFFER_CHECKOUT_BYTES)) this.schedule('checkout');
     else if (mutation && this.throttle.dropped) this.calm();
   }

@@ -1,5 +1,6 @@
 // Segments (design 5.5, 6.4) and the replay ring (5.4). A segment is a run of serialized rrweb
 // events with the index fields `/v2/segments` takes; the ring holds the last two checkouts.
+import { byteLength } from '../core/util';
 
 // rrweb discriminants, pinned against rrweb's enums by replay-url.test.ts.
 export const FULL_SNAPSHOT = 2;
@@ -18,7 +19,7 @@ export const RING_STALE_MS = 120_000;
 
 export interface Segment {
   json: string[];
-  /** UTF-16 length of the events joined by commas: bytes for ASCII, a cheap bound otherwise. */
+  /** UTF-8 bytes of the events joined by commas. */
   bytes: number;
   /** First and last event times (epoch ms). */
   ft: number;
@@ -36,6 +37,7 @@ export interface Entry {
   type: number;
   t: number;
   css?: string[];
+  bytes?: number;
 }
 
 interface Open extends Segment {
@@ -56,7 +58,7 @@ export class Segmenter {
   add(e: Entry): void {
     // A Meta event opens a segment; its full snapshot stays with it.
     if (e.type === META) this.close();
-    const size = e.json.length + 1;
+    const size = (e.bytes ?? byteLength(e.json)) + 1;
     const o = this.open;
     if (o && o.bytes + size > SEGMENT_MAX_BYTES && !(e.type === FULL_SNAPSHOT && o.metaFirst && o.json.length === 1)) this.close();
     if (!this.open) {
@@ -125,7 +127,7 @@ export class Ring {
   push(s: Segment): void {
     if (s.fs || !this.runs.length) this.runs.push([s]);
     else this.runs[this.runs.length - 1].push(s);
-    this.held += s.mem;
+    this.held += s.bytes + 2;
     while (this.runs.length > 2) this.dropOldest();
   }
 
@@ -135,8 +137,8 @@ export class Ring {
   }
 
   /** Over the cap with `extra` more on the way: the older checkout goes. */
-  trim(extra = 0): void {
-    while (this.runs.length > 1 && this.held + extra > RING_MAX_BYTES) this.dropOldest();
+  trim(extra = 0, openSnapshot = false): void {
+    while (this.runs.length > (openSnapshot ? 0 : 1) && this.held + extra > RING_MAX_BYTES) this.dropOldest();
   }
 
   /**
@@ -159,6 +161,6 @@ export class Ring {
   }
 
   private dropOldest(): void {
-    for (const s of this.runs.shift() ?? []) this.held -= s.mem;
+    for (const s of this.runs.shift() ?? []) this.held -= s.bytes + 2;
   }
 }

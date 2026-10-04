@@ -68,7 +68,7 @@ function start(extra: Partial<ReplayStartOptions> = {}): ReplayHandle {
     token: 't',
     fetch: (async (u: string, init: RequestInit) => {
       fetches++;
-      const q = Object.fromEntries(new URL(u).searchParams);
+      const q = Object.fromEntries(new URLSearchParams(new Headers(init.headers).get('x-sq-replay-index') ?? ''));
       sent.push({ q, events: JSON.parse(await body(init.body)), keepalive: init.keepalive, type: (init.headers as Record<string, string>)['Content-Type'] });
       return new Response('', { status: 202 });
     }) as unknown as typeof fetch,
@@ -291,6 +291,19 @@ describe('startReplay', { timeout: 30_000 }, () => {
     await mutate('after');
     await run(60_000);
     expect(fetches).toBe(0);
+  });
+
+  it.each([401, 403])('stops the recorder on intake refusal %s, including a v2 rollout denial', async (status) => {
+    const check = vi.fn();
+    const f = vi.fn(async () => new Response('', { status }));
+    start({ fetch: f as typeof fetch, check });
+    await until(() => states.includes('refused'));
+    expect(states.at(-1)).toBe('refused');
+    const checks = check.mock.calls.length;
+    await mutate('after refusal');
+    await run(61_000);
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledTimes(checks);
   });
 
   it('forgets the 2.0.0 lease and shared counter', () => {

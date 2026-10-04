@@ -106,7 +106,7 @@ describe('Ring', () => {
     expect(r.take(0).map((s) => s.ft)).toEqual([10]);
   });
 
-  it('never drops the checkout being recorded, however large', () => {
+  it('keeps the current base until the recorder can replace an oversized run', () => {
     const r = new Ring();
     r.push(seg(true, 0, 10, 6_000_000));
     r.trim(1_000_000);
@@ -132,11 +132,11 @@ describe('Ring', () => {
     expect(r.take(0).map((s) => s.ft)).toEqual([10]);
   });
 
-  it('counts the stylesheets a segment keeps for its acknowledgement', () => {
+  it('bounds serialized bytes without double-counting inline stylesheets', () => {
     const r = new Ring();
     r.push({ ...seg(true, 0, 10, 1_000), mem: 3_000_000 });
     r.push({ ...seg(true, 10, 20, 1_000), mem: 2_500_000 });
     r.trim();
-    expect(r.take(0).map((s) => s.ft)).toEqual([10]);
+    expect(r.take(0).map((s) => s.ft)).toEqual([0, 10]);
   });
 });
