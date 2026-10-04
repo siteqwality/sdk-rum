@@ -187,6 +187,41 @@ describe('the replay ring in the core', () => {
     expect(captured.handle!.stop).toHaveBeenCalled();
   });
 
+  it('a session adopted while the recorder loads gets the recorder instead', async () => {
+    vi.resetModules();
+    captured = { starts: 0 };
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    vi.doMock('../src/replay/load-record', () => ({
+      loadReplay: async () => {
+        await gate;
+        return (o: ReplayStartOptions) => {
+          captured.o = o;
+          captured.starts++;
+          captured.handle = { go: vi.fn(), stop: vi.fn(), pause: vi.fn(), resume: vi.fn() };
+          return captured.handle;
+        };
+      },
+    }));
+    const { SiteQwalityRUM: Fresh } = await import('../src/sdk');
+    current = Fresh;
+    stubNetwork(config({ rules: [errorRule] }));
+    Fresh._reset();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+    await Fresh.init({ applicationId: 'app-1', clientToken: 't', ingestBase: 'https://in.test', replayBase: 'https://rp.test', configBase: 'https://cdn.test' });
+    await settle(3);
+    const cookie = /(?:^|;\s*)_sq_s=([^;]*)/.exec(document.cookie)![1].split('|');
+    const older = `0199a6b2-7c3e-7f00-8a1b-00000000a0a0|${Number(cookie[1]) - 1000}|${Date.now()}|0`;
+    document.cookie = `_sq_s=${older};path=/`;
+    await new Promise((r) => setTimeout(r, 1_100));
+    Fresh.addAction('adopt');
+    expect(Fresh.getStatus()!.session_id).toBe('0199a6b2-7c3e-7f00-8a1b-00000000a0a0');
+    release();
+    await settle(5);
+    expect(captured.starts).toBe(1);
+    expect(captured.o!.session.id).toBe('0199a6b2-7c3e-7f00-8a1b-00000000a0a0');
+  });
+
   it('a recorder that failed for the page stays off for the page load', async () => {
     const { Fresh } = await boot([errorRule]);
     captured.o!.onStatus('stopped', 'record_failed');

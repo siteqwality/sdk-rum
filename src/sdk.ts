@@ -302,7 +302,9 @@ export function createInstance(opts: InitOptions) {
     loadReplay(opts.recorderUrl).then(
       (start) => {
         loading = false;
-        if (replay || sid !== session.id || !wantReplay()) return;
+        if (replay || !wantReplay()) return;
+        // The session changed while the recorder loaded: record that one instead.
+        if (sid !== session.id) return startRecording();
         // A recording can stop inside start() (a page too large to record): never keep that handle.
         let handle: ReplayHandle | undefined;
         let gone = false;

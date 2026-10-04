@@ -1,6 +1,6 @@
 // Replay privacy (design 7.1): rrweb options per level, DOM attribute cleaning, no iframe content.
-import { describe, it, expect } from 'vitest';
-import { withoutFrameContent, recordOptions, cleanAttributes, cleanDomEvent, HIDDEN_INPUT_SELECTOR, replayPrivacy } from '../src/replay/privacy';
+import { describe, it, expect, vi } from 'vitest';
+import { withoutFrameContent, recordOptions, cleanAttributes, cleanDomEvent, cleanCss, HIDDEN_INPUT_SELECTOR, replayPrivacy } from '../src/replay/privacy';
 import { createUrlSanitizer, createTextUrlSanitizer } from '../src/core/url';
 import { createScrubber } from '../src/core/sanitize';
 import { normalizeConfig } from '../src/core/config';
@@ -129,6 +129,29 @@ describe('replay privacy (7.1)', () => {
   });
 });
 
+describe('URLs in CSS', () => {
+  const url = createUrlSanitizer();
+  it.each([
+    ['two unquoted urls in one value', '--bg: url(https://cdn.example.com/a.png?v=3),url(https://cdn.example.com/b.png?v=3); color: blue;', '--bg: url(https://cdn.example.com/a.png),url(https://cdn.example.com/b.png); color: blue;'],
+    ['a url followed by a keyword', '.d { --icon: url(https://cdn.example.com/i.svg?v=2)no-repeat; } .e { color: green; }', '.d { --icon: url(https://cdn.example.com/i.svg)no-repeat; } .e { color: green; }'],
+    ['quoted urls with spaces and parentheses', `a{background:url("https://x.test/a b(1).png?t=1")} b{background:url('https://x.test/c.png#f')}`, `a{background:url("https://x.test/a b(1).png")} b{background:url('https://x.test/c.png')}`],
+    ['@import strings and URL() in capitals', '@import "https://x.test/s.css?k=1"; p{background:URL(https://x.test/p.png?s=2)}', '@import "https://x.test/s.css"; p{background:URL(https://x.test/p.png)}'],
+    ['fragment references and data URIs, kept', `g{filter:url(#blur);mask:url("#m")} i{background:url("data:image/svg+xml;utf8,<svg fill='#fff'/>")}`, `g{filter:url(#blur);mask:url("#m")} i{background:url("data:image/svg+xml;utf8,<svg fill='#fff'/>")}`],
+  ])('%s', (_, css, want) => {
+    expect(cleanCss(css, url)).toBe(want);
+  });
+
+  it('leaves a sheet without URLs as it is, and cleans a large one once', () => {
+    const plain = '.a{color:red}'.repeat(200);
+    expect(cleanCss(plain, url)).toBe(plain);
+    const big = '.b{background:url(https://x.test/b.png?v=1)}'.repeat(100);
+    const spy = vi.fn(url);
+    cleanCss(big, spy);
+    cleanCss(`${big}`, spy);
+    expect(spy).toHaveBeenCalledTimes(100);
+  });
+});
+
 describe('DOM attributes in replay', () => {
   const url = createUrlSanitizer();
   const text = createTextUrlSanitizer(url);
@@ -139,7 +162,7 @@ describe('DOM attributes in replay', () => {
       href: 'https://x.test/reset?token=abc#f',
       src: '/p.svg?sig=1',
       srcset: 'https://x.test/a.png?s=1 1x, https://x.test/b.png?s=2 2x',
-      style: 'background: url(https://x.test/bg.png?k=1)',
+      style: 'background: url(https://x.test/bg.png?k=1), url(https://x.test/fg.png?k=2)',
       title: 'Mail jane@x.io',
       _cssText: '.a{background:url(https://x.test/c.png?t=1)}',
       rr_width: '10px',
@@ -149,7 +172,7 @@ describe('DOM attributes in replay', () => {
       href: 'https://x.test/reset',
       src: '/p.svg',
       srcset: 'https://x.test/a.png 1x, https://x.test/b.png 2x',
-      style: 'background: url(https://x.test/bg.png)',
+      style: 'background: url(https://x.test/bg.png), url(https://x.test/fg.png)',
       title: 'Mail *********',
       _cssText: '.a{background:url(https://x.test/c.png)}',
       rr_width: '10px',

@@ -3,6 +3,7 @@
 // the ring until go(); stream mode hands segments out as they close.
 import type { UrlSanitizer } from '../core/url';
 import { byteLength } from '../core/util';
+import { KEEPALIVE_MAX_BYTES } from '../core/send';
 import { Segmenter, Ring, FULL_SNAPSHOT, INCREMENTAL, CUSTOM, SEGMENT_MAX_AGE_MS, SEGMENT_MAX_BYTES, RING_STALE_MS, type Segment } from './segmenter';
 import { MutationThrottle } from './throttle';
 import { CSS_REF_MIN } from './css';
@@ -64,7 +65,8 @@ export class ReplayRecorder {
   private started = false;
   private snapshotAt = 0;
   private sinceSnapshot = 0;
-  private sendNow = false;
+  /** Why the current snapshot was taken. */
+  private why: Why = 'start';
   private queued = false;
   private resyncAt = -Infinity;
   /** A resync asked for within RESYNC_MIN_MS of the last: taken once that has passed. */
@@ -228,9 +230,7 @@ export class ReplayRecorder {
     this.stream = this.o.stream();
     this.throttle.reset();
     this.resyncDue = false;
-    // A page load's first snapshot goes at once, so a short view still plays; later ones wait
-    // for their segment (a hidden tab sends what it holds anyway).
-    this.sendNow = why === 'start';
+    this.why = why;
     const generation = this.generation;
     const { record } = this.o;
     const { mirror } = record;
@@ -325,10 +325,14 @@ export class ReplayRecorder {
     }
     if (this.buffering) this.ring.trim(this.segmenter.mem + json.length);
     this.segmenter.add({ json, type: e.type, t, css: css?.length ? css : undefined });
+    // A page load's first snapshot goes at once, so a short view still plays. After a pause or a
+    // loss, the snapshot's segment goes once it outgrows the unload path (gzip may not finish
+    // before a close, and the rest builds on it); periodic checkouts wait for their segment.
+    const s = this.segmenter;
+    if (!this.buffering && s.fs && (this.why === 'start' || (this.why !== 'checkout' && s.bytes > KEEPALIVE_MAX_BYTES))) s.close();
     if (e.type === FULL_SNAPSHOT) {
       this.snapshotAt = t;
       this.sinceSnapshot = 0;
-      if (this.sendNow && !this.buffering) this.segmenter.close();
       return;
     }
     if (e.type === CUSTOM) return;

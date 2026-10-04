@@ -104,6 +104,11 @@ export class Segmenter {
     return this.open ? this.open.mem : 0;
   }
 
+  /** The open segment holds a full snapshot. */
+  get fs(): boolean {
+    return !!this.open?.fs;
+  }
+
   get empty(): boolean {
     return !this.open;
   }

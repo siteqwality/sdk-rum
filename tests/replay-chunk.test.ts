@@ -192,6 +192,25 @@ describe('startReplay', () => {
     expect(JSON.stringify(tail.events)).toContain('last words');
   });
 
+  it('a tab closed right after it came back still delivers what it recorded since', async () => {
+    document.body.innerHTML = `<p id="p">hello</p>${Array.from({ length: 800 }, (_, i) => `<div class="row">row ${i} ${'x'.repeat(40)}</div>`).join('')}`;
+    start();
+    await run(100);
+    visibility('hidden');
+    await run(100);
+    visibility('visible');
+    await run(5_000);
+    await mutate('after coming back');
+    // Closing a tab: hidden, then pagehide, in one task (gzip cannot finish in between).
+    visibility('hidden');
+    pagehide();
+    await run(200);
+    const back = sent.filter((s) => Number(s.q.q) >= 2);
+    expect(back.some((s) => s.q.fs === '1'), 'the snapshot taken on coming back').toBe(true);
+    expect(JSON.stringify(back.flatMap((s) => s.events))).toContain('after coming back');
+    expect(counts).not.toContain('replay_tail_dropped');
+  });
+
   it('a buffering page that never matched sends nothing on pagehide', async () => {
     decision = { replay: false };
     start({ live: false });

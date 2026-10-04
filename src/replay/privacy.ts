@@ -197,6 +197,30 @@ interface SerializedNode {
   childNodes?: SerializedNode[];
 }
 
+// url(...), quoted or not, and @import "...": where URLs live in CSS.
+const CSS_URL = /(url\(\s*)(?:(["'])(.*?)\2|([^'")\s]*))(\s*\))|(@import\s+)(["'])(.*?)\7/gis;
+const cssCache = new Map<string, string>();
+
+/**
+ * URLs in CSS minimised, nothing else touched: fragment references (`url(#clip)`) and data URIs
+ * are kept, and each value is rewritten in place, so a declaration never loses its neighbours.
+ */
+export function cleanCss(css: string, url: UrlSanitizer): string {
+  if (!/url\(|@import/i.test(css)) return css;
+  const hit = cssCache.get(css);
+  if (hit !== undefined) return hit;
+  const clean = (v: string) => (!v || v[0] === '#' || /^data:/i.test(v) ? v : url(v));
+  const out = css.replace(CSS_URL, (m, pre, q, quoted, bare, post, imp, iq, iv) =>
+    imp ? `${imp}${iq}${clean(iv)}${iq}` : `${pre}${q ? `${q}${clean(quoted)}${q}` : clean(bare)}${post}`,
+  );
+  // Checkouts serialize the same large sheets again; a few are remembered.
+  if (css.length > 1024) {
+    if (cssCache.size >= 8) cssCache.delete(cssCache.keys().next().value!);
+    cssCache.set(css, out);
+  }
+  return out;
+}
+
 /** URL attributes minimised and the rest PII-scrubbed, in snapshots and mutations, in place. */
 export function cleanAttributes(
   attrs: Record<string, unknown> | undefined,
@@ -210,7 +234,7 @@ export function cleanAttributes(
     if (name.startsWith('rr_')) continue;
     // Stylesheets: URLs minimised, nothing scrubbed (digit runs live in fonts and selectors).
     if (name === '_cssText') {
-      if (typeof v === 'string') attrs[name] = text(v);
+      if (typeof v === 'string') attrs[name] = text(cleanCss(v, url));
       continue;
     }
     if (typeof v === 'string') {
@@ -218,25 +242,26 @@ export function cleanAttributes(
         ? url(v)
         : name === 'srcset'
           ? v.split(',').map((part) => part.trim().replace(/^\S+/, (u) => url(u))).join(', ')
-          : text(v);
+          : text(name === 'style' ? cleanCss(v, url) : v);
       if (scrub) out = scrub(out);
       attrs[name] = out;
     } else if (v && typeof v === 'object') {
       // A style diff: property to value or [value, priority].
       for (const [k, sv] of Object.entries(v as Record<string, unknown>)) {
-        if (typeof sv === 'string') (v as Record<string, unknown>)[k] = text(sv);
+        if (typeof sv === 'string') (v as Record<string, unknown>)[k] = text(cleanCss(sv, url));
       }
     }
   }
 }
-
-type Visit = (a: Record<string, unknown> | undefined, node: boolean) => void;
 
 function cleanNode(n: SerializedNode | undefined, clean: Visit): void {
   if (!n) return;
   clean(n.attributes, true);
   if (Array.isArray(n.childNodes)) for (const c of n.childNodes) cleanNode(c, clean);
 }
+
+type Visit = (a: Record<string, unknown> | undefined, node: boolean) => void;
+
 
 /**
  * Visits the DOM attributes of full snapshots and mutations, which `clean` may rewrite in place.
