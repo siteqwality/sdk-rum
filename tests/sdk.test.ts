@@ -44,6 +44,14 @@ describe('init', () => {
     expect(batch.body.events.map((e) => e.k)).toEqual(['view_start', 'view_end']);
   });
 
+  it('sends to https://in.siteqwality.com/v2/batch by default', async () => {
+    const net = stubNetwork();
+    SiteQwalityRUM._reset();
+    await SiteQwalityRUM.init({ applicationId: APP, clientToken: 'ct_1', configBase: 'https://cdn.test' });
+    await flush();
+    expect(net.batches[0].url).toBe('https://in.siteqwality.com/v2/batch');
+  });
+
   it('is idempotent and never throws on bad options', async () => {
     SiteQwalityRUM._reset();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

@@ -49,6 +49,8 @@ export function createTransport(o: TransportOptions) {
   let queue: Entry[] = [];
   let held = false;
   let stopped = false;
+  // Over the request budget: nothing is kept or sent until block(false).
+  let blocked = false;
   let unloading = false;
   let inFlight = 0;
   let lastSend = -Infinity;
@@ -99,7 +101,7 @@ export function createTransport(o: TransportOptions) {
 
   function settle(entries: Entry[], outcome: SendOutcome): void {
     o.log?.(outcome, entries.length);
-    if (stopped) return;
+    if (stopped || blocked) return;
     if (outcome.kind === 'retryable') {
       queue.unshift(...entries);
       trim();
@@ -147,7 +149,7 @@ export function createTransport(o: TransportOptions) {
 
   /** Sends the next batch unless one is in flight, a retry is pending or consent is pending. */
   function flush(): void {
-    if (stopped || held || unloading || !queue.length || inFlight || retryTimer) return;
+    if (stopped || blocked || held || unloading || !queue.length || inFlight || retryTimer) return;
     if (isHidden() && now() < lastSend + HIDDEN_SPACING_MS) {
       scheduleHidden();
       return;
@@ -169,7 +171,7 @@ export function createTransport(o: TransportOptions) {
   /** pagehide: everything queued goes now, uncompressed and keepalive, within the budget. */
   function sendTail(): void {
     unloadQueued = false;
-    if (stopped || held) return;
+    if (stopped || blocked || held) return;
     let max = KEEPALIVE_MAX_BYTES - 5_000;
     while (queue.length) {
       const { entries, json } = take(max);
@@ -200,7 +202,7 @@ export function createTransport(o: TransportOptions) {
 
   return {
     push(e: SqEvent, c: Ctx, urgent = false): void {
-      if (stopped) return;
+      if (stopped || blocked) return;
       queue.push({ e, c });
       trim();
       if (unloading) {
@@ -221,7 +223,7 @@ export function createTransport(o: TransportOptions) {
     flush,
     /** Tab hidden: send everything now, compressed; the page is still alive. */
     hide(): void {
-      if (stopped || held || unloading) return;
+      if (stopped || blocked || held || unloading) return;
       const backingOff = retryTimer !== null;
       while (queue.length) {
         void sendOne();
@@ -247,6 +249,14 @@ export function createTransport(o: TransportOptions) {
     },
     clear(): void {
       queue = [];
+    },
+    /** The request budget is spent: drop everything and send nothing until a new session. */
+    block(on: boolean): void {
+      blocked = on;
+      if (!on) return;
+      queue = [];
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = null;
     },
     stop,
     get stopped() {

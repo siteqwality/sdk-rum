@@ -25,7 +25,6 @@ function hub(): Hub {
     isOwn: () => false,
     pageUrl: () => '',
     viewId: () => 'v',
-    fetch,
   };
 }
 

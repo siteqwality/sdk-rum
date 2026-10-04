@@ -36,6 +36,4 @@ export interface Hub {
   /** The current page URL, minimised. */
   pageUrl(): string;
   viewId(): string;
-  /** The native fetch, captured before any wrapper. */
-  fetch: typeof fetch;
 }

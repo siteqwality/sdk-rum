@@ -118,7 +118,6 @@ describe('the pipeline', () => {
       isOwn: () => false,
       pageUrl: () => '',
       viewId: () => 'v1',
-      fetch,
     };
     return createErrorPipeline(hub, { crumbs: () => crumbs, orphan: () => false, sent: (raw, e) => after.push({ raw, e }) });
   }

@@ -125,7 +125,9 @@ describe('CDN core contents', () => {
 
   it('names the v2 CDN path and the v2 ingest endpoint, and no v1 intake route', () => {
     expect(source).toContain('https://cdn.siteqwality.com/rum/v2/');
+    expect(source).toContain('https://in.siteqwality.com');
     expect(source).toContain('/v2/batch');
+    expect(source).not.toContain('rum.siteqwality.com');
     expect(source).not.toMatch(/\/v1\/(measure|events|errors|config)/);
   });
 });

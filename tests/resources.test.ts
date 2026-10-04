@@ -175,7 +175,6 @@ describe('startResources', () => {
       isOwn: own,
       pageUrl: () => '',
       viewId: () => view,
-      fetch,
     } as unknown as Hub;
     return startResources(hub, { onRequestEntry: (e) => requests.push(e) });
   }

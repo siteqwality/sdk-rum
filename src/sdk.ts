@@ -8,6 +8,7 @@ import { createScrubber } from './core/sanitize';
 import { normalizeConfig, loadCachedConfig, saveCachedConfig, clearCachedConfig, fetchConfig, DEFAULT_CONFIG_BASE, CONFIG_MAX_AGE_MS } from './core/config';
 import { createSession, anonymousId, type Decision } from './core/session';
 import { createTransport, type Ctx } from './core/transport';
+import { createBudget } from './core/budget';
 import { createRules, type RuleInput } from './core/rules';
 import { sampledIn, uuid, toHex } from './core/hash';
 import { parseStack, topFrame, normalisePath, errorKey } from './core/stack';
@@ -51,7 +52,7 @@ export function createInstance(opts: InitOptions) {
   const appId = opts.applicationId;
   const token = opts.clientToken;
   const trim = (b: string | undefined, d: string) => (b || d).replace(/\/+$/, '');
-  const ingestBase = trim(opts.ingestBase, 'https://rum.siteqwality.com');
+  const ingestBase = trim(opts.ingestBase, 'https://in.siteqwality.com');
   const replayBase = trim(opts.replayBase, 'https://replay.siteqwality.com');
   const configBase = trim(opts.configBase, DEFAULT_CONFIG_BASE);
   const f0 = window.fetch;
@@ -83,10 +84,22 @@ export function createInstance(opts: InitOptions) {
     counters[name] = (counters[name] ?? 0) + n;
     totals[name] = (totals[name] ?? 0) + n;
   };
+  // Every SDK request (batches, segments, config, identity) passes the request budget.
+  const budget = createBudget(() => (session.mode === 'session' ? 'sessionStorage' : session.mode === 'memory' ? undefined : 'localStorage'));
+  let overBudget = false;
+  const sdkFetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const body = init?.body;
+    const bytes = typeof body === 'string' ? byteLength(body) : body instanceof Blob ? body.size : 0;
+    if (overBudget || !budget.take(session.id, bytes)) {
+      spent();
+      return Promise.reject(new Error('request budget'));
+    }
+    return nativeFetch(input, init);
+  }) as typeof fetch;
   const transport = createTransport({
     url: `${ingestBase}/v2/batch`,
     token,
-    fetch: nativeFetch,
+    fetch: sdkFetch,
     count,
     log: (o, n) => log('batch', n, o),
     onStop: () => stopRecording('refused'),
@@ -123,7 +136,18 @@ export function createInstance(opts: InitOptions) {
     if (!warned.has(key)) warned.add(key) && warn(message, detail);
   };
 
-  const canSend = () => !optedOut && consent !== 'not-granted' && cfg.status !== 'paused' && !transport.stopped && observeIn;
+  const canSend = () => !optedOut && !overBudget && consent !== 'not-granted' && cfg.status !== 'paused' && !transport.stopped && observeIn;
+
+  /** The budget is spent: stop sending until a new session, and say so once, locally. */
+  function spent(): void {
+    if (overBudget) return;
+    overBudget = true;
+    count('request_budget');
+    transport.block(true);
+    ring = [];
+    stopRecording('request_budget');
+    warnOnce('budget', 'Stopped sending: this session reached its request budget');
+  }
   const resample = () => {
     observeIn = sampledIn(`${session.id}:observe`, cfg.observe.sample_rate);
   };
@@ -211,7 +235,10 @@ export function createInstance(opts: InitOptions) {
   }
 
   function emit(e: SqEvent, tier: Tier, o: EmitOptions = {}): boolean {
-    if (inHook || !canSend()) return false;
+    if (inHook) return false;
+    // Only a new session lifts a spent request budget.
+    if (overBudget && !o.sid) sessionFor(!!o.rotate);
+    if (!canSend()) return false;
     const sid = o.sid ?? sessionFor(!!o.rotate);
     if (!sid || (tier === ANALYZE && (gpc() || dnr || urlPaused))) return false;
     const kept = o.kind ? hook(e, o.kind) : e;
@@ -251,7 +278,7 @@ export function createInstance(opts: InitOptions) {
           sessionId: sid,
           replayBase,
           token,
-          fetch: nativeFetch,
+          fetch: sdkFetch,
           url: sanitizeUrl,
           text: sanitizeText,
           privacy: cfg.privacy,
@@ -312,6 +339,11 @@ export function createInstance(opts: InitOptions) {
 
   /** A new session (rotated, or another tab's adopted): state, rules and the view start over. */
   function changed(): void {
+    if (overBudget) {
+      overBudget = false;
+      transport.block(false);
+      reason = undefined;
+    }
     ctx = null;
     ring = [];
     crumbs = [];
@@ -370,7 +402,7 @@ export function createInstance(opts: InitOptions) {
   }
 
   const refresh = () =>
-    fetchConfig(configBase, appId, nativeFetch).then(
+    fetchConfig(configBase, appId, sdkFetch).then(
       (raw) => applyConfig(raw, true),
       (err) => {
         log('config failed', err);
@@ -414,7 +446,7 @@ export function createInstance(opts: InitOptions) {
     if (!cfg.limits.dnr) return;
     try {
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${appId}:${id}`));
-      const res = await nativeFetch(`${ingestBase}/v2/identity?h=${toHex(new Uint8Array(digest))}`, {
+      const res = await sdkFetch(`${ingestBase}/v2/identity?h=${toHex(new Uint8Array(digest))}`, {
         headers: { Authorization: `Bearer ${token}` },
         credentials: 'omit',
       });
@@ -445,7 +477,6 @@ export function createInstance(opts: InitOptions) {
     isOwn,
     pageUrl: () => pageUrl(location.href, sanitizeUrl, opts.hashRouting === true),
     viewId: () => views?.current.id ?? '',
-    fetch: nativeFetch,
   };
 
   setRules(true);
