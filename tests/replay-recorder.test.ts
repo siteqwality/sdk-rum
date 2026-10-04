@@ -52,11 +52,12 @@ const textChange = (id: number, value: string) => emit({ type: 3, data: { source
 const adds = (pad: number) => emit({ type: 3, data: { source: 0, adds: [{ parentId: 1, nextId: null, node: { type: 3, id: 9, textContent: 'x'.repeat(pad) } }], removes: [], texts: [], attributes: [] } });
 
 /** rrweb's start: a Meta event and a full snapshot, synchronously inside record(). */
-function snapshotOnRecord(node?: Record<string, unknown>) {
+function snapshotOnRecord(node?: Record<string, unknown>, loading = false) {
   const original = rrweb.record;
   return vi.fn((options: Record<string, unknown> & { emit: Emit }) => {
     const stop = original(options);
     if (stop) {
+      if (loading) for (const type of [0, 1]) options.emit({ type, timestamp: 0, data: {} });
       options.emit({ type: 4, timestamp: 0, data: { href: 'https://example.com/a?token=x', width: 1, height: 1 } });
       options.emit({ type: 2, timestamp: 0, data: { node: node ?? { type: 0, id: 1, childNodes: [] }, initialOffset: { top: 0, left: 0 } } });
     }
@@ -64,8 +65,8 @@ function snapshotOnRecord(node?: Record<string, unknown>) {
   });
 }
 
-function start(o: { buffer?: boolean; paused?: string; privacy?: Partial<ReplayPrivacy>; node?: Record<string, unknown> } = {}) {
-  const record = Object.assign(snapshotOnRecord(o.node), { mirror: rrweb.record.mirror, addCustomEvent: rrweb.record.addCustomEvent });
+function start(o: { buffer?: boolean; paused?: string; privacy?: Partial<ReplayPrivacy>; node?: Record<string, unknown>; loading?: boolean } = {}) {
+  const record = Object.assign(snapshotOnRecord(o.node, o.loading), { mirror: rrweb.record.mirror, addCustomEvent: rrweb.record.addCustomEvent });
   recorder.start({
     record: record as never,
     privacy: { maskInputs: true, maskAllText: false, blockSelector: '', ...o.privacy },
@@ -105,6 +106,18 @@ afterEach(() => {
 });
 
 describe('ReplayRecorder, streaming', () => {
+  it.each([false, true])('never sends pre-snapshot load events (oversized=%s)', oversized => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    start({ loading: true, node: oversized ? { type: 0, id: 1, pad: 'x'.repeat(SNAPSHOT_MAX_BYTES) } : undefined });
+    if (oversized) {
+      expect(segments).toEqual([]);
+      expect(states.at(-1)).toEqual(['stopped', 'too_large']);
+    } else {
+      expect(segments).toHaveLength(1);
+      expect(types(segments[0])).toEqual([4, 2]);
+    }
+  });
+
   it('stamps events from the SDK clock, minimises the Meta URL and sends the first snapshot at once', () => {
     start();
     expect(segments).toHaveLength(1);
