@@ -227,13 +227,15 @@ applies the same rules server-side.
   value is recorded when it changes (on blur or Enter), masked as the privacy level says. A node
   that changes more than 100 times is held to about 10 changes a second, its latest state sent
   once a second, so the replay ends exact. Mutations past 64 KB a second (averaged over 5 s) are
-  dropped, the gap is marked (`sq-throttle`) and a fresh snapshot follows when the page calms,
-  at most every 30 s. Recording never stops for volume.
+  dropped, the gap is marked (`sq-throttle`) and a fresh snapshot follows when the page calms (or
+  after 30 s if it does not), at most every 30 s. Recording never stops for volume.
 - **Stylesheets** are inlined so the player needs nothing from your site; a checkout names a
   stylesheet over 1 KB that already reached SiteQwality (`sq-css:<hash>`, FNV-1a 64) instead of
-  sending it again. Images, fonts and canvas are never inlined.
+  sending it again. URLs inside stylesheets and `style` attributes are minimised like any other.
+  Images, fonts and canvas are never inlined.
 - **Segments** are gzipped and close at 20 s or about 2.5 MB, at a page's first snapshot (sent at
-  once, so a short page view still plays), and when the tab hides. A full snapshot every 3 minutes,
+  once, so a short page view still plays), and when the tab hides. After a pause, the snapshot's
+  segment goes once it is past 60 KB, so a tab closed right after it came back loses nothing. A full snapshot every 3 minutes,
   taken where a segment closes, keeps seeking fast. On close, what is left goes with keepalive, as
   JSON, if it is at most 60 KB; anything else is counted in `status`. A page whose snapshot is over
   4 MB after stylesheet references is not recorded (`status` reason `too_large`).
