@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>RUM fixture: host globals</title>
+  <script>
+    // Minified host bundles declare short top-level names; the SDK must not collide with them.
+    var t = 'host-t', e = 'host-e', n = 'host-n', r = 'host-r', $ = function () { return 'host-$'; }, _ = { host: true };
+    let o = 'host-o';
+    function i() { return 'host-i'; }
+    window.hostGlobals = function () {
+      return { t: t, e: e, n: n, r: r, $: $(), _: _.host, o: o, i: i() };
+    };
+  </script>
+  <script src="/boot.js"></script>
+</head>
+<body><main data-fixture-page="host-globals"><h1>Host globals</h1><button data-testid="hg-button">Click</button></main></body>
+</html>

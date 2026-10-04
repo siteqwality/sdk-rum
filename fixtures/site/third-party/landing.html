@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Sends the full URL, query included, as the referrer: some sites do. -->
+  <meta name="referrer" content="unsafe-url">
+  <title>Third-party landing page</title>
+</head>
+<body>
+  <p>An email link or partner site that sends visitors to the fixture.</p>
+  <a data-testid="landing-link" href="">Go to the fixture</a>
+  <script>
+    document.querySelector('a').href = new URLSearchParams(location.search).get('to') || '/';
+  </script>
+</body>
+</html>
