@@ -292,7 +292,8 @@ export class ReplayRecorder {
   private onEvent(event: unknown, generation: number, getNode: GetNode): void {
     if (generation !== this.generation) return;
     let e = withoutFrameContent(event, getNode) as { type?: number; timestamp?: number; data?: { source?: number } } | null;
-    if (!e) return;
+    // Load markers can precede Meta while the document is still loading; they have no replay base.
+    if (!e || e.type === 0 || e.type === 1) return;
     e.timestamp = this.o.now();
     const css: string[] = [];
     const snapshot = e.type === FULL_SNAPSHOT;
