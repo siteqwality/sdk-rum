@@ -48,6 +48,8 @@ async function drain() {
 }
 
 beforeEach(() => {
+  // Plain bodies unless a test wants gzip: a gzip on real streams could land in the next test.
+  vi.stubGlobal('CompressionStream', undefined);
   vi.useFakeTimers();
   calls = [];
   status = 202;
@@ -118,6 +120,7 @@ describe('batches', () => {
   });
 
   it('gzips bodies over 1 KB while the page lives', { timeout: 20_000 }, async () => {
+    vi.unstubAllGlobals();
     const t = make();
     t.push(ev(1, { big: 'x'.repeat(5000) }), ctx());
     t.push(ev(2), ctx());
@@ -129,7 +132,6 @@ describe('batches', () => {
   });
 
   it('caps a batch at 500 events', async () => {
-    vi.stubGlobal('CompressionStream', undefined);
     const t = make();
     t.hold(true);
     t.hold(false);
