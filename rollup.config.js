@@ -33,7 +33,7 @@ const cdnPlugins = (extra = []) => [
   resolve({ browser: true }),
   commonjs(),
   typescript({ tsconfig: './tsconfig.json', declaration: false, outDir: 'dist/cdn' }),
-  terser({ ecma: 2020, compress: { passes: 2 } }),
+  terser({ ecma: 2020, compress: { passes: 3 } }),
 ];
 
 export default [

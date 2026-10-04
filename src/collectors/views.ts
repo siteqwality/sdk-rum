@@ -4,7 +4,7 @@ import type { SqEvent } from '../types';
 import { OBSERVE, type Hub } from '../hub';
 import { createUrlSanitizer, type UrlSanitizer } from '../core/url';
 import { uuid } from '../core/hash';
-import { now, perfNow, round, isHidden, isNum, storage, cut, on } from '../core/util';
+import { now, perfNow, round, isHidden, isNum, storage, cut, on, navEntry } from '../core/util';
 
 const INTERIM_MS = 5 * 60_000;
 const ACTIVE_WINDOW_MS = 5_000;
@@ -47,14 +47,6 @@ export function pageUrl(href: string, sanitize: UrlSanitizer, hashRouting = true
   return `${base}#${route[1]}${sanitize(route[2])}`;
 }
 
-function navEntry(): PerformanceNavigationTiming | undefined {
-  try {
-    return performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 export interface ViewsOptions {
   /** Session id for a new view; may rotate an expired session. */
   session: () => { id: string; isNew: boolean };
@@ -73,6 +65,7 @@ export function startViews(h: Hub, o: ViewsOptions) {
   let current!: View;
   let initial!: View;
   let firstOfPage = true;
+  let lastSid = '';
 
   // Active time: each input counts the 5 s after it, while visible.
   let actSid = '';
@@ -84,7 +77,7 @@ export function startViews(h: Hub, o: ViewsOptions) {
   function closeActive(t = now()) {
     acc += Math.max(0, Math.min(t, until) - mark);
     mark = until = t;
-    storage.set('sessionStorage', '_sq_act', `${actSid}|${actBase + acc}`);
+    if (h.store()) storage.set('sessionStorage', '_sq_act', `${actSid}|${actBase + acc}`);
   }
   function resetActive(sid: string) {
     const [s, ms] = (storage.get('sessionStorage', '_sq_act') || '').split('|');
@@ -152,8 +145,10 @@ export function startViews(h: Hub, o: ViewsOptions) {
       loading_type: type,
       navigation_type: navigationType,
     };
-    if (s.isNew && firstOfPage) Object.assign(startEvent, acquisition());
+    // The first view of a session always says where it came from ("" for none, or a rotation).
+    if (s.isNew && s.id !== lastSid) Object.assign(startEvent, firstOfPage ? acquisition() : { referrer: '' });
     firstOfPage = false;
+    lastSid = s.id;
     current = { id, sid: s.id, url, base: h.url(location.href), start: startEvent.t, startEvent, seq: 0, ended: false, errors: 0, actions: 0, frustrations: 0, activeAtStart: activeTotal(), m: {} };
     if (!initial) initial = current;
     measureScroll();
@@ -184,9 +179,7 @@ export function startViews(h: Hub, o: ViewsOptions) {
   }
 
   function acquisition(): Record<string, unknown> {
-    const out: Record<string, unknown> = {};
-    const ref = strict(document.referrer);
-    if (ref) out.referrer = ref;
+    const out: Record<string, unknown> = { referrer: strict(document.referrer) || '' };
     try {
       const q = new URLSearchParams(location.search);
       const utm: Record<string, string> = {};

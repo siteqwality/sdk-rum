@@ -1,37 +1,13 @@
 // FNV-1a 32 over UTF-8 (shared with core-rs `common::rum::fingerprint::fnv1a32`) and ids.
 import { now } from './util';
 
+// Made on first use, so loading the script never needs it.
+let utf8: TextEncoder | undefined;
+
+/** Over the UTF-8 bytes; a lone surrogate encodes as U+FFFD, as TextEncoder does. */
 export function fnv1a32(text: string): number {
   let h = 0x811c9dc5;
-  const add = (b: number) => {
-    h = Math.imul(h ^ b, 0x01000193) >>> 0;
-  };
-  for (let i = 0; i < text.length; i++) {
-    let c = text.charCodeAt(i);
-    if (c >= 0xd800 && c < 0xdc00 && i + 1 < text.length) {
-      const d = text.charCodeAt(i + 1);
-      if (d >= 0xdc00 && d < 0xe000) {
-        c = 0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00);
-        i++;
-      }
-    }
-    // A lone surrogate encodes as U+FFFD, as TextEncoder does.
-    if (c >= 0xd800 && c < 0xe000) c = 0xfffd;
-    if (c < 0x80) add(c);
-    else if (c < 0x800) {
-      add(0xc0 | (c >> 6));
-      add(0x80 | (c & 63));
-    } else if (c < 0x10000) {
-      add(0xe0 | (c >> 12));
-      add(0x80 | ((c >> 6) & 63));
-      add(0x80 | (c & 63));
-    } else {
-      add(0xf0 | (c >> 18));
-      add(0x80 | ((c >> 12) & 63));
-      add(0x80 | ((c >> 6) & 63));
-      add(0x80 | (c & 63));
-    }
-  }
+  for (const b of (utf8 ||= new TextEncoder()).encode(text)) h = Math.imul(h ^ b, 0x01000193) >>> 0;
   return h;
 }
 

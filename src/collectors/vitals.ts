@@ -1,7 +1,7 @@
 // Web Vitals with attribution (design 5.6), ported from web-vitals 5 to fit the core budget:
 // the same metric definitions, finalisation rules and attribution sub-parts.
 import type { Hub } from '../hub';
-import { round, cut, read, on } from '../core/util';
+import { round, cut, read, on, observe, navEntry as nav } from '../core/util';
 import { recentFrames } from './frames';
 
 export type VitalSink = (fields: Record<string, unknown>, metric: string, value: number) => void;
@@ -39,19 +39,6 @@ export function selector(node: Node | null | undefined): string | undefined {
   }
   return sel || undefined;
 }
-
-function observe(type: string, cb: (entries: PerformanceEntry[]) => void, extra: Record<string, unknown> = {}): PerformanceObserver | undefined {
-  try {
-    if (!PerformanceObserver.supportedEntryTypes?.includes(type)) return undefined;
-    const po = new PerformanceObserver((l) => cb(l.getEntries()));
-    po.observe({ type, buffered: true, ...extra } as PerformanceObserverInit);
-    return po;
-  } catch {
-    return undefined;
-  }
-}
-
-const nav = () => read(() => performance.getEntriesByType('navigation')[0]) as (PerformanceNavigationTiming & { activationStart?: number }) | undefined;
 
 export function startVitals(h: Hub, sink: VitalSink): void {
   const start = () => {

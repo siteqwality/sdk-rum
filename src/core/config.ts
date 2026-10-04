@@ -35,7 +35,7 @@ const defaults = (): Omit<SdkConfig, 'application_id' | 'rules'> => ({
     resource_exclusions: [],
     network: { header_allowlist: ['content-type', 'x-request-id'], body_urls: [], trace_urls: [], max_body_bytes: 10_240 },
     console: ['error', 'warn'],
-    errors: { ignore: [], deny_urls: [], suppressed_keys: [] },
+    errors: { ignore: [], deny_urls: [], suppressed_keys: [], console_errors_as_issues: false },
     frustration_ignore_selectors: [],
   },
   limits: { idle_pause_ms: 300_000, session_max_ms: 14_400_000, dnr: false },

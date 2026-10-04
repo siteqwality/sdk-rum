@@ -120,6 +120,59 @@ describe('fetch', () => {
     expect(rows.find((r) => String(r.url).endsWith('/api/other'))!.req_body).toBeUndefined();
   });
 
+  it('never reads an event stream, and reads at most max_body_bytes of any other body', async () => {
+    const net = analyze({ capture: { network: { body_urls: ['/api/'], max_body_bytes: 1000 } } });
+    const base = net.fetch.getMockImplementation()!;
+    // Streams that never end: the page keeps reading, the row must not wait for them.
+    const endless = () =>
+      new ReadableStream<Uint8Array>({
+        pull(c) {
+          c.enqueue(new TextEncoder().encode('{"chunk":"' + 'x'.repeat(500) + '"}\n'));
+          return new Promise((r) => setTimeout(r, 5));
+        },
+      });
+    net.fetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/sse')) return Promise.resolve(new Response(endless(), { headers: { 'content-type': 'text/event-stream' } }));
+      if (url.includes('/api/ndjson')) return Promise.resolve(new Response(endless(), { headers: { 'content-type': 'application/x-ndjson' } }));
+      return base(input, init);
+    });
+    let pageRead = '';
+    const rows = await run(net, async () => {
+      const sse = await fetch('/api/sse');
+      const reader = sse.body!.getReader();
+      pageRead = new TextDecoder().decode((await reader.read()).value);
+      await fetch('/api/ndjson');
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    expect(pageRead).toContain('chunk');
+    const sse = rows.find((r) => String(r.url).endsWith('/api/sse'))!;
+    const nd = rows.find((r) => String(r.url).endsWith('/api/ndjson'))!;
+    expect(sse.res_body).toBeUndefined();
+    expect(String(nd.res_body).length).toBeLessThanOrEqual(1100);
+    expect(nd.truncated).toBe(true);
+  });
+
+  it('folds repeated failures per view into one Observe row with err_n', async () => {
+    const rows = await run(stubNetwork(), async () => {
+      for (let i = 0; i < 12; i++) await fetch('/api/fail');
+    });
+    const fail = rows.filter((r) => String(r.url).endsWith('/api/fail'));
+    expect(fail).toHaveLength(2);
+    expect(fail[0].n).toBeUndefined();
+    expect(fail[1]).toMatchObject({ status: 500, n: 11, err_n: 11 });
+  });
+
+  it('matches body_urls and trace_urls as core-rs patterns: substrings or /regex/', async () => {
+    const net = analyze({ capture: { network: { trace_urls: ['/\\/api\\/v\\d+\\//'], body_urls: ['login'], max_body_bytes: 1000 } } });
+    const rows = await run(net, async () => {
+      await fetch('/api/v2/orders');
+      await fetch('/fr/login', { method: 'POST', body: '{"a":1}' });
+    });
+    expect(new Headers(net.app.find((a) => a.url.includes('/api/v2/orders'))!.init!.headers).get('traceparent')).toMatch(/^00-/);
+    expect(rows.find((r) => String(r.url).endsWith('/fr/login'))!.req_body).toBe('{"a":1}');
+  });
+
   it('aggregates successful repeats per view into one row with count and percentiles', async () => {
     const net = analyze();
     const rows = await run(net, async () => {

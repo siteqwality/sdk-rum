@@ -1,15 +1,18 @@
 // fetch and XHR (design 5.6, B11): method, minimised URL, status, error kind and timing phases
-// from resource timing. Failures are Observe; successes are Analyze, repeats aggregated per 30 s.
+// from resource timing. Failures are Observe, successes Analyze; repeats of either fold per 30 s.
 import type { SqEvent } from '../types';
 import { OBSERVE, ANALYZE, type Hub } from '../hub';
 import { uuid, randomBytes, toHex } from '../core/hash';
 import { redactBody, allowedHeaders } from '../core/sanitize';
-import { createExclusionMatcher, timing } from './resources';
+import { timing } from './resources';
+import { textPatterns } from '../core/patterns';
 import { now, perfNow, round, byteLength, pct, read } from '../core/util';
 
 const JOIN_WAIT_MS = 5_000;
 const AGGREGATE_MS = 30_000;
 const MAX_PENDING = 100;
+/** A response body read gives up after this, so a long stream never holds its row. */
+const BODY_WAIT_MS = 10_000;
 
 interface Req {
   method: string;
@@ -63,8 +66,8 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     const net = h.cfg().capture.network;
     if (net !== cfgRef) {
       cfgRef = net;
-      traceMatch = createExclusionMatcher(net.trace_urls);
-      bodyMatch = createExclusionMatcher(net.body_urls);
+      traceMatch = textPatterns(net.trace_urls);
+      bodyMatch = textPatterns(net.body_urls);
       headerNames = allowedHeaders(net.header_allowlist);
     }
     return net;
@@ -91,25 +94,30 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
   // Entries that arrived before their request settled, newest last.
   const early: PerformanceResourceTiming[] = [];
 
+  /** Timing phases onto the row; the response size the page saw wins. */
+  function join(row: Row, e: PerformanceResourceTiming): void {
+    used.add(e);
+    for (const [k, v] of Object.entries(phases(e))) if (v !== undefined && (k !== 'res_bytes' || !row.res_bytes)) row[k] = v;
+  }
+
   function joinNow(req: Req, row: Row): boolean {
     const entries = read(() => performance.getEntriesByName(req.url, 'resource')) as PerformanceResourceTiming[] | undefined;
     const e = early.find((x) => matches(req, x)) ?? entries?.find((x) => matches(req, x));
-    if (!e) return false;
-    used.add(e);
-    for (const [k, v] of Object.entries(phases(e))) if (v !== undefined && (k !== 'res_bytes' || !row.res_bytes)) row[k] = v;
-    return true;
+    if (e) join(row, e);
+    return !!e;
   }
 
-  // Aggregation of successful repeats: first occurrence per view alone, the rest per 30 s.
+  // Repeats of one request and outcome: the first per view alone, the rest per 30 s (failures
+  // too, so a page polling a failing endpoint costs one row per 30 s).
   let seenView = '';
   const seen = new Set<string>();
-  const buckets = new Map<string, { row: Row; n: number; d: number[]; bytes: number }>();
+  const buckets = new Map<string, { row: Row; n: number; d: number[]; bytes: number; failed: boolean }>();
   let bucketTimer: ReturnType<typeof setTimeout> | null = null;
 
   function flushBuckets(): void {
     if (bucketTimer) clearTimeout(bucketTimer);
     bucketTimer = null;
-    for (const { row, n, d, bytes } of buckets.values()) {
+    for (const { row, n, d, bytes, failed } of buckets.values()) {
       const p50 = round(pct(d, 0.5));
       h.emit(
         {
@@ -120,35 +128,38 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
           method: row.method,
           url: row.url,
           status: row.status,
+          ...(row.error_kind ? { error_kind: row.error_kind } : {}),
           initiator: row.initiator,
           duration_ms: p50,
           ...(bytes ? { res_bytes: bytes } : {}),
           n,
           p50_ms: p50,
           p95_ms: round(pct(d, 0.95)),
+          ...(failed ? { err_n: n } : {}),
         },
-        ANALYZE,
+        failed ? OBSERVE : ANALYZE,
         { kind: 'network' },
       );
     }
     buckets.clear();
   }
 
-  function success(row: Row): void {
+  function success(row: Row, failed = false): void {
     if (row.view_id !== seenView) {
       flushBuckets();
       seen.clear();
       seenView = String(row.view_id);
     }
-    const key = `${row.method} ${row.url} ${row.status}`;
+    const key = `${row.method} ${row.url} ${row.status} ${row.error_kind}`;
     if (!seen.has(key)) {
       seen.add(key);
-      h.emit(row, ANALYZE, { kind: 'network' });
+      h.emit(row, failed ? OBSERVE : ANALYZE, { kind: 'network' });
+      if (failed) o.failed(row);
       return;
     }
     let b = buckets.get(key);
     if (!b) {
-      b = { row, n: 0, d: [], bytes: 0 };
+      b = { row, n: 0, d: [], bytes: 0, failed };
       buckets.set(key, b);
       if (!bucketTimer) bucketTimer = setTimeout(flushBuckets, AGGREGATE_MS);
     }
@@ -162,6 +173,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     const abs = absolute(url);
     if (h.isOwn(abs)) return null;
     const net = matchers();
+    const clean = h.url(abs);
     const req: Req = {
       method: String(method || 'GET').toUpperCase(),
       url: abs,
@@ -170,10 +182,10 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
       initiator,
       view: h.viewId(),
       reqHeaders: headers,
-      body: net.max_body_bytes > 0 && bodyMatch(abs),
+      body: net.max_body_bytes > 0 && bodyMatch(clean),
       done: o.netStart(),
     };
-    if (traceMatch(abs)) req.trace = [toHex(randomBytes(16)), toHex(randomBytes(8))];
+    if (traceMatch(clean)) req.trace = [toHex(randomBytes(16)), toHex(randomBytes(8))];
     return req;
   }
 
@@ -218,8 +230,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
       if (truncated) row.truncated = true;
       if (status === 0 || status >= 400) {
         joinNow(req, row);
-        h.emit(row, OBSERVE, { kind: 'network' });
-        o.failed(row);
+        success(row, true);
       } else if (!joinNow(req, row)) {
         if (waiting.length >= MAX_PENDING) success(waiting.shift()!.row);
         const w = { req, row, timer: setTimeout(() => settleWaiting(w), JOIN_WAIT_MS) };
@@ -236,7 +247,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     success(w.row);
   }
 
-  function readBody(req: Req, get: () => Promise<string> | string | undefined): Promise<string | undefined> {
+  function readBody(req: Req, get: () => Promise<string | undefined> | string | undefined): Promise<string | undefined> {
     if (!req.body) return Promise.resolve(undefined);
     try {
       return Promise.resolve(get()).catch(() => undefined);
@@ -245,7 +256,28 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     }
   }
 
-  const textual = (type: string | null) => !!type && /json|text|xml|x-www-form-urlencoded/i.test(type);
+  // Event streams never end, so they are never read.
+  const textual = (type: string | null | undefined) => !!type && /json|xml|form-urlencoded|text\/(?!event-stream)/i.test(type);
+
+  /** At most `max_body_bytes` (and a little) of a fetch response, then the copy is cancelled. */
+  async function head(res: Response): Promise<string | undefined> {
+    const reader = textual(res.headers.get('content-type')) ? res.clone().body?.getReader() : undefined;
+    if (!reader) return undefined;
+    const max = h.cfg().capture.network.max_body_bytes;
+    const dec = new TextDecoder();
+    const timer = setTimeout(() => void reader.cancel().catch(() => {}), BODY_WAIT_MS);
+    let out = '';
+    try {
+      for (let r = await reader.read(); !r.done; r = await reader.read()) {
+        out += dec.decode(r.value, { stream: true });
+        if (out.length > max) break;
+      }
+    } finally {
+      clearTimeout(timer);
+      void reader.cancel().catch(() => {});
+    }
+    return out;
+  }
 
   // fetch
   const nativeFetch = window.fetch;
@@ -277,7 +309,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
         p.then(
           (res) => {
             try {
-              complete(r, res.status, undefined, (n) => res.headers.get(n), readBody(r, () => (textual(res.headers.get('content-type')) ? res.clone().text() : undefined)));
+              complete(r, res.status, undefined, (n) => res.headers.get(n), readBody(r, () => head(res)));
             } catch {
               // Monitoring must never break the host page.
             }
@@ -337,6 +369,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
             try {
               const status = kind ? 0 : xhr.status;
               const text = () => {
+                if (!textual(xhr.getResponseHeader('content-type'))) return undefined;
                 if (xhr.responseType === '' || xhr.responseType === 'text') return xhr.responseText;
                 if (xhr.responseType === 'json') return JSON.stringify(xhr.response);
                 return undefined;
@@ -359,8 +392,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     entry(e: PerformanceResourceTiming): void {
       for (const w of [...waiting]) {
         if (matches(w.req, e)) {
-          used.add(e);
-          for (const [k, v] of Object.entries(phases(e))) if (v !== undefined && (k !== 'res_bytes' || !w.row.res_bytes)) w.row[k] = v;
+          join(w.row, e);
           settleWaiting(w);
           return;
         }

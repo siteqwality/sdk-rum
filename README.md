@@ -117,7 +117,8 @@ every tab.
 
 ## Sessions and storage
 
-A session ends after 15 minutes without user input (pointer, key, scroll, touch, the tab becoming
+The first view of a session carries its referrer (`""` for a direct visit), UTM parameters and
+click-id type. A session ends after 15 minutes without user input (pointer, key, scroll, touch, the tab becoming
 visible) and lasts at most 4 hours. The SDK's own sends never keep it alive. Tabs share the session
 through a first-party cookie; each tab has its own window id.
 
@@ -127,8 +128,12 @@ through a first-party cookie; each tab has its own window id.
 | `_sq_w` | `sessionStorage` | Window id of this tab |
 | `_sq_aid` | `localStorage` | Anonymous id, 13 months; not set without consent or under GPC |
 | `_sq_cfg_<app>` | `localStorage` | Cached config |
-| `_sq_bgt` | as the session | Request budget counters |
+| `_sq_bgt`, `_sq_bgr` | as the session | Request budget counters (core, replay) |
+| `_sq_rseq`, `_sq_rl` | as the session | Replay segment numbers; which tab records |
 | `_sq_optout` | `localStorage` | Opt-out |
+
+Nothing is stored while consent is pending or with `persistence: 'memory'`. Withdrawing consent
+removes every key but the opt-out.
 
 ## Consent, GPC and opt-out
 
@@ -149,7 +154,13 @@ RegExp, on the message trimmed and without a leading `Uncaught `), errors whose 
 one with a `repeat` count; a burst of one error sends 10, then 1 per 10 s; a page load sends at most
 500.
 
-Each error carries its stack, up to three `cause` levels, the last 30 breadcrumbs (clicks,
+The application's ignore and deny lists use the intake's pattern language: a case-sensitive
+substring, or a regular expression written `/…/` (`/…/i` ignores case). Ignore patterns match the
+message, or the type and message (`TypeError: x is null`). The SDK applies a deny pattern only when
+the top frame is surely the page's own code; the intake decides the rest. With "console errors as
+issues" on, `console.error` calls become errors with `handling: "console"`.
+
+Each error carries the page `url`, its stack, up to three `cause` levels, the last 30 breadcrumbs (clicks,
 navigations, failed requests, console), the Debug IDs of bundles built with our plugins, and an
 `error_key`: a hash of the type, the message with digits removed and the top frame's normalised
 path, so an error groups the same across deploys and browsers.
@@ -170,9 +181,10 @@ SiteQwalityRUM.init({
 Runs for errors, views, actions, custom events, network rows and console lines, on a copy. Return
 `false` or `null` to drop (views cannot be dropped), an object to replace, or nothing to keep your
 in-place changes. Only fields the event already has change, and only to a value of the same type;
-`k`, `t`, `view_id`, `id`, `seq`, `final` and `error_key` never change. URLs are minimised again and
-messages and stacks scrubbed again; an error's `error_key` follows your changes. It must return
-synchronously; if it throws, the event is sent unchanged.
+`k`, `t`, `view_id`, `id`, `seq`, `final` and `error_key` never change. What you change is minimised
+and scrubbed again (URLs, stacks, text, nested fields included); what you leave alone is sent as
+the SDK built it, and an error's `error_key` follows your changes. It must return synchronously; if
+it throws, the event is sent unchanged.
 
 ## URL minimisation
 
@@ -194,6 +206,11 @@ applies the same rules server-side.
 - **Pauses**: while the tab is hidden, after 5 minutes without input (pointer moves count), and on
   never-record URLs, rrweb stops and nothing is sent. It resumes with a full snapshot, and the gap
   is marked in the replay. Recording never outlives its session.
+- **One tab at a time**: the tabs of a session share it, and the focused, visible tab records. A
+  tab that takes over starts with a full snapshot, so the session plays back in order (`status`
+  reason `other_tab` in the others). Per-tab replay comes with 2.1.
+- **Never-record URLs** use the same pattern language as the error lists: a substring of the page
+  URL, or `/regex/`.
 - **Segments** close at 30 s, 500 events or about 750 KB, and when the tab hides or closes; a full
   snapshot every 3 minutes keeps seeking fast. A page whose snapshot is over 4 MB is not recorded
   (`status` reason `too_large`).
@@ -205,9 +222,10 @@ watched it sends about two segments a minute.
 
 Failed requests (status 0, 4xx, 5xx, aborts, timeouts) are recorded for every session; successful
 ones in Analyze sessions, with repeats of one request folded into counts and percentiles per 30 s.
-Timing phases come from Resource Timing. A W3C `traceparent` header is added only to URLs listed
-under trace URLs, headers only from the app's allowlist (never credentials), and bodies only for
-body URLs, redacted and capped.
+Repeated failures fold the same way, with `err_n`, so a page polling a broken endpoint costs one row
+per 30 s. Timing phases come from Resource Timing. A W3C `traceparent` header is added only to URLs
+matching trace URLs, headers only from the app's allowlist (never credentials), and bodies only for
+body URLs, redacted, read up to the size cap (event streams never), and given up after 10 s.
 
 ## Limits that protect you
 
@@ -215,13 +233,14 @@ body URLs, redacted and capped.
   clock (it may run ahead after sleep, never behind), so a page that patches `Date` into the past
   or years ahead cannot skew times.
 - **Request budget**: whatever the cause (a bug, a retry storm, hidden tabs), the SDK makes at
-  most 5,000 requests and 250 MB per session, and 10,000 requests and 500 MB per page load. A 4 h
-  session at full activity with replay needs about 2,200 requests. Past a ceiling it stops sending,
-  says so once in the console and in `getStatus()` (reason `request_budget`), and resumes only in
-  a new session.
+  most 5,000 requests and 100 MB per session (10,000 and 200 MB per page load) for events, config
+  and identity, and apart from those 2,500 requests and 250 MB per session (5,000 and 500 MB per
+  page load) for replay. A 4 h session at full activity makes about 1,500 and 600. Past a ceiling
+  it stops sending (replay alone, when it is replay's), says so once in the console and in
+  `getStatus()` (reason `request_budget` or `replay_budget`), and resumes only in a new session.
 - **Transport**: batches every 10 s or 200 events, errors within 1 s, gzip above 1 KB, everything
-  queued sent when the tab hides, and a keepalive tail on close. 401 and 403 stop sending; other
-  failures back off.
+  queued sent when the tab hides, and a keepalive tail on close. 401 and 403 stop sending; 429, 408
+  and 5xx back off, and a `Retry-After` (up to a day) holds every send, on hide and close too.
 
 ## Debugging
 
@@ -234,11 +253,12 @@ dropped.
 
 | File | gzip | Budget |
 |---|---|---|
-| Core `sdk.min.js` | 25.6 KB | 26 KB (CI gate) |
-| Replay chunk `recorder-2.0.0.min.js` | 25.4 KB | 30 KB |
+| Core `sdk.min.js` | 25.9 KB | 26 KB (CI gate) |
+| Replay chunk `recorder-2.0.0.min.js` | 26.6 KB | 30 KB |
 
-The design targets 18 KB for the core; its estimate left out stack parsing and grouping, resource
-timing and the URL minimiser. Pages that never replay download only the core.
+The design estimated 18 KB for the core, leaving out stack parsing and grouping, resource timing and
+the URL minimiser; 26 KB is the accepted 2.0 budget, and CI fails a build past it. Pages that never
+replay download only the core.
 
 ## Migrating from 1.x
 

@@ -1,6 +1,6 @@
 import type { SqEvent } from '../types';
 import { ANALYZE, type Hub } from '../hub';
-import { epochOf, pct, read } from '../core/util';
+import { epochOf, pct, read, observe } from '../core/util';
 
 /** Allowed `initiatorType` values; anything else is sent as `other`. */
 export const RESOURCE_TYPES: readonly string[] = [
@@ -110,21 +110,10 @@ export function startResources(h: Hub, o: ResourcesOptions) {
     if (b.d.length < 1000) b.d.push(re.duration);
   }
 
-  if (typeof PerformanceObserver === 'function') {
-    try {
-      new PerformanceObserver((list) => {
-        for (const e of list.getEntries()) {
-          try {
-            handle(e as PerformanceResourceTiming);
-          } catch {
-            // One bad entry must not stop the rest.
-          }
-        }
-      }).observe({ type: 'resource', buffered: true });
-    } catch {
-      // No resource timing.
-    }
-  }
+  observe('resource', (list) => {
+    // One bad entry must not stop the rest.
+    for (const e of list) read(() => handle(e as PerformanceResourceTiming));
+  });
 
   return {
     flush,

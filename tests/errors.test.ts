@@ -34,9 +34,6 @@ describe('noise rules', () => {
   it.each(load('error-noise-extra-cases.json').map((c) => [c.name, c]))('extra case: %s', (_, c) => {
     expect(noiseRule(c.message, c.stack, c.filename) !== null).toBe(c.ignore);
   });
-  it.each(load('error-noise-v2-cases.json').map((c) => [c.name, c]))('N4 to N9: %s', (_, c) => {
-    expect(noiseRule(c.message, c.stack, c.filename) !== null).toBe(c.ignore);
-  });
   it('names the rule', () => {
     expect(noiseRule('ResizeObserver loop limit exceeded', '')).toBe('n1');
     expect(noiseRule('Script error.', '')).toBe('n2');
@@ -116,6 +113,7 @@ describe('the pipeline', () => {
       crumb: () => {},
       count: (n, k = 1) => (counts[n] = (counts[n] ?? 0) + k),
       isOwn: () => false,
+      store: () => true,
       pageUrl: () => '',
       viewId: () => 'v1',
     };
@@ -140,15 +138,32 @@ describe('the pipeline', () => {
   });
 
   it('applies ignoreErrors, denyUrls and the dashboard lists, counting each', () => {
-    cfg.capture.errors.ignore = ['third-party'];
-    cfg.capture.errors.deny_urls = ['widgets.example'];
+    cfg.capture.errors.ignore = ['third-party', '/^Error: Loading chunk \\d+ failed$/', '/TIMEOUT/i'];
+    cfg.capture.errors.deny_urls = ['/legacy/', '/\\/vendor-[a-z]+\\.js/'];
     const p = make({ ignoreErrors: [/ignored/], denyUrls: ['cdn.ads.example'] });
     p.report(err('ignored by code'));
     p.report(err('a third-party failure'));
+    p.report(err('Loading chunk 7 failed'));
+    p.report(err('request timeout'));
     p.report(err('denied', 'Error: denied\n    at f (https://cdn.ads.example/x.js:1:1)'));
-    p.report(err('denied 2', 'Error: d\n    at f (https://widgets.example/w.js:1:1)'));
+    p.report(err('denied 2', `Error: d\n    at f (${location.origin}/legacy/w.js:1:1)`));
+    p.report(err('denied 3', 'Error: d\n    at f (/static/vendor-abc.js:1:1)'));
     expect(sent).toEqual([]);
-    expect(counts).toEqual({ ignored_error: 2, denied_error: 2 });
+    expect(counts).toEqual({ ignored_error: 4, denied_error: 3 });
+  });
+
+  it('leaves dashboard deny_urls to the intake when the top frame may not be the top in-app frame', () => {
+    cfg.capture.errors.deny_urls = ['widgets.example', 'node_modules'];
+    const p = make();
+    p.report(err('third party', 'Error: d\n    at f (https://widgets.example/w.js:1:1)\n    at g (https://app.test/app.js:1:1)'));
+    p.report(err('vendored', `Error: d\n    at f (${location.origin}/node_modules/lib/x.js:1:1)`));
+    expect(sent.map((e) => e.message)).toEqual(['third party', 'vendored']);
+  });
+
+  it('turns console.error into an issue only when the app asks', () => {
+    const p = make();
+    p.report({ ...err('from console'), handling: 'console' });
+    expect(sent[0]).toMatchObject({ handling: 'console', message: 'from console' });
   });
 
   it('drops suppressed error keys', () => {

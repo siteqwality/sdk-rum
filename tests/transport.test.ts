@@ -60,6 +60,7 @@ beforeEach(() => {
 afterEach(() => {
   hidden(false);
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('batches', () => {
@@ -116,17 +117,19 @@ describe('batches', () => {
     expect(calls[0].body.ctx).toMatchObject({ user: { id: 'u' } });
   });
 
-  it('gzips bodies over 1 KB while the page lives', async () => {
+  it('gzips bodies over 1 KB while the page lives', { timeout: 20_000 }, async () => {
     const t = make();
     t.push(ev(1, { big: 'x'.repeat(5000) }), ctx());
     t.push(ev(2), ctx());
     t.hide();
-    await drain();
+    // gzip runs on real streams (the zlib thread pool), which fake timers do not hurry.
+    await vi.waitFor(() => expect(calls).toHaveLength(1), { timeout: 15_000 });
     expect(calls[0].gzip).toBe(true);
     expect((calls[0].init.headers as Record<string, string>)['Content-Type']).toBe('application/octet-stream');
   });
 
   it('caps a batch at 500 events', async () => {
+    vi.stubGlobal('CompressionStream', undefined);
     const t = make();
     t.hold(true);
     t.hold(false);
@@ -134,8 +137,8 @@ describe('batches', () => {
     await drain();
     t.hide();
     await drain();
-    expect(calls.every((c) => c.body.events.length <= 500)).toBe(true);
     expect(calls.reduce((a, c) => a + c.body.events.length, 0)).toBe(700);
+    expect(calls.every((c) => c.body.events.length <= 500)).toBe(true);
   });
 
   it('drops the oldest past 1000 queued events and counts them', async () => {
@@ -174,6 +177,35 @@ describe('failures', () => {
     expect(stopped).toBe(true);
     expect(t.stopped).toBe(true);
     t.push(ev(2), ctx());
+    expect(t.size).toBe(0);
+  });
+
+  it('honours Retry-After: nothing goes on hide or pagehide until it passes', async () => {
+    const fail = vi.fn(async () => new Response('', { status: 429, headers: { 'Retry-After': '3600' } }));
+    const t = createTransport({ url: 'https://in.test/v2/batch', token: 'ct', fetch: fail as unknown as typeof fetch, count: () => {} });
+    t.push(ev(1), ctx());
+    t.flush();
+    await drain();
+    expect(fail).toHaveBeenCalledTimes(1);
+    t.push(ev(2), ctx());
+    hidden(true);
+    t.hide();
+    t.unload();
+    await drain();
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(fail).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops a batch the request budget refused, never retrying it', async () => {
+    const refuse = vi.fn(async () => {
+      throw Object.assign(new Error('request budget'), { name: 'SqBudget' });
+    });
+    const t = createTransport({ url: 'https://in.test/v2/batch', token: 'ct', fetch: refuse as unknown as typeof fetch, count: (name) => (counts[name] = (counts[name] ?? 0) + 1) });
+    t.push(ev(1), ctx());
+    t.flush();
+    await drain();
+    await vi.advanceTimersByTimeAsync(BACKOFF_MAX_MS * 2);
+    expect(refuse).toHaveBeenCalledTimes(1);
     expect(t.size).toBe(0);
   });
 

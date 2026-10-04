@@ -147,7 +147,7 @@ describe('errors', () => {
     await new Promise((r) => setTimeout(r, 1100));
     await settle();
     const [e] = net.events('error');
-    expect(e).toMatchObject({ error_type: 'TypeError', message: 'x is null', handling: 'unhandled', repeat: 1 });
+    expect(e).toMatchObject({ error_type: 'TypeError', message: 'x is null', handling: 'unhandled', repeat: 1, url: 'http://localhost:3000/' });
     expect(typeof e.error_key).toBe('number');
     expect(e.id).toMatch(/^[0-9a-f-]{36}$/);
   });
@@ -203,11 +203,48 @@ describe('consent and privacy signals', () => {
     expect(document.cookie).not.toContain('_sq_s=');
     expect(localStorage.getItem('_sq_aid')).toBeNull();
     expect(SiteQwalityRUM.getStatus()?.consent).toBe('pending');
+    // Nothing about the session or tab is stored while pending.
+    // (Earlier tests' instances stay attached and write their own ids.)
+    const { session_id, window_id } = SiteQwalityRUM.getStatus()!;
+    const stored = [...Object.values(localStorage), ...Object.values(sessionStorage)].join(' ');
+    expect(stored).not.toContain(session_id);
+    expect(stored).not.toContain(window_id);
     SiteQwalityRUM.setTrackingConsent('granted');
     await flush();
     expect(net.events('custom').map((e) => e.name)).toEqual(['a']);
     expect(document.cookie).toContain('_sq_s=');
-    expect(net.batches.at(-1)!.body.ctx.consent).toBe('granted');
+    // Held events go out as granted, or the intake would drop them.
+    expect(net.batches.map((b) => b.body.ctx.consent)).toEqual(net.batches.map(() => 'granted'));
+    expect(net.events('view_start')).toHaveLength(1);
+    expect(sessionStorage.getItem('_sq_w')).toBe(SiteQwalityRUM.getStatus()!.window_id);
+  });
+
+  it('withdrawing consent removes every key the SDK stored but the opt-out', async () => {
+    const net = await boot();
+    SiteQwalityRUM.addAction('a');
+    await flush();
+    expect(net.batches.length).toBeGreaterThan(0);
+    localStorage.setItem('_sq_optout', '0');
+    SiteQwalityRUM.setTrackingConsent('pending');
+    const left = [...Object.keys(localStorage), ...Object.keys(sessionStorage)].filter((k) => /^_?sq_/.test(k) && !k.startsWith('_sq_cfg_'));
+    expect(left).toEqual(['_sq_optout']);
+    expect(document.cookie).not.toContain('_sq_s=');
+  });
+
+  it('checks do-not-record identity only while it may send, and again once consent is granted', async () => {
+    const net = await boot({ trackingConsent: 'pending' }, stubNetwork(config({ limits: { dnr: true } })));
+    await settle(5);
+    const identity = () => net.fetch.mock.calls.filter((c) => String(c[0]).includes('/v2/identity')).length;
+    SiteQwalityRUM.setUser({ id: 'u1' });
+    await settle(5);
+    expect(identity()).toBe(0);
+    SiteQwalityRUM.setTrackingConsent('granted');
+    await settle(10);
+    expect(identity()).toBe(1);
+    SiteQwalityRUM.optOut();
+    SiteQwalityRUM.setUser({ id: 'u2' });
+    await settle(5);
+    expect(identity()).toBe(1);
   });
 
   it('not-granted drops everything and clears storage', async () => {
@@ -297,6 +334,39 @@ describe('beforeSend', () => {
     // Views can be edited but not dropped.
     expect(net.events('view_start')).toHaveLength(1);
     expect(SiteQwalityRUM.getStatus()?.dropped.before_send_dropped).toBe(1);
+  });
+
+  it('an identity hook changes nothing: stacks and error_key stay as the pipeline made them', async () => {
+    const make = () => {
+      const e = new Error('boom');
+      e.stack = 'Error: boom\n    at save (https://app.test/static/js/1696000000123.chunk.js:1:2)';
+      return e;
+    };
+    const plain = await boot();
+    SiteQwalityRUM.addError(make());
+    await flush();
+    const hooked = await boot({ beforeSend: (e) => e });
+    SiteQwalityRUM.addError(make());
+    await flush();
+    const [a] = plain.events('error');
+    const [b] = hooked.events('error');
+    expect(b.stack).toBe(a.stack);
+    expect(b.stack).toContain('1696000000123.chunk.js');
+    expect(b.error_key).toBe(a.error_key);
+  });
+
+  it('what a hook changes is minimised and scrubbed, nested fields included', async () => {
+    const net = await boot({
+      beforeSend: (e, kind) => {
+        if (kind === 'error') (e.context as Record<string, string>).note = 'mail jane@acme.test about https://x.test/a?token=1';
+        if (kind === 'custom') e.name = 'card 4242 4242 4242 4242';
+      },
+    });
+    SiteQwalityRUM.addError(new Error('x'), { note: 'original' });
+    SiteQwalityRUM.addAction('a');
+    await flush();
+    expect((net.events('error')[0].context as Record<string, string>).note).toBe('mail <email> about https://x.test/a');
+    expect(net.events('custom')[0].name).not.toContain('4242 4242');
   });
 
   it('a throwing hook sends the original', async () => {

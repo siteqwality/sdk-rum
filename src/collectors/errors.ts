@@ -5,6 +5,7 @@ import { OBSERVE, type Hub } from '../hub';
 import { uuid } from '../core/hash';
 import { parseStack, topFrame, normalisePath, splitErrorMessage, errorKey, hasLocation } from '../core/stack';
 import { cut, now, read, str, isHidden, strings, on, byteLength } from '../core/util';
+import { textPatterns } from '../core/patterns';
 
 export interface Cause {
   type: string;
@@ -17,7 +18,7 @@ export interface RawError {
   type: string;
   message: string;
   stack: string;
-  handling: 'unhandled' | 'unhandledrejection' | 'handled';
+  handling: 'unhandled' | 'unhandledrejection' | 'handled' | 'console';
   /** The message as Wave 1 read it, for the shared noise cases and ignoreErrors. */
   raw: string;
   filename?: string;
@@ -66,28 +67,33 @@ export function noiseRule(message: string, stack: string, filename = '', split =
   const m = normalizeMessage(message);
   if (/^ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)/.test(m)) return 'n1';
   const frames = schemes(stack);
-  if (!frames.length && (m === 'Script error.' || m === 'Script error')) return 'n2';
+  if (!frames.length && /^Script error\.?$/.test(m)) return 'n2';
   if (frames.length ? allExtension(frames) : allExtension(schemes(filename))) return 'n3';
   for (const [rule, re] of NOISE) if (re.test(split.trim())) return rule;
   return null;
 }
 
-/** A string matches as a substring, a RegExp is tested; anything else is skipped. */
-export function createMatcher(patterns: unknown): (text: string) => boolean {
-  const list = Array.isArray(patterns) ? patterns : [];
-  const strs = list.filter((p): p is string => typeof p === 'string' && p !== '');
-  const res = list.filter((p): p is RegExp => p instanceof RegExp);
-  if (!strs.length && !res.length) return () => false;
-  return (text) =>
-    strs.some((s) => text.includes(s)) ||
-    res.some((re) => {
-      try {
-        re.lastIndex = 0;
-        return re.test(text);
-      } catch {
-        return false;
-      }
-    });
+/** Init option lists: a string matches as a substring, a RegExp is tested; anything else is skipped. */
+export const createMatcher = (patterns: unknown) => textPatterns(patterns, false);
+
+/**
+ * Dashboard deny_urls match the top in-app frame (core-rs). The SDK drops only when the top frame
+ * surely is that frame: same origin, relative or bundler, and not vendor or SDK code.
+ */
+function surelyInApp(file: string): boolean {
+  const path = file.trim().split(/[?#]/)[0];
+  if (/(^|\/)node_modules(\/|$)|\/@siteqwality\/rum|webpack\/(runtime\/|bootstrap)|\(webpack\)\//.test(path)) return false;
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(path)?.[1].toLowerCase();
+  return !scheme || /^(webpack(-internal)?|turbopack|ng)$/.test(scheme) || path.startsWith(`${location.origin}/`);
+}
+
+/** Message and non-frame stack lines are scrubbed; frame lines keep their file paths. */
+export function cleanStack(h: Hub, stack: string): string {
+  return h
+    .text(cut(stack, MAX_STACK))
+    .split('\n')
+    .map((line) => (parseStack(line).some((f) => hasLocation(f.file)) ? line : h.scrub(line)))
+    .join('\n');
 }
 
 function textOf(v: unknown): string {
@@ -103,36 +109,27 @@ function textOf(v: unknown): string {
 const errorLike = (v: unknown): v is { name?: unknown; message?: unknown; stack?: unknown; cause?: unknown } =>
   !!v && typeof v === 'object' && (typeof read(() => (v as Error).message) === 'string' || typeof read(() => (v as Error).stack) === 'string');
 
+/** Type, message and stack of an Error-like value, or of any value as text. */
+function parts(v: unknown, fallbackType = 'Error'): Cause {
+  if (!errorLike(v)) return { type: fallbackType, message: textOf(v), stack: '' };
+  return { type: str(read(() => v.name)) || 'Error', message: str(read(() => v.message)) ?? '', stack: str(read(() => v.stack)) ?? '' };
+}
+
 function causes(err: unknown): Cause[] | undefined {
   const out: Cause[] = [];
-  let c: unknown = read(() => (err as { cause?: unknown }).cause);
-  for (let i = 0; i < 3 && c !== undefined && c !== null; i++) {
-    if (!errorLike(c)) {
-      out.push({ type: 'Error', message: textOf(c), stack: '' });
-      break;
-    }
-    const e = c;
-    out.push({ type: str(read(() => e.name)) || 'Error', message: str(read(() => e.message)) ?? '', stack: str(read(() => e.stack)) ?? '' });
-    c = read(() => e.cause);
+  for (let c = err; out.length < 3; ) {
+    c = read(() => (c as { cause?: unknown }).cause);
+    if (c === undefined || c === null) break;
+    out.push(parts(c));
+    if (!errorLike(c)) break;
   }
   return out.length ? out : undefined;
 }
 
 /** addError and rejections: an Error, anything Error-like, or any value. */
 export function fromValue(v: unknown, handling: RawError['handling'] = 'handled', fallbackType = 'Error'): RawError {
-  if (errorLike(v)) {
-    const message = str(read(() => v.message)) ?? '';
-    return {
-      type: str(read(() => v.name)) || 'Error',
-      message,
-      stack: str(read(() => v.stack)) ?? '',
-      handling,
-      raw: message,
-      cause: causes(v),
-    };
-  }
-  const message = textOf(v);
-  return { type: fallbackType, message, stack: '', handling, raw: message };
+  const p = parts(v, fallbackType);
+  return { ...p, handling, raw: p.message, cause: errorLike(v) ? causes(v) : undefined };
 }
 
 /** A window `error` event, or null for anything else. */
@@ -212,14 +209,10 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
     return true;
   }
 
-  /** Message and non-frame stack lines are scrubbed; frame lines keep their file paths. */
-  function cleanStack(stack: string): string {
-    const urls = h.text(cut(stack, MAX_STACK));
-    return urls
-      .split('\n')
-      .map((line) => (parseStack(line).some((f) => hasLocation(f.file)) ? line : h.scrub(line)))
-      .join('\n');
-  }
+  // Dashboard lists, rebuilt when the config changes.
+  let listsOf: unknown;
+  let cfgIgnore = textPatterns([]);
+  let cfgDeny = cfgIgnore;
 
   function attachIds(frames: string[]): Record<string, string> | undefined {
     const reg = read(() => (globalThis as { _sqDebugIds?: object })._sqDebugIds);
@@ -252,19 +245,26 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
     report(raw: RawError, t: number = now(), context?: unknown): void {
       if (inHook) return;
       const cfg = h.cfg().capture.errors;
+      if (cfg !== listsOf) {
+        listsOf = cfg;
+        cfgIgnore = textPatterns(cfg.ignore);
+        cfgDeny = textPatterns(cfg.deny_urls);
+      }
       const noise = noiseRule(raw.raw || raw.message, raw.stack, raw.filename, raw.message);
       if (noise) return h.count(`noise_${noise}`);
-      const full = `${raw.type}: ${raw.message}`;
-      if (ignore(normalizeMessage(raw.raw || raw.message)) || ignore(full) || cfg.ignore.some((p) => full.includes(p))) {
+      const msg = normalizeMessage(raw.message);
+      const full = `${raw.type}: ${msg}`;
+      // As core-rs is_ignored: the message, or type and message.
+      if (ignore(normalizeMessage(raw.raw || raw.message)) || ignore(full) || cfgIgnore(msg) || cfgIgnore(full)) {
         return h.count('ignored_error');
       }
-      const frames = parseStack(raw.stack);
-      const top = topFrame(frames)?.file ?? raw.filename ?? '';
-      if (top && (deny(top) || cfg.deny_urls.some((p) => top.includes(p)))) return h.count('denied_error');
+      const frame = topFrame(parseStack(raw.stack))?.file;
+      const top = frame ?? raw.filename ?? '';
+      if ((top && deny(top)) || (frame && surelyInApp(frame) && cfgDeny(frame))) return h.count('denied_error');
       if (isHidden() && o.orphan()) return;
 
       const message = h.scrub(h.text(cut(raw.message, MAX_MESSAGE)));
-      const stack = cleanStack(raw.stack);
+      const stack = cleanStack(h, raw.stack);
       const key = errorKey(raw.type, message, normalisePath(topFrame(parseStack(stack))?.file ?? ''));
       if (cfg.suppressed_keys.includes(key)) return h.count('suppressed_error');
       if (sent >= MAX_ERRORS_PER_PAGE) return h.count('rate_limited_error');
@@ -281,12 +281,14 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
       const ctx = strings(context) ?? {};
       const fingerprint = ctx['sq.fingerprint'];
       delete ctx['sq.fingerprint'];
-      const cause = raw.cause?.map((c) => ({ type: c.type, message: h.scrub(h.text(cut(c.message, MAX_MESSAGE))), stack: cleanStack(c.stack) }));
+      const cause = raw.cause?.map((c) => ({ type: c.type, message: h.scrub(h.text(cut(c.message, MAX_MESSAGE))), stack: cleanStack(h, c.stack) }));
       const e: SqEvent = {
         k: 'error',
         t,
         view_id: h.viewId(),
         id: uuid(),
+        // The page, so the intake places the error (and checks never_record_urls) on its own.
+        url: h.pageUrl(),
         error_type: cut(raw.type, 128),
         message,
         stack,

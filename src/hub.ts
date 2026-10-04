@@ -33,6 +33,8 @@ export interface Hub {
   crumb(k: string, msg: string, data?: Record<string, unknown>): void;
   count(name: string, n?: number): void;
   isOwn(url: string): boolean;
+  /** Whether the SDK may write storage (consent granted, persistence allows it). */
+  store(): boolean;
   /** The current page URL, minimised. */
   pageUrl(): string;
   viewId(): string;

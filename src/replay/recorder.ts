@@ -2,7 +2,7 @@ import type { UrlSanitizer } from '../core/url';
 import type { SdkConfig } from '../types';
 import type { record as rrwebRecord } from '@rrweb/record';
 import { byteLength } from '../core/util';
-import { SegmentSequence } from './sequence';
+import { SegmentSequence, type SeqStore } from './sequence';
 import { MAX_SEGMENT_BYTES, type ReplaySegment } from './transport';
 
 export type { ReplaySegment } from './transport';
@@ -369,6 +369,10 @@ export interface RecorderOptions {
   onStatus?: (state: ReplayState, reason?: string) => void;
   /** The SDK's clock: rrweb stamps events with Date, which pages patch. */
   now?: () => number;
+  /** Where segment numbers live: shared by the session's tabs, this tab, or memory. */
+  store?: SeqStore;
+  /** Starts paused for this reason: nothing is captured until resume(). */
+  paused?: string;
 }
 
 export class ReplayRecorder {
@@ -396,7 +400,7 @@ export class ReplayRecorder {
 
   start(o: RecorderOptions): void {
     if (this.buffer) return;
-    const sequence = new SegmentSequence(o.sessionId);
+    const sequence = new SegmentSequence(o.sessionId, o.store);
     this.buffer = new SegmentBuffer(o.onSegment, () => sequence.take());
     this.record = o.record;
     this.sanitizeUrl = o.url;
@@ -404,27 +408,32 @@ export class ReplayRecorder {
     this.now = o.now;
     this.clean = (a) => cleanAttributes(a, o.url, o.text, o.privacy.scrub);
     this.options = recordOptions(o.privacy);
-    this.capture();
+    if (o.paused) {
+      this.paused = true;
+      this.onStatus?.('paused', o.paused);
+    } else this.capture();
     window.addEventListener('pagehide', this.onPageHide);
     window.addEventListener('pageshow', this.onPageShow);
     document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
-  /** Stops recording and sends whatever the open segment holds. */
-  stop(): void {
+  /** Stops recording and sends whatever the open segment holds, or drops it (`discard`). */
+  stop(discard = false): void {
     this.generation++;
     this.stopRecord?.();
     this.stopRecord = null;
     window.removeEventListener('pagehide', this.onPageHide);
     window.removeEventListener('pageshow', this.onPageShow);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
-    this.buffer?.flush();
+    if (discard) this.buffer?.discard();
+    else this.buffer?.flush();
     this.buffer = null;
   }
 
   /** Pauses on a never-record page; a custom `sq-pause` event marks the gap. */
   pause(reason: string): void {
-    if (this.paused || !this.buffer || !this.record) return;
+    if (!this.buffer || !this.record) return;
+    if (this.paused) return this.onStatus?.('paused', reason);
     this.paused = true;
     try {
       this.record.addCustomEvent('sq-pause', { reason });
@@ -461,7 +470,8 @@ export class ReplayRecorder {
         ...this.options,
         emit: (event) => this.onEvent(event, generation, (id) => mirror.getNode(id)),
       }) ?? null;
-    this.onStatus?.('recording');
+    // A snapshot too large to send has already stopped this recording.
+    if (generation === this.generation) this.onStatus?.('recording');
   }
 
   private onEvent(event: unknown, generation: number, getNode: GetNode): void {

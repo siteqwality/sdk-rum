@@ -154,15 +154,18 @@ describe('ReplayRecorder with rrweb', () => {
     document.body.innerHTML = `<p id="p">hello</p><div>${'x'.repeat(MAX_SEGMENT_BYTES)}</div>`;
     const transport = new ReplayTransport('https://replay.example/v1/segments', 'ct');
 
-    await start((s) => void transport.sendSegment('session-1', s));
+    const states: Array<string | undefined> = [];
+    recorder.start({ ...startOpts('session-1', (s) => void transport.sendSegment('session-1', s)), onStatus: (state, why) => states.push(why ?? state) });
     await settle();
+    // rrweb snapshots inside record(): the stop is the last word, never a later 'recording'.
+    expect(states).toEqual(['too_large']);
     await mutate('changed');
     vi.advanceTimersByTime(CHECKOUT_EVERY_MS * 2);
     await settle();
     vi.unstubAllGlobals();
 
     expect(sent).toEqual([]);
-    expect(sessionStorage.getItem('sq_rum_replay_next:session-1')).toBeNull();
+    expect(sessionStorage.getItem('_sq_rseq')).toBeNull();
   });
 
   describe('hidden inputs', () => {

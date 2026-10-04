@@ -42,8 +42,7 @@ function boot(): void {
       // One bad entry must not stop the rest.
     }
   };
-  for (const entry of queue) if (isEntry(entry) && entry[0] === 'init') run(entry);
-  for (const entry of queue) if (isEntry(entry) && entry[0] !== 'init') run(entry);
+  for (const first of [true, false]) for (const entry of queue) if (isEntry(entry) && (entry[0] === 'init') === first) run(entry);
   // No init yet (deferred, or bad options): keep catching page errors until it runs.
   SiteQwalityRUM._holdEarly();
 

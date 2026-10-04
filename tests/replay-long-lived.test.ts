@@ -114,6 +114,18 @@ describe('a long-lived tab with a 1 s ticking clock', () => {
     expect(fullSnapshots(now.session_id)).toBe(1);
   });
 
+  it.each([
+    ['consent is withdrawn', () => SiteQwalityRUM.setTrackingConsent('pending')],
+    ['the user opts out', () => SiteQwalityRUM.optOut()],
+  ])('when %s, replay drops what it holds and sends nothing more', async (_, act) => {
+    await run(5 * SECOND);
+    const before = segmentCalls().length;
+    act();
+    await run(2 * MINUTE);
+    expect(segmentCalls().length).toBe(before);
+    SiteQwalityRUM.optIn();
+  });
+
   it('a never-record page is never snapshotted; recording starts on leaving it', async () => {
     SiteQwalityRUM.stopReplay();
     SiteQwalityRUM._reset();

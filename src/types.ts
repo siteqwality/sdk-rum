@@ -119,7 +119,7 @@ export interface SdkConfig {
     resource_exclusions: string[];
     network: { header_allowlist: string[]; body_urls: string[]; trace_urls: string[]; max_body_bytes: number };
     console: string[];
-    errors: { ignore: string[]; deny_urls: string[]; suppressed_keys: number[] };
+    errors: { ignore: string[]; deny_urls: string[]; suppressed_keys: number[]; console_errors_as_issues: boolean };
     frustration_ignore_selectors: string[];
   };
   limits: { idle_pause_ms: number; session_max_ms: number; dnr: boolean };

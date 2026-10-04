@@ -2,6 +2,7 @@
 // entries per 10 s per level, identical consecutive lines folded. Output is never changed.
 import { ANALYZE, type Hub } from '../hub';
 import { cut, read, now, perfNow } from '../core/util';
+import { cleanStack } from './errors';
 
 const LEVELS = ['error', 'warn', 'info', 'log', 'debug'] as const;
 const MAX_ENTRY = 2_048;
@@ -38,7 +39,8 @@ export function serialize(value: unknown, depth = 0, seen: unknown[] = []): stri
 
 export type Console = ReturnType<typeof startConsole>;
 
-export function startConsole(h: Hub, crumb: (message: string) => void) {
+/** `issue` gets console.error arguments when the app turns them into issues. */
+export function startConsole(h: Hub, crumb: (message: string) => void, issue?: (args: unknown[]) => void) {
   const wrapped = new Set<string>();
   const counts: Record<string, { n: number; at: number }> = {};
   let held: { level: string; message: string; stack?: string; t: number; view: string; repeat: number } | null = null;
@@ -61,7 +63,10 @@ export function startConsole(h: Hub, crumb: (message: string) => void) {
       const raw = args.map((a) => serialize(a)).join(' ');
       if (raw.startsWith(OWN_PREFIX)) return;
       const message = cut(h.scrub(h.text(cut(raw, MAX_ENTRY * 2))), MAX_ENTRY);
-      if (level === 'error') crumb(message);
+      if (level === 'error') {
+        crumb(message);
+        if (h.cfg().capture.errors.console_errors_as_issues) issue?.(args);
+      }
       if (!h.cfg().capture.console.includes(level)) return;
       if (held && held.level === level && held.message === message) {
         held.repeat++;
@@ -75,7 +80,7 @@ export function startConsole(h: Hub, crumb: (message: string) => void) {
       if (++c.n > RATE) return h.count('console_rate_limited');
       release();
       const err = args.find((a) => a instanceof Error) as Error | undefined;
-      const stack = err && typeof err.stack === 'string' ? cut(h.text(err.stack), MAX_ENTRY * 4) : undefined;
+      const stack = err && typeof err.stack === 'string' ? cleanStack(h, cut(err.stack, MAX_ENTRY * 4)) : undefined;
       held = { level, message, stack, t: now(), view: h.viewId(), repeat: 1 };
       timer = setTimeout(release, FOLD_MS);
     } finally {

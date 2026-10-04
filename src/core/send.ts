@@ -2,16 +2,22 @@
 // and network errors retry with backoff; 401 and 403 stop; any other 4xx drops the body.
 
 import { now } from './util';
+import { BUDGET } from './budget';
 
 /** Browsers cap keepalive bodies in flight at 64 KiB per page; this leaves headroom. */
 export const KEEPALIVE_MAX_BYTES = 60_000;
 export const BACKOFF_BASE_MS = 2_000;
 export const BACKOFF_MAX_MS = 5 * 60_000;
+/** Longest Retry-After honoured. */
+export const RETRY_AFTER_MAX_MS = 24 * 60 * 60_000;
 
 export type SendOutcome =
   | { kind: 'ok' }
   | { kind: 'retryable'; retryAfterMs?: number }
   | { kind: 'permanent'; status: number };
+
+/** Refused by the request budget: status 0, never retried. */
+const overBudget = (err: unknown): SendOutcome => ((err as Error | null)?.name === BUDGET ? { kind: 'permanent', status: 0 } : { kind: 'retryable' });
 
 let keepaliveInFlight = 0;
 
@@ -40,8 +46,8 @@ export function send(
       keepalive,
       credentials: 'omit',
     });
-  } catch {
-    return Promise.resolve({ kind: 'retryable' });
+  } catch (err) {
+    return Promise.resolve(overBudget(err));
   }
   if (keepalive) keepaliveInFlight += size;
   const done = () => {
@@ -52,9 +58,9 @@ export function send(
       done();
       return classifyResponse(res);
     },
-    () => {
+    (err) => {
       done();
-      return { kind: 'retryable' } as SendOutcome;
+      return overBudget(err);
     },
   );
 }
@@ -88,14 +94,14 @@ export function parseRetryAfter(value: string | null, at: number = now()): numbe
   return Number.isNaN(date) ? undefined : Math.max(0, date - at);
 }
 
-/** Exponential backoff with full jitter; Retry-After is a floor, never a shortcut. */
+/** Exponential backoff with full jitter; Retry-After is a floor, honoured up to a day. */
 export class Backoff {
   private failures = 0;
 
   next(retryAfterMs?: number): number {
     const ceiling = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** this.failures);
     this.failures++;
-    return Math.min(BACKOFF_MAX_MS, Math.max(Math.random() * ceiling, retryAfterMs ?? 0));
+    return Math.max(Math.random() * ceiling, Math.min(retryAfterMs ?? 0, RETRY_AFTER_MAX_MS));
   }
 
   reset(): void {

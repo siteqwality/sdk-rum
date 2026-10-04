@@ -8,18 +8,20 @@ import { createScrubber } from './core/sanitize';
 import { normalizeConfig, loadCachedConfig, saveCachedConfig, clearCachedConfig, fetchConfig, DEFAULT_CONFIG_BASE, CONFIG_MAX_AGE_MS } from './core/config';
 import { createSession, anonymousId, type Decision } from './core/session';
 import { createTransport, type Ctx } from './core/transport';
-import { createBudget } from './core/budget';
+import { createBudget, budgetError, CORE_KEY, CORE_LIMITS } from './core/budget';
+import { send } from './core/send';
+import { textPatterns } from './core/patterns';
 import { createRules, type RuleInput } from './core/rules';
 import { sampledIn, uuid, toHex } from './core/hash';
 import { parseStack, topFrame, normalisePath, errorKey } from './core/stack';
 import { now, epochOf, cut, isHidden, storage, strings, on, read, nonEmpty, byteLength } from './core/util';
 import { startViews, pageUrl, type Views } from './collectors/views';
 import { startVitals } from './collectors/vitals';
-import { listenErrors, createErrorPipeline, fromValue, fromErrorEvent, fromRejection, isRejectionEvent, type RawError } from './collectors/errors';
+import { listenErrors, createErrorPipeline, fromValue, fromErrorEvent, fromRejection, isRejectionEvent, cleanStack, type RawError } from './collectors/errors';
 import { startActionCollector, type ActionCollector } from './collectors/actions';
 import { startNetwork, type Network } from './collectors/network';
-import { startResources, createOwnRequestMatcher, createExclusionMatcher, type Resources } from './collectors/resources';
-import { startConsole, type Console } from './collectors/console';
+import { startResources, createOwnRequestMatcher, type Resources } from './collectors/resources';
+import { startConsole, serialize, type Console } from './collectors/console';
 import { startFrames } from './collectors/frames';
 import { loadReplay } from './replay/load-record';
 import type { ReplayHandle } from './replay/chunk';
@@ -58,7 +60,7 @@ export function createInstance(opts: InitOptions) {
   const f0 = window.fetch;
   const nativeFetch = ((...a: Parameters<typeof fetch>) => f0.apply(window, a)) as typeof fetch;
   const isOwn = createOwnRequestMatcher([ingestBase, replayBase, configBase]);
-  const sanitizeUrl = createUrlSanitizer({ allowedQueryParams: opts.allowedQueryParams, deniedQueryParams: opts.deniedQueryParams });
+  const sanitizeUrl = createUrlSanitizer(opts);
   const sanitizeText = createTextUrlSanitizer(sanitizeUrl);
 
   if (/[?&]sq_debug=1(&|$)/.test(read(() => location.search) ?? '')) storage.set('localStorage', 'sq_debug', '1');
@@ -84,18 +86,18 @@ export function createInstance(opts: InitOptions) {
     counters[name] = (counters[name] ?? 0) + n;
     totals[name] = (totals[name] ?? 0) + n;
   };
-  // Every SDK request (batches, segments, config, identity) passes the request budget.
-  const budget = createBudget(() => (session.mode === 'session' ? 'sessionStorage' : session.mode === 'memory' ? undefined : 'localStorage'));
+  // Batches, config and identity pass the request budget (the replay chunk keeps its own).
+  const store = () => (session.mode === 'session' ? 'sessionStorage' : session.mode === 'memory' ? undefined : 'localStorage');
+  const budget = createBudget(store, CORE_KEY, CORE_LIMITS);
   let overBudget = false;
   const sdkFetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const body = init?.body;
-    const bytes = typeof body === 'string' ? byteLength(body) : body instanceof Blob ? body.size : 0;
-    if (overBudget || !budget.take(session.id, bytes)) {
-      spent();
-      return Promise.reject(new Error('request budget'));
-    }
-    return nativeFetch(input, init);
+    if (!overBudget && budget.take(session.id, typeof body === 'string' ? byteLength(body) : body instanceof Blob ? body.size : 0)) return nativeFetch(input, init);
+    spent();
+    return Promise.reject(budgetError());
   }) as typeof fetch;
+  // Session the replay budget stopped replay for.
+  let replaySpent = '';
   const transport = createTransport({
     url: `${ingestBase}/v2/batch`,
     token,
@@ -113,12 +115,12 @@ export function createInstance(opts: InitOptions) {
   let analyzeOn = false;
   let observeIn = true;
   let dnr = false;
+  let checked = '';
+  let dnrFor = '';
+  // On a never_record_urls page: no Analyze, replay paused (the chunk pauses for hidden and idle).
   let urlPaused = false;
-  // Replay pauses (design 5.5): rrweb stops while any holds and resumes with a full snapshot.
-  const pauses = new Set<string>(isHidden() ? ['hidden'] : []);
-  let lastActive = now();
   let watchdog: ReturnType<typeof setInterval> | undefined;
-  let neverRecord = createExclusionMatcher(cfg.privacy.never_record_urls);
+  let neverRecord = textPatterns(cfg.privacy.never_record_urls);
   let ring: Array<{ e: SqEvent; t: number }> = [];
   let crumbs: Array<Record<string, unknown>> = [];
   let inHook = false;
@@ -149,8 +151,8 @@ export function createInstance(opts: InitOptions) {
     count('request_budget');
     transport.block(true);
     ring = [];
-    stopRecording('request_budget');
-    warnOnce('budget', 'Stopped sending: this session reached its request budget');
+    stopRecording('request_budget', true);
+    warnOnce('budget', 'Stopped sending: request budget reached');
   }
   const resample = () => {
     observeIn = sampledIn(`${session.id}:observe`, cfg.observe.sample_rate);
@@ -192,7 +194,20 @@ export function createInstance(opts: InitOptions) {
     return c;
   }
 
-  /** beforeSend for every kind (6.1): ids and times never change; the result is re-sanitised. */
+  /** A value beforeSend changed: URLs minimised, stacks cleaned, other text scrubbed, deeply. */
+  function clean(key: string, v: unknown): unknown {
+    if (typeof v === 'string') {
+      const s = cut(v, 16_384);
+      return /(^|_)url$|^referrer$/.test(key) ? sanitizeUrl(s) : key === 'stack' ? cleanStack(hub, s) : scrub(sanitizeText(s));
+    }
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>;
+      for (const k of Object.keys(o)) o[k] = clean(Array.isArray(o) ? key : k, o[k]);
+    }
+    return v;
+  }
+
+  /** beforeSend for every kind (6.1): ids and times never change; changes are re-sanitised. */
   function hook(e: SqEvent, kind: SqEventKind): SqEvent | null {
     const fn = opts.beforeSend;
     if (typeof fn !== 'function') return e;
@@ -202,7 +217,7 @@ export function createInstance(opts: InitOptions) {
     try {
       r = fn(draft, kind);
     } catch (err) {
-      warnOnce('hook', 'beforeSend threw; the event was sent unchanged', err);
+      warnOnce('hook', 'beforeSend threw; sent unchanged', err);
       return e;
     } finally {
       inHook = false;
@@ -217,11 +232,14 @@ export function createInstance(opts: InitOptions) {
     }
     const chosen = (r && typeof r === 'object' ? r : draft) as Record<string, unknown>;
     const out = { ...e };
-    // Known fields only, of the same type; a removed field keeps its original value.
+    // Known fields only, of the same type; a removed field keeps its original value, and only
+    // what the hook changed is minimised and scrubbed again.
     for (const key of Object.keys(e)) {
       const v = read(() => chosen[key]);
-      if (FIXED.includes(key) || v === undefined || typeof v !== typeof e[key] || Array.isArray(v) !== Array.isArray(e[key])) continue;
-      out[key] = typeof v !== 'string' ? v : key === 'url' || key === 'referrer' ? sanitizeUrl(v) : /^(message|stack|name)$/.test(key) ? scrub(sanitizeText(v)) : v;
+      const was = e[key];
+      if (FIXED.includes(key) || v === undefined || typeof v !== typeof was || Array.isArray(v) !== Array.isArray(was)) continue;
+      const json = read(() => JSON.stringify(v));
+      if (json !== undefined && json !== JSON.stringify(was)) out[key] = clean(key, JSON.parse(json));
     }
     if ('_h' in e) Object.defineProperty(out, '_h', { value: (e as { _h?: string })._h });
     if (kind === 'error') out.error_key = keyOf(out);
@@ -266,74 +284,70 @@ export function createInstance(opts: InitOptions) {
     status({ state, reason: why });
   }
 
+  const mayRecord = () => canSend() && consent === 'granted' && !gpc() && !dnr;
+  // A page too large to record, or a recorder that failed to load, stays off for the page load.
+  let latched = '';
   const wantReplay = () =>
-    !userStopped && configKnown && canSend() && consent === 'granted' && !gpc() && !dnr && (forced || session.decision.replay);
-
-  const firstPause = () => pauses.values().next().value as string;
+    !userStopped && configKnown && !latched && replaySpent !== session.id && mayRecord() && (forced || session.decision.replay);
 
   function startRecording(): void {
     if (replay || loading || !wantReplay()) return;
-    if (pauses.size) return setRecording('paused', firstPause());
     loading = true;
     const sid = session.id;
     loadReplay(opts.recorderUrl).then(
       (start) => {
         loading = false;
         if (replay || sid !== session.id || !wantReplay()) return;
-        if (pauses.size) return setRecording('paused', firstPause());
         replay = start({
           mode: 'stream',
           sessionId: sid,
+          windowId: session.windowId,
+          store: store(),
           replayBase,
           token,
-          fetch: sdkFetch,
+          // Replay sends only while it may record.
+          fetch: ((input: RequestInfo | URL, init?: RequestInit) => (mayRecord() ? nativeFetch(input, init) : Promise.reject(budgetError()))) as typeof fetch,
+          send,
           url: sanitizeUrl,
           text: sanitizeText,
           privacy: cfg.privacy,
           mask: createScrubber(cfg.privacy.pii_patterns, true),
           now,
+          idleMs: Math.min(Math.max(cfg.limits.idle_pause_ms || 300_000, 60_000), 1_800_000),
+          paused: urlPaused ? 'privacy_url' : undefined,
           onStatus: (state, why) => {
-            if (state === 'stopped') replay = null;
+            if (state === 'stopped') {
+              replay = null;
+              if (why === 'too_large') latched = why;
+              // Past its own budget only replay stops, for the rest of the session.
+              if (why === 'replay_budget') {
+                replaySpent = sid;
+                count(why);
+                warnOnce(why, 'Replay stopped: replay request budget reached');
+              }
+            }
             setRecording(state, why);
           },
         });
+        // Live replay never outlasts its session.
         clearInterval(watchdog);
-        watchdog = setInterval(watch, 15_000);
+        watchdog = setInterval(() => replay && !sessionFor(false) && stopRecording(), 15_000);
       },
       (err) => {
         loading = false;
         warnOnce('recorder', 'Could not load the session replay recorder', err);
-        setRecording('stopped', 'load_failed');
+        latched = 'load_failed';
+        setRecording('stopped', latched);
       },
     );
   }
 
-  function stopRecording(why?: string): void {
+  /** `drop` discards what replay has not sent yet (consent, opt-out, budget, do not record). */
+  function stopRecording(why?: string, drop = false): void {
     clearInterval(watchdog);
-    replay?.stop();
+    replay?.stop(drop);
     replay = null;
     if (recording !== 'off' || why) setRecording(why ? 'stopped' : 'off', why);
-  }
-
-  const idleMs = () => Math.min(Math.max(cfg.limits.idle_pause_ms || 300_000, 60_000), 1_800_000);
-
-  /** Live replay never outlasts its session, nor runs on with no user input. */
-  function watch(): void {
-    if (!replay || pauses.size) return;
-    if (!sessionFor(false)) return stopRecording();
-    if (replay && now() - lastActive >= idleMs()) setPause('idle', true);
-  }
-
-  function setPause(why: string, on: boolean): void {
-    if (on === pauses.has(why)) return;
-    if (on) pauses.add(why);
-    else pauses.delete(why);
-    if (!replay) {
-      if (pauses.size) {
-        if (recording === 'paused') setRecording('paused', firstPause());
-      } else startRecording();
-    } else if (pauses.size) replay.pause(firstPause());
-    else replay.resume();
   }
 
   /** A rule decision, latched for the session and shared with other tabs through the cookie. */
@@ -379,7 +393,8 @@ export function createInstance(opts: InitOptions) {
     ctx = null;
     ring = [];
     crumbs = [];
-    analyzeOn = dnr = forced = false;
+    analyzeOn = forced = false;
+    dnr = !!user.id && user.id === dnrFor;
     resample();
     stopRecording();
     setRules(true);
@@ -389,8 +404,11 @@ export function createInstance(opts: InitOptions) {
   }
 
   function pauseFor(url: string): void {
-    urlPaused = neverRecord(url);
-    setPause('privacy_url', urlPaused);
+    const paused = neverRecord(url);
+    if (paused === urlPaused) return;
+    urlPaused = paused;
+    if (paused) replay?.pause('privacy_url');
+    else replay?.resume();
   }
 
   function applyConfig(raw: unknown, fresh: boolean): void {
@@ -402,18 +420,18 @@ export function createInstance(opts: InitOptions) {
       if (consent === 'granted') saveCachedConfig(appId, raw);
     }
     hub.scrub = scrub = createScrubber(cfg.privacy.pii_patterns);
-    neverRecord = createExclusionMatcher(cfg.privacy.never_record_urls);
+    neverRecord = textPatterns(cfg.privacy.never_record_urls);
     consoleCol?.sync();
     if (cfg.status === 'paused') {
       transport.clear();
-      return stopRecording('paused');
+      return stopRecording('paused', true);
     }
     if (cfg.privacy.require_consent && !explicit && consent === 'granted' && !prev.privacy.require_consent) setConsent('pending');
     if (session.setMode(target())) changed();
     if (gpc()) {
       analyzeOn = false;
       ring = [];
-      stopRecording();
+      stopRecording(undefined, true);
     }
     resample();
     ctx = null;
@@ -423,6 +441,7 @@ export function createInstance(opts: InitOptions) {
     if (views) pauseFor(views.current.url);
     const d = session.decision;
     if (first || d.analyze || d.replay) decide(d);
+    if (user.id) void checkIdentity(user.id);
     if (replay && fresh && JSON.stringify(prev.privacy) !== JSON.stringify(cfg.privacy)) {
       // New privacy settings apply from a fresh snapshot.
       stopRecording();
@@ -451,17 +470,18 @@ export function createInstance(opts: InitOptions) {
     ctx = null;
     log('consent', next);
     if (next === 'granted') {
-      if (session.setMode(target())) {
-        changed();
-        transport.rekey(ctxFor(session.id));
-      }
+      if (session.setMode(target())) changed();
+      // Held events carry the ctx they were queued with; they go out as granted.
+      transport.rekey(ctxFor(session.id));
       session.setDecision(session.decision);
       if (configAt) saveCachedConfig(appId, cfg);
       transport.hold(false);
-      return decide(session.decision);
+      decide(session.decision);
+      if (user.id) void checkIdentity(user.id);
+      return;
     }
     transport.hold(true);
-    stopRecording();
+    stopRecording(undefined, true);
     if (next === 'not-granted') {
       transport.clear();
       ring = [];
@@ -471,20 +491,25 @@ export function createInstance(opts: InitOptions) {
     session.setMode('memory');
   }
 
+  /** Do-not-record users (6.9), checked once per id, only while the SDK may send and record. */
   async function checkIdentity(id: string): Promise<void> {
-    if (!cfg.limits.dnr) return;
+    if (!cfg.limits.dnr || !mayRecord() || checked === id) return;
+    checked = id;
     try {
       const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${appId}:${id}`));
       const res = await sdkFetch(`${ingestBase}/v2/identity?h=${toHex(new Uint8Array(digest))}`, {
         headers: { Authorization: `Bearer ${token}` },
         credentials: 'omit',
       });
-      if ((await res.json())?.record === false && user.id === id) {
-        dnr = true;
-        analyzeOn = false;
-        ring = [];
-        ctx = null;
-        stopRecording('do_not_record');
+      if ((await res.json())?.record === false) {
+        dnrFor = id;
+        if (user.id === id) {
+          dnr = true;
+          analyzeOn = false;
+          ring = [];
+          ctx = null;
+          stopRecording('do_not_record', true);
+        }
       }
     } catch {
       // Fail open: the intake drops do-not-record users as well.
@@ -504,6 +529,7 @@ export function createInstance(opts: InitOptions) {
     },
     count,
     isOwn,
+    store: () => session.mode !== 'memory',
     pageUrl: () => pageUrl(location.href, sanitizeUrl, opts.hashRouting === true),
     viewId: () => views?.current.id ?? '',
   };
@@ -567,21 +593,9 @@ export function createInstance(opts: InitOptions) {
         return { sid, view: views?.current.id ?? '', t: now() };
       },
       emit: (a, c) => {
-        const e: SqEvent = {
-          k: 'action',
-          t: c.t,
-          view_id: c.view,
-          id: uuid(),
-          action_type: a.action_type,
-          name: scrub(a.name),
-          selector: scrub(a.selector),
-          frustration: a.frustration,
-          click_count: a.click_count,
-          offset_pct: a.offset_pct,
-          page_xy: a.page_xy,
-          viewport_w: a.viewport_w,
-        };
-        Object.defineProperty(e, '_h', { value: scrub(a.hiddenName) });
+        const { hiddenName, ...fields } = a;
+        const e: SqEvent = { k: 'action', t: c.t, view_id: c.view, id: uuid(), ...fields, name: scrub(a.name), selector: scrub(a.selector) };
+        Object.defineProperty(e, '_h', { value: scrub(hiddenName) });
         const v = views?.current;
         if (v?.id === c.view) {
           v.actions++;
@@ -609,28 +623,27 @@ export function createInstance(opts: InitOptions) {
     resources = startResources(hub, { onRequestEntry: (e) => network?.entry(e) });
   });
   start('console', () => {
-    consoleCol = startConsole(hub, (m) => hub.crumb('console', m));
+    consoleCol = startConsole(
+      hub,
+      (m) => hub.crumb('console', m),
+      (args) => {
+        const err = args.find((a) => a instanceof Error);
+        errors.report(fromValue(err ?? args.map((a) => serialize(a)).join(' '), 'console'));
+      },
+    );
   });
   start('frames', () => startFrames(hub));
 
   // Input keeps the session alive (at most every 5 s); the SDK's own sends never do.
   const onInput = (e: Event) => {
     const t = now();
-    lastActive = t;
-    // Pointer moves keep replay awake, not the session.
-    if (e.type === 'pointermove') {
-      if (pauses.has('idle') && sessionFor(false)) setPause('idle', false);
-      return;
-    }
     views?.input(t);
     if (e.type !== 'scroll') rules.interaction();
-    if (t - lastInput >= 5_000) {
-      lastInput = t;
-      if (sessionFor(true)) session.touch();
-    }
-    setPause('idle', false);
+    if (t - lastInput < 5_000) return;
+    lastInput = t;
+    if (sessionFor(true)) session.touch();
   };
-  for (const type of ['pointerdown', 'keydown', 'touchstart', 'scroll', 'pointermove']) on(window, type, onInput);
+  for (const type of ['pointerdown', 'keydown', 'touchstart', 'scroll']) on(window, type, onInput);
 
   const flushAll = (final: boolean) => {
     if (final) views?.pagehide();
@@ -645,14 +658,8 @@ export function createInstance(opts: InitOptions) {
     else transport.hide();
   };
   on(document, 'visibilitychange', () => {
-    if (isHidden()) {
-      setPause('hidden', true);
-      return flushAll(false);
-    }
+    if (isHidden()) return flushAll(false);
     if (sessionFor(true)) session.touch();
-    lastActive = now();
-    setPause('hidden', false);
-    setPause('idle', false);
     if (now() - configAt > CONFIG_MAX_AGE_MS) void refresh();
   }, false);
   on(window, 'pagehide', () => flushAll(true), false);
@@ -660,6 +667,7 @@ export function createInstance(opts: InitOptions) {
     if (!e.persisted) return;
     transport.restore();
     session.newPageLoad();
+    latched = '';
     ctx = null;
     views?.restart('bfcache_restore', 'back_forward_cache');
   }, false);
@@ -704,11 +712,13 @@ export function createInstance(opts: InitOptions) {
       if (traits) out.traits = traits;
       user = out;
       ctx = null;
+      dnr = !!out.id && out.id === dnrFor;
       identity();
       if (out.id) void checkIdentity(out.id);
     },
     clearUser(): void {
       user = {};
+      dnr = false;
       ctx = null;
     },
     /** Caps: 50 keys of 128 chars, values cut at 1024, 4 KB in all; anything else is ignored. */
@@ -747,7 +757,7 @@ export function createInstance(opts: InitOptions) {
       storage.set('localStorage', OPT_OUT, '1');
       transport.clear();
       ring = [];
-      stopRecording('opted_out');
+      stopRecording('opted_out', true);
     },
     optIn(): void {
       optedOut = false;
@@ -836,7 +846,7 @@ export const SiteQwalityRUM = {
     try {
       if (instance) return Promise.resolve();
       const o = options as Partial<InitOptions> | null;
-      if (!o || typeof o.applicationId !== 'string' || !o.applicationId || typeof o.clientToken !== 'string' || !o.clientToken) {
+      if (!nonEmpty(o?.applicationId) || !nonEmpty(o?.clientToken)) {
         warn('init needs an applicationId and a clientToken');
         return Promise.resolve();
       }

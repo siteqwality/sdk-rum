@@ -161,10 +161,12 @@ export function createSession(opts: SessionOptions) {
   }
 
   // Window id per tab; a duplicated tab copies sessionStorage, so the later page load renames.
+  // Stored only once the session may be (never while consent is pending).
   let windowId = storage.get('sessionStorage', WINDOW) || '';
+  const saveWindow = () => mode !== 'memory' && storage.set('sessionStorage', WINDOW, windowId);
   if (!ID.test(windowId)) {
     windowId = uuid();
-    storage.set('sessionStorage', WINDOW, windowId);
+    saveWindow();
   }
   let pageLoadId = uuid();
   const origin = typeof performance !== 'undefined' ? performance.timeOrigin || t0 : t0;
@@ -178,7 +180,7 @@ export function createSession(opts: SessionOptions) {
       // The later page load is the copy; ties break on the page load id, so one side renames.
       if ((m.o ?? 0) < origin || (m.o === origin && m.p < pageLoadId)) {
         windowId = uuid();
-        storage.set('sessionStorage', WINDOW, windowId);
+        saveWindow();
       } else if (!answered.has(m.p)) {
         answered.add(m.p);
         hello();
@@ -263,6 +265,7 @@ export function createSession(opts: SessionOptions) {
       const next = pick(target);
       if (next === mode) return false;
       mode = next;
+      saveWindow();
       const s = read();
       if (s && s.id !== rec.id && !isExpired(s)) {
         rec = s;
@@ -272,11 +275,12 @@ export function createSession(opts: SessionOptions) {
       write();
       return false;
     },
-    /** Removes every stored key (consent withdrawn). */
+    /** Removes every key the SDK stores but the opt-out (consent withdrawn). */
     clear() {
       writeCookie('', 0);
-      for (const kind of ['localStorage', 'sessionStorage'] as const) storage.del(kind, KEY);
-      storage.del('localStorage', ANON);
+      for (const kind of ['localStorage', 'sessionStorage'] as const) {
+        for (const k of ['s', 'aid', 'w', 'bgt', 'bgr', 'act', 'rseq', 'rl'].map((k) => `_sq_${k}`).concat('sq_rum_session', `sq_rum_rules:${rec.id}`, `sq_rum_replay_next:${rec.id}`)) storage.del(kind, k);
+      }
     },
   };
 }

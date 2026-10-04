@@ -10,6 +10,7 @@ function take(sequence: SegmentSequence, n: number): number[] {
 describe('SegmentSequence', () => {
   beforeEach(() => {
     sessionStorage.clear();
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -111,5 +112,28 @@ describe('SegmentSequence', () => {
   it('ignores a stored value that is not a count', () => {
     sessionStorage.setItem('sq_rum_replay_next:s1', 'oops');
     expect(new SegmentSequence('s1').take()).toBe(0);
+  });
+
+  it('the tabs of a shared session number from one counter in localStorage', () => {
+    const a = new SegmentSequence('s1', 'localStorage');
+    const b = new SegmentSequence('s1', 'localStorage');
+    expect([a.take(), b.take(), a.take(), b.take()]).toEqual([0, 1, 2, 3]);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it('carries on from a 1.1 page that numbered in sessionStorage', () => {
+    sessionStorage.setItem('sq_rum_replay_next:s1', '4');
+    expect(new SegmentSequence('s1', 'localStorage').take()).toBe(4);
+  });
+
+  it('keeps the counters of the last few sessions in one key', () => {
+    for (const sid of ['s1', 's2', 's3']) take(new SegmentSequence(sid, 'localStorage'), 2);
+    expect(take(new SegmentSequence('s1', 'localStorage'), 1)).toEqual([2]);
+    expect(Object.keys(localStorage)).toEqual(['_sq_rseq']);
+  });
+
+  it('memory sessions number from 0 and store nothing', () => {
+    expect(take(new SegmentSequence('s1', 'memory'), 3)).toEqual([0, 1, 2]);
+    expect(localStorage.length + sessionStorage.length).toBe(0);
   });
 });

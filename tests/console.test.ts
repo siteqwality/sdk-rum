@@ -72,6 +72,32 @@ describe('capture', () => {
     expect(String(long.message).length).toBe(2048);
   });
 
+  it('scrubs PII in the message line of an Error stack', async () => {
+    const net = await boot({}, analyze());
+    const e = new Error('no account for jane@acme.test');
+    e.stack = 'Error: no account for jane@acme.test\n    at find (https://app.test/app.js:1:2)';
+    console.error(e);
+    await flush();
+    const [row] = net.events('console');
+    expect(row.stack).not.toContain('jane@acme.test');
+    expect(row.stack).toContain('https://app.test/app.js:1:2');
+  });
+
+  it('turns console.error into an issue only when the app asks', async () => {
+    const off = await boot();
+    console.error('quiet');
+    await flush();
+    expect(off.events('error')).toEqual([]);
+    const on = await boot({}, stubNetwork(config({ capture: { errors: { console_errors_as_issues: true } } })));
+    console.error('payment failed', { code: 7 });
+    console.error(new TypeError('bad card'));
+    await flush();
+    expect(on.events('error').map((e) => [e.handling, e.error_type, e.message])).toEqual([
+      ['console', 'Error', 'payment failed {code: 7}'],
+      ['console', 'TypeError', 'bad card'],
+    ]);
+  });
+
   it('console errors are breadcrumbs for every session, Analyze or not', async () => {
     const net = await boot();
     console.error('boom', 42);

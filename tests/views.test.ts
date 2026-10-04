@@ -59,6 +59,24 @@ describe('views', () => {
     expect(second.utm).toBeUndefined();
   });
 
+  it('a direct visit sends referrer as "", and so does the first view of a rotated session', async () => {
+    vi.spyOn(document, 'referrer', 'get').mockReturnValue('');
+    // In memory, so no earlier test's instance hands this page its session.
+    const net = await boot({ persistence: 'memory' });
+    history.pushState(null, '', '/later');
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 16 * 60_000 });
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    vi.useRealTimers();
+    await flush();
+    const starts = net.events('view_start');
+    const [first, pushed, rotated] = ['navigate', 'push', 'session'].map((n) => starts.find((v) => v.navigation_type === n)!);
+    expect(first.referrer).toBe('');
+    expect(pushed.referrer).toBeUndefined();
+    expect(rotated.ctx.session_id).not.toBe(first.ctx.session_id);
+    expect(rotated).toMatchObject({ referrer: '' });
+    expect(rotated.utm).toBeUndefined();
+  });
+
   it('routes come from routeName or setView', async () => {
     const net = await boot({ routeName: (path) => (path.startsWith('/users/') ? '/users/:id' : undefined) });
     history.pushState(null, '', '/users/7');

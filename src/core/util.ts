@@ -136,3 +136,17 @@ export function pct(values: number[], q: number): number {
   const s = [...values].sort((a, b) => a - b);
   return s[Math.min(s.length - 1, Math.floor(q * s.length))] ?? 0;
 }
+
+/** A buffered PerformanceObserver of one entry type, or undefined where it is unsupported. */
+export function observe(type: string, cb: (entries: PerformanceEntry[]) => void, extra: Record<string, unknown> = {}): PerformanceObserver | undefined {
+  try {
+    if (!PerformanceObserver.supportedEntryTypes?.includes(type)) return undefined;
+    const po = new PerformanceObserver((l) => cb(l.getEntries()));
+    po.observe({ type, buffered: true, ...extra } as PerformanceObserverInit);
+    return po;
+  } catch {
+    return undefined;
+  }
+}
+
+export const navEntry = () => read(() => performance.getEntriesByType('navigation')[0]) as (PerformanceNavigationTiming & { activationStart?: number }) | undefined;

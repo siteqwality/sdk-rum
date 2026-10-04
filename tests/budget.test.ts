@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createBudget, PAGE_MAX_REQUESTS, SESSION_MAX_REQUESTS, PAGE_MAX_BYTES, SESSION_MAX_BYTES } from '../src/core/budget';
+import { createBudget, CORE_LIMITS, REPLAY_LIMITS, budgetError } from '../src/core/budget';
 import { SiteQwalityRUM } from '../src/sdk';
-import { boot, clearStorage, settle, setVisibility, stubNetwork } from './helpers/sdk';
+import { boot, clearStorage, config, rule, settle, setVisibility, stubNetwork, throwInPage } from './helpers/sdk';
+
+const [PAGE_REQ, PAGE_BYTES, SESS_REQ, SESS_BYTES] = CORE_LIMITS;
+const [, , REPLAY_SESS_REQ] = REPLAY_LIMITS;
+const unit = (kind: () => 'localStorage' | undefined = () => undefined) => createBudget(kind, '_sq_bgt', CORE_LIMITS);
 
 beforeEach(() => clearStorage());
 afterEach(() => {
@@ -12,26 +16,26 @@ afterEach(() => {
 
 describe('createBudget', () => {
   it('caps requests and bytes per session', () => {
-    const b = createBudget(() => undefined);
-    for (let i = 0; i < SESSION_MAX_REQUESTS; i++) expect(b.take('s1', 10)).toBe(true);
+    const b = unit();
+    for (let i = 0; i < SESS_REQ; i++) expect(b.take('s1', 10)).toBe(true);
     expect(b.take('s1', 10)).toBe(false);
-    const c = createBudget(() => undefined);
-    expect(c.take('s1', SESSION_MAX_BYTES + 1)).toBe(false);
+    const c = unit();
+    expect(c.take('s1', SESS_BYTES + 1)).toBe(false);
     expect(c.take('s1', 100)).toBe(true);
   });
 
   it('holds the page ceiling across the sessions of one document', () => {
-    const b = createBudget(() => undefined);
+    const b = unit();
     let taken = 0;
-    for (let s = 0; s < 5; s++) for (let i = 0; i < SESSION_MAX_REQUESTS; i++) taken += b.take(`s${s}`, 0) ? 1 : 0;
-    expect(taken).toBe(PAGE_MAX_REQUESTS);
+    for (let s = 0; s < 5; s++) for (let i = 0; i < SESS_REQ; i++) taken += b.take(`s${s}`, 0) ? 1 : 0;
+    expect(taken).toBe(PAGE_REQ);
     expect(b.pageOpen()).toBe(false);
-    expect(createBudget(() => undefined).take('s9', PAGE_MAX_BYTES + 1)).toBe(false);
+    expect(unit().take('s9', PAGE_BYTES + 1)).toBe(false);
   });
 
   it('caps a session across page loads through storage, and starts over for a new session', () => {
-    localStorage.setItem('_sq_bgt', `s1|${SESSION_MAX_REQUESTS - 1}|0`);
-    const b = createBudget(() => 'localStorage');
+    localStorage.setItem('_sq_bgt', `s1|${SESS_REQ - 1}|0`);
+    const b = unit(() => 'localStorage');
     expect(b.take('s1', 0)).toBe(true);
     expect(b.take('s1', 0)).toBe(false);
     expect(b.take('s2', 0)).toBe(true);
@@ -39,9 +43,9 @@ describe('createBudget', () => {
   });
 
   it('tabs sharing a session add to one count', () => {
-    const a = createBudget(() => 'localStorage');
-    const b = createBudget(() => 'localStorage');
-    for (let i = 0; i < SESSION_MAX_REQUESTS / 2; i++) {
+    const a = unit(() => 'localStorage');
+    const b = unit(() => 'localStorage');
+    for (let i = 0; i < SESS_REQ / 2; i++) {
       expect(a.take('s1', 1)).toBe(true);
       expect(b.take('s1', 1)).toBe(true);
     }
@@ -53,8 +57,8 @@ describe('createBudget', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('quota');
     });
-    const b = createBudget(() => 'localStorage');
-    for (let i = 0; i < SESSION_MAX_REQUESTS; i++) b.take('s1', 0);
+    const b = unit(() => 'localStorage');
+    for (let i = 0; i < SESS_REQ; i++) b.take('s1', 0);
     expect(b.take('s1', 0)).toBe(false);
   });
 });
@@ -66,15 +70,15 @@ describe('the SDK under a runaway loop', () => {
     const sent = () => net.fetch.mock.calls.length;
     const before = sent();
     // A bug flushing on every tick, the 2026-10-03 shape: one event, one hide, one request.
-    for (let i = 0; i < SESSION_MAX_REQUESTS + 500; i++) {
+    for (let i = 0; i < SESS_REQ + 500; i++) {
       SiteQwalityRUM.addAction(`loop ${i}`);
       setVisibility('hidden');
       Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
       if (i % 200 === 0) await settle(1);
     }
     await settle(5);
-    expect(sent() - before).toBeLessThanOrEqual(SESSION_MAX_REQUESTS);
-    expect(sent() - before).toBeGreaterThan(SESSION_MAX_REQUESTS - 100);
+    expect(sent() - before).toBeLessThanOrEqual(SESS_REQ);
+    expect(sent() - before).toBeGreaterThan(SESS_REQ - 100);
     const capped = sent();
     for (let i = 0; i < 50; i++) {
       SiteQwalityRUM.addAction(`after ${i}`);
@@ -108,42 +112,82 @@ describe('the SDK under a runaway loop', () => {
   });
 });
 
-describe('replay requests share the budget', () => {
-  it('the replay chunk is handed the budgeted fetch', async () => {
+describe('the replay budget', () => {
+  type Opts = { fetch: typeof fetch; send: unknown; store: unknown; windowId: string; onStatus: (s: string, why?: string) => void };
+  async function bootWithReplay() {
     vi.resetModules();
-    const captured: { fetch?: typeof fetch } = {};
+    const captured: { o?: Opts; stops: Array<boolean | undefined>; starts: number } = { stops: [], starts: 0 };
     vi.doMock('../src/replay/load-record', () => ({
-      loadReplay: async () => (o: { fetch: typeof fetch }) => {
-        captured.fetch = o.fetch;
-        return { stop() {}, pause() {}, resume() {} };
+      loadReplay: async () => (o: Opts) => {
+        captured.o = o;
+        captured.starts++;
+        return { stop: (d?: boolean) => captured.stops.push(d), pause() {}, resume() {} };
       },
     }));
     const { SiteQwalityRUM: Fresh } = await import('../src/sdk');
-    stubNetwork();
+    const net = stubNetwork(config({ rules: [rule('replay')] }));
     Fresh._reset();
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
-    await Fresh.init({ applicationId: 'app-1', clientToken: 't', ingestBase: 'https://in.test', configBase: 'https://cdn.test' });
-    Fresh.startReplay({ force: true });
+    await Fresh.init({ applicationId: 'app-1', clientToken: 't', ingestBase: 'https://in.test', replayBase: 'https://rp.test', configBase: 'https://cdn.test' });
     await settle(5);
-    expect(captured.fetch).toBeDefined();
-    let refused = 0;
-    for (let i = 0; i < SESSION_MAX_REQUESTS + 10; i++) await captured.fetch!('https://rp.test/v1/segments', { method: 'POST', body: '[]' }).catch(() => refused++);
-    expect(refused).toBeGreaterThanOrEqual(10);
-    expect(Fresh.getStatus()!.reason).toBe('request_budget');
+    return { Fresh, net, captured };
+  }
+  afterEach(() => vi.doUnmock('../src/replay/load-record'));
 
-    // New sessions lift the session ceiling until the page ceiling is spent too.
-    const rotate = (minutes: number) => {
-      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + minutes * 60_000 });
-      Fresh.addAction('activity');
-      vi.useRealTimers();
-    };
-    rotate(16);
-    expect(Fresh.getStatus()!.reason).not.toBe('request_budget');
-    let ok = 0;
-    for (let i = 0; i < SESSION_MAX_REQUESTS + 10; i++) await captured.fetch!('https://rp.test/v1/segments', { method: 'POST', body: '[]' }).then(() => ok++, () => {});
-    expect(ok).toBeLessThanOrEqual(PAGE_MAX_REQUESTS - SESSION_MAX_REQUESTS);
-    rotate(40);
-    expect(Fresh.getStatus()!.reason).toBe('request_budget');
-    vi.doUnmock('../src/replay/load-record');
+  it('hands the chunk the core send and the session store', async () => {
+    const { captured } = await bootWithReplay();
+    expect(captured.o).toBeDefined();
+    expect(typeof captured.o!.send).toBe('function');
+    expect(captured.o!.store).toBe('localStorage');
+    expect(captured.o!.windowId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('a replay cap stops only replay, for the session: errors and views still go', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { Fresh, net, captured } = await bootWithReplay();
+    // The chunk reports its budget spent.
+    captured.o!.onStatus('stopped', 'replay_budget');
+    expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'replay_budget' });
+    expect(Fresh.getStatus()!.dropped.replay_budget).toBe(1);
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('replay request budget'))).toHaveLength(1);
+    setVisibility('hidden');
+    setVisibility('visible');
+    await settle(5);
+    expect(captured.starts).toBe(1);
+
+    throwInPage(new Error('still reported'));
+    setVisibility('hidden');
+    await settle(10);
+    expect(net.events('error').map((e) => e.message)).toContain('still reported');
   }, 60_000);
+
+  it('the core budget stops replay too, dropping what it holds', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { Fresh, captured } = await bootWithReplay();
+    expect(await captured.o!.fetch('https://rp.test/v1/segments', { method: 'POST', body: '{"events":[]}' }).then(() => true)).toBe(true);
+    // Spend the core budget through the batch path.
+    for (let i = 0; i < SESS_REQ + 5; i++) {
+      Fresh.addAction(`loop ${i}`);
+      setVisibility('hidden');
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+      if (i % 200 === 0) await settle(1);
+    }
+    await settle(5);
+    expect(Fresh.getStatus()!.reason).toBe('request_budget');
+    expect(captured.stops).toContain(true);
+    await expect(captured.o!.fetch('https://rp.test/v1/segments', { method: 'POST', body: '[]' })).rejects.toMatchObject({ name: budgetError().name });
+  }, 60_000);
+
+  it('a page too large to record stays off for the page load, whatever the tab does', async () => {
+    const { Fresh, captured } = await bootWithReplay();
+    expect(captured.starts).toBe(1);
+    captured.o!.onStatus('stopped', 'too_large');
+    for (let i = 0; i < 3; i++) {
+      setVisibility('hidden');
+      setVisibility('visible');
+      await settle(3);
+    }
+    expect(captured.starts).toBe(1);
+    expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'too_large' });
+  });
 });

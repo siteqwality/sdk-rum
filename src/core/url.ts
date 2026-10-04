@@ -99,27 +99,8 @@
  *
  * Lower-case; matching is case-insensitive and percent-decodes the name first.
  */
-export const DEFAULT_DENIED_QUERY_PARAMS: readonly string[] = [
-  'token',
-  'access_token',
-  'id_token',
-  'refresh_token',
-  'code',
-  'key',
-  'secret',
-  'password',
-  'passwd',
-  'pwd',
-  'email',
-  'e-mail',
-  'session',
-  'sid',
-  'sig',
-  'signature',
-  'auth',
-  'apikey',
-  'api_key',
-];
+export const DEFAULT_DENIED_QUERY_PARAMS: readonly string[] =
+  'token access_token id_token refresh_token code key secret password passwd pwd email e-mail session sid sig signature auth apikey api_key'.split(' ');
 
 export interface UrlSanitizerOptions {
   /**
@@ -163,13 +144,8 @@ function normalizeParamName(raw: string): string {
  * named `sig_page` is refused because `sig` is denied, and losing a dimension
  * is cheaper than storing a signature for 458 days.
  */
-function isDenied(name: string, denied: Set<string>): boolean {
-  if (denied.has(name)) return true;
-  for (const segment of name.split(/[_\-.]/)) {
-    if (segment !== '' && denied.has(segment)) return true;
-  }
-  return false;
-}
+const isDenied = (name: string, denied: Set<string>): boolean =>
+  denied.has(name) || name.split(/[_\-.]/).some((segment) => segment !== '' && denied.has(segment));
 
 /**
  * Remove `user:pass@` from the authority, leaving everything else alone.
@@ -179,31 +155,7 @@ function isDenied(name: string, denied: Set<string>): boolean {
  * returned unchanged.
  */
 function stripCredentials(base: string): string {
-  const schemeEnd = base.indexOf('://');
-  let authorityStart: number;
-  if (schemeEnd !== -1) {
-    authorityStart = schemeEnd + 3;
-  } else if (base.startsWith('//')) {
-    // Protocol-relative URL.
-    authorityStart = 2;
-  } else {
-    return base;
-  }
-
-  // The query and fragment are already gone by the time this runs, so the
-  // authority ends at the first `/` or at the end of the string.
-  let authorityEnd = base.indexOf('/', authorityStart);
-  if (authorityEnd === -1) authorityEnd = base.length;
-
-  const authority = base.slice(authorityStart, authorityEnd);
-  const at = authority.lastIndexOf('@');
-  if (at === -1) return base;
-
-  return (
-    base.slice(0, authorityStart) +
-    authority.slice(at + 1) +
-    base.slice(authorityEnd)
-  );
+  return base.replace(/^([\s\S]*?:\/\/|\/\/)([^/]*)/, (_, head: string, authority: string) => head + authority.slice(authority.lastIndexOf('@') + 1));
 }
 
 /** The kept parameters, in their original order and original raw spelling. */
@@ -213,19 +165,14 @@ function keepAllowedParams(
   denied: Set<string>,
 ): string {
   if (query === '' || allowed.size === 0) return '';
-
-  const kept: string[] = [];
-  for (const pair of query.split('&')) {
-    if (pair === '') continue;
-    const eq = pair.indexOf('=');
-    const rawName = eq === -1 ? pair : pair.slice(0, eq);
-    const name = normalizeParamName(rawName);
-    if (!allowed.has(name)) continue;
-    // The deny list beats the allow list, always.
-    if (isDenied(name, denied)) continue;
-    kept.push(pair);
-  }
-  return kept.join('&');
+  return query
+    .split('&')
+    .filter((pair) => {
+      const name = normalizeParamName(pair.split('=')[0]);
+      // The deny list beats the allow list, always.
+      return pair !== '' && allowed.has(name) && !isDenied(name, denied);
+    })
+    .join('&');
 }
 
 /**
@@ -253,14 +200,8 @@ export function createUrlSanitizer(
     const trimmed = url.trim();
     if (trimmed === '') return '';
 
-    const hashAt = trimmed.indexOf('#');
-    const withoutFragment = hashAt === -1 ? trimmed : trimmed.slice(0, hashAt);
-
-    const queryAt = withoutFragment.indexOf('?');
-    const base =
-      queryAt === -1 ? withoutFragment : withoutFragment.slice(0, queryAt);
-    const query =
-      queryAt === -1 ? '' : withoutFragment.slice(queryAt + 1);
+    // The fragment goes; the query splits off at the first `?` before it.
+    const [, base, query = ''] = /^([^#?]*)(?:\?([^#]*))?/.exec(trimmed)!;
 
     const cleanBase = stripCredentials(base);
     const keptQuery = keepAllowedParams(query, allowed, denied);
@@ -297,15 +238,7 @@ const ASCII_LETTER = /[A-Za-z]/;
 const URL_TERMINATOR =
   /[\u0000-\u0020\u007F-\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000"'`<>\\^{}|]/;
 
-function countChar(text: string, ch: string): number {
-  let n = 0;
-  for (let i = 0; i < text.length; i++) if (text.charAt(i) === ch) n++;
-  return n;
-}
-
-function isAsciiDigit(ch: string): boolean {
-  return ch >= '0' && ch <= '9';
-}
+const countChar = (text: string, ch: string): number => text.split(ch).length - 1;
 
 /**
  * Where to cut a free-text URL candidate: everything from the returned index
@@ -327,29 +260,15 @@ function splitTrailingNoise(candidate: string): number {
   for (;;) {
     if (end === 0) break;
     const last = candidate.charAt(end - 1);
-    let peel = false;
-    if (
-      last === '.' ||
-      last === ',' ||
-      last === ';' ||
-      last === ':' ||
-      last === '!'
-    ) {
-      peel = true;
-    } else if (last === ')' || last === ']' || last === '}') {
-      const open = last === ')' ? '(' : last === ']' ? '[' : '{';
-      const head = candidate.slice(0, end);
-      peel = countChar(head, last) > countChar(head, open);
-    }
-    if (!peel) break;
+    const closer = ')]}'.indexOf(last);
+    const head = candidate.slice(0, end);
+    if (!'.,;:!'.includes(last) && !(closer >= 0 && countChar(head, last) > countChar(head, '([{'[closer]))) break;
     end--;
   }
 
   for (let pass = 0; pass < 2; pass++) {
     let digits = 0;
-    while (digits < end && isAsciiDigit(candidate.charAt(end - 1 - digits))) {
-      digits++;
-    }
+    while (digits < end && /\d/.test(candidate.charAt(end - 1 - digits))) digits++;
     if (digits === 0 || digits >= end) break;
     const colon = end - digits - 1;
     if (candidate.charAt(colon) !== ':') break;

@@ -55,6 +55,8 @@ export function createTransport(o: TransportOptions) {
   let inFlight = 0;
   let lastSend = -Infinity;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  // Until when the intake asked us to wait (Retry-After); nothing is sent before, even on hide.
+  let quietUntil = 0;
   let urgentTimer: ReturnType<typeof setTimeout> | null = null;
   let hiddenTimer: ReturnType<typeof setTimeout> | null = null;
   let unloadQueued = false;
@@ -106,10 +108,12 @@ export function createTransport(o: TransportOptions) {
       queue.unshift(...entries);
       trim();
       if (retryTimer) clearTimeout(retryTimer);
+      const wait = backoff.next(outcome.retryAfterMs);
+      if (outcome.retryAfterMs) quietUntil = now() + wait;
       retryTimer = setTimeout(() => {
         retryTimer = null;
         flush();
-      }, backoff.next(outcome.retryAfterMs));
+      }, wait);
       return;
     }
     if (isRefused(outcome)) {
@@ -171,7 +175,7 @@ export function createTransport(o: TransportOptions) {
   /** pagehide: everything queued goes now, uncompressed and keepalive, within the budget. */
   function sendTail(): void {
     unloadQueued = false;
-    if (stopped || blocked || held) return;
+    if (stopped || blocked || held || now() < quietUntil) return;
     let max = KEEPALIVE_MAX_BYTES - 5_000;
     while (queue.length) {
       const { entries, json } = take(max);
@@ -223,12 +227,8 @@ export function createTransport(o: TransportOptions) {
     flush,
     /** Tab hidden: send everything now, compressed; the page is still alive. */
     hide(): void {
-      if (stopped || blocked || held || unloading) return;
-      const backingOff = retryTimer !== null;
-      while (queue.length) {
-        void sendOne();
-        if (backingOff) break;
-      }
+      if (stopped || blocked || held || unloading || retryTimer) return;
+      while (queue.length) void sendOne();
     },
     unload(): void {
       unloading = true;
