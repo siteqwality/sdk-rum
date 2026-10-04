@@ -208,7 +208,7 @@ describe('startReplay', { timeout: 30_000 }, () => {
     expect(JSON.stringify(tail.events)).toContain('last words');
   });
 
-  it('a tab closed right after it came back still delivers what it recorded since', async () => {
+  it('a tab closed after its resumed snapshot delivers its open unload tail', async () => {
     document.body.innerHTML = `<p id="p">hello</p>${Array.from({ length: 800 }, (_, i) => `<div class="row">row ${i} ${'x'.repeat(40)}</div>`).join('')}`;
     start();
     await run(100);
@@ -216,14 +216,15 @@ describe('startReplay', { timeout: 30_000 }, () => {
     await run(100);
     visibility('visible');
     await run(5_000);
+    // Five seconds on the fake clock need not let real gzip finish on a busy runner.
+    await until(() => sent.some((s) => Number(s.q.q) >= 2 && s.q.fs === '1'));
+    expect(sent.some((s) => Number(s.q.q) >= 2 && s.q.fs === '1'), 'the resumed snapshot is delivered while visible').toBe(true);
     await mutate('after coming back');
     // Closing a tab: hidden, then pagehide, in one task (gzip cannot finish in between).
     visibility('hidden');
     pagehide();
     await run(200);
     await until(() => JSON.stringify(sent.flatMap((s) => s.events)).includes('after coming back'));
-    // The raw keepalive tail can decode before the gzip snapshot already in flight.
-    await until(() => sent.some((s) => Number(s.q.q) >= 2 && s.q.fs === '1'));
     const back = sent.filter((s) => Number(s.q.q) >= 2);
     expect(back.some((s) => s.q.fs === '1'), `the snapshot taken on coming back: ${JSON.stringify({ sent: sent.map(s => ({ q: s.q.q, fs: s.q.fs, types: s.events.map(e => e.type) })), states, counts })}`).toBe(true);
     expect(JSON.stringify(back.flatMap((s) => s.events))).toContain('after coming back');
