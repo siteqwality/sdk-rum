@@ -4,9 +4,10 @@ import { record } from '@rrweb/record';
 import { ReplayRecorder, replayPrivacy, type ReplayState } from './recorder';
 import { ReplayTransport } from './transport';
 import type { SeqStore } from './sequence';
+import { LEASE_KEY, LEASE_TTL_MS, BEAT_MS, WRITE_MS, TAKEOVER_MS, POLL_MS, storageKv, cookieKv, type Kv } from './lease';
 import type { UrlSanitizer } from '../core/url';
 import type { send } from '../core/send';
-import { storage, isHidden, byteLength } from '../core/util';
+import { isHidden, byteLength } from '../core/util';
 import { createBudget, budgetError, REPLAY_KEY, REPLAY_LIMITS } from '../core/budget';
 import type { SdkConfig } from '../types';
 
@@ -16,7 +17,9 @@ export interface ReplayStartOptions {
   sessionId: string;
   windowId: string;
   /** Where the session lives: 'localStorage' when its tabs share it (one records at a time). */
-  store: SeqStore | undefined;
+  store: Exclude<SeqStore, Kv> | undefined;
+  /** The session cookie's domain, when subdomains share the session: the lease lives there too. */
+  cookieDomain?: string;
   replayBase: string;
   token: string;
   fetch: typeof fetch;
@@ -44,36 +47,62 @@ export interface ReplayHandle {
   resume(): void;
 }
 
-import { LEASE_KEY, LEASE_TTL_MS, BEAT_MS, TAKEOVER_MS } from './lease';
-
 // Replay's own request budget, one per page load, so a replay cap never stops errors or views.
 let kind: SeqStore | undefined;
-const budget = createBudget(() => (kind === 'memory' ? undefined : kind), REPLAY_KEY, REPLAY_LIMITS);
+const budget = createBudget(() => (kind === 'localStorage' || kind === 'sessionStorage' ? kind : undefined), REPLAY_KEY, REPLAY_LIMITS);
 
 export function startReplay(o: ReplayStartOptions): ReplayHandle {
   kind = o.store;
   const recorder = new ReplayRecorder();
   const me = o.windowId;
   const ac = new AbortController();
-  const shared = o.store === 'localStorage';
+  // Tabs that share the session share a lease: a cookie across subdomains, else localStorage.
+  const kv: Kv | null = o.cookieDomain ? cookieKv(o.cookieDomain) : o.store === 'localStorage' ? storageKv('localStorage') : null;
+  const shared = !!kv;
+  const takeover = o.cookieDomain ? POLL_MS * 2 : TAKEOVER_MS;
   let core = o.paused ?? '';
   let away = false;
   let idle = false;
   let lastInput = o.now();
+  let lastWrite = 0;
   let started = false;
   let claiming = false;
   let done = false;
   let claimTimer: ReturnType<typeof setTimeout> | undefined;
-  let beat: ReturnType<typeof setInterval> | undefined;
+  const timers: Array<ReturnType<typeof setInterval>> = [];
+
+  // One live lease per session (`sid|window|beat`, `~` apart), so sessions never fight over one.
+  function leases(): string[][] {
+    return ((kv && kv.get(LEASE_KEY)) || '')
+      .split('~')
+      .map((l) => l.split('|'))
+      .filter(([s, , at]) => s && o.now() - Number(at) < LEASE_TTL_MS);
+  }
+  function others(): string[][] {
+    return leases().filter(([s]) => s !== o.sessionId);
+  }
+  function save(list: string[][]): boolean {
+    return !!kv && kv.set(LEASE_KEY, list.map((l) => l.join('|')).join('~'));
+  }
+  function owner(): string {
+    return leases().find(([s]) => s === o.sessionId)?.[1] ?? '';
+  }
+  function write(): boolean {
+    lastWrite = o.now();
+    return save([[o.sessionId, me, String(lastWrite)], ...others()]);
+  }
+  function release(): void {
+    if (shared && owner() === me) save(others());
+  }
 
   // Stopped for good: no listener, timer or lease outlives the recording.
-  const teardown = () => {
+  function teardown(): void {
     done = true;
     ac.abort();
     clearTimeout(claimTimer);
-    clearInterval(beat);
+    timers.forEach(clearInterval);
     release();
-  };
+  }
   const handle: ReplayHandle = {
     stop(discard) {
       teardown();
@@ -112,21 +141,6 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   }
 
   const listen = (target: EventTarget, type: string, fn: (e: never) => void) => target.addEventListener(type, fn as EventListener, { signal: ac.signal });
-  // One live lease per session (`sid|window|beat`, `;` apart), so sessions never fight over one.
-  const leases = () =>
-    (storage.get('localStorage', LEASE_KEY) || '')
-      .split(';')
-      .map((l) => l.split('|'))
-      .filter(([s, , at]) => s && o.now() - Number(at) < LEASE_TTL_MS);
-  const others = () => leases().filter(([s]) => s !== o.sessionId).slice(0, 2);
-  const save = (list: string[][]) => (list.length ? storage.set('localStorage', LEASE_KEY, list.map((l) => l.join('|')).join(';')) : (storage.del('localStorage', LEASE_KEY), true));
-  function owner(): string {
-    return leases().find(([s]) => s === o.sessionId)?.[1] ?? '';
-  }
-  const write = () => save([[o.sessionId, me, String(o.now())], ...others()]);
-  function release(): void {
-    if (shared && owner() === me) save(others());
-  }
 
   function apply(): void {
     // Nothing starts while a claim is pending.
@@ -147,21 +161,21 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
         o.onStatus(state, why);
       },
       now: o.now,
-      store: o.store ?? 'memory',
+      store: kv ?? o.store ?? 'memory',
       paused: why || undefined,
     });
   }
 
   // This tab takes over: paused until the lease is still its own a moment later, so the tab it
-  // takes over from stops first. The owner only refreshes its lease.
+  // takes over from stops first. The owner only refreshes its lease, at most every 5 s.
   function claim(): void {
     if (!shared || done || isHidden()) return;
-    if (owner() === me) return void write();
+    if (owner() === me) return void (o.now() - lastWrite >= WRITE_MS && write());
     // Without storage there is no lease to share: record alone.
     if (!write()) return ((away = false), apply());
     away = claiming = true;
     clearTimeout(claimTimer);
-    claimTimer = setTimeout(check, TAKEOVER_MS);
+    claimTimer = setTimeout(check, takeover);
     apply();
   }
   function check(): void {
@@ -170,6 +184,16 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     if (!w && !isHidden()) return claim();
     away = !!w && w !== me;
     apply();
+  }
+  // Another tab took over: stop now. A freed lease goes to a visible tab.
+  let seen: string | null = null;
+  function leaseChanged(): void {
+    const raw = kv && kv.get(LEASE_KEY);
+    if (done || raw === seen) return;
+    seen = raw;
+    const w = owner();
+    if (w && w !== me) (away = true), apply();
+    else if (!w) claim();
   }
 
   // Input, a visible tab and focus wake recording; pointer moves too, without claiming the lease.
@@ -185,14 +209,18 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     apply();
   });
   listen(window, 'pagehide', release);
-  beat = setInterval(() => {
-    if (!idle && o.now() - lastInput >= o.idleMs) (idle = true), apply();
-    if (!shared || isHidden()) return;
-    const w = owner();
-    if (w === me) write();
-    else if (!w) claim();
-    else if (!away) (away = true), apply();
-  }, BEAT_MS);
+  // Back from the back-forward cache: other tabs may own the session now.
+  listen(window, 'pageshow', (e: PageTransitionEvent) => e.persisted && claim());
+  timers.push(
+    setInterval(() => {
+      if (!idle && o.now() - lastInput >= o.idleMs) (idle = true), apply();
+      if (!shared || isHidden()) return;
+      const w = owner();
+      if (w === me) write();
+      else if (!w) claim();
+      else if (!away) (away = true), apply();
+    }, BEAT_MS),
+  );
 
   if (!shared) apply();
   else {
@@ -203,13 +231,8 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
       apply();
       if (document.hasFocus()) claim();
     } else claim();
-    listen(window, 'storage', (e: StorageEvent) => {
-      if (e.key !== LEASE_KEY || done) return;
-      const now = owner();
-      // Another tab took over: stop now. A freed lease goes to a visible tab.
-      if (now && now !== me) (away = true), apply();
-      else if (!now) claim();
-    });
+    if (o.cookieDomain) timers.push(setInterval(leaseChanged, POLL_MS));
+    else listen(window, 'storage', (e: StorageEvent) => e.key === LEASE_KEY && leaseChanged());
   }
   return handle;
 }

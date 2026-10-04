@@ -96,7 +96,9 @@ export function startResources(h: Hub, o: ResourcesOptions) {
     const key = `${view} ${re.initiatorType} ${origin}`;
     let b = buckets.get(key);
     if (!b) {
-      b = { e: { ...row(re), url: origin, dns_ms: undefined, connect_ms: undefined, tls_ms: undefined, ttfb_ms: undefined, download_ms: undefined, status: undefined }, d: [] };
+      // Per-request phases and status mean nothing for an aggregate.
+      const { dns_ms, connect_ms, tls_ms, ttfb_ms, download_ms, status, ...e } = row(re);
+      b = { e: { ...e, url: origin }, d: [] };
       buckets.set(key, b);
       if (!timer) timer = setTimeout(flush, AGGREGATE_MS);
     } else {

@@ -40,7 +40,7 @@ function isMobile(): boolean {
   const n = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
   const ua = read(() => n.userAgent) ?? '';
   // An iPad asks for the desktop site: a Mac with touch.
-  return read(() => n.userAgentData?.mobile) === true || /Mobi|Android|iP(hone|ad|od)|Tablet|Silk|Kindle/i.test(ua) || (/Macintosh/.test(ua) && n.maxTouchPoints > 1);
+  return read(() => n.userAgentData?.mobile) === true || /Mobi|Android|iP(hone|ad|od)|Kindle/i.test(ua) || (/Macintosh/.test(ua) && n.maxTouchPoints > 1);
 }
 
 const keyOf = (e: SqEvent) =>
@@ -69,7 +69,12 @@ export function createInstance(opts: InitOptions) {
   let cfg: SdkConfig = cached?.config ?? normalizeConfig(null, appId);
   let configAt = cached?.at ?? 0;
   let configKnown = !!cached;
-  const explicit = opts.trackingConsent;
+  // Consent the page set (init option or setTrackingConsent); config never overrides it.
+  let explicit = opts.trackingConsent;
+  // The memory session a consent grant replaced with an adopted one: its events go to that one.
+  let memSid = '';
+  let memTo = '';
+  const mapped = (sid: string) => (sid === memSid ? memTo : sid);
   let consent: Consent = explicit ?? (cfg.privacy.require_consent ? 'pending' : 'granted');
   let optedOut = storage.get('localStorage', OPT_OUT) === '1';
   const gpcOn = read(() => (navigator as Navigator & { globalPrivacyControl?: boolean }).globalPrivacyControl) === true;
@@ -183,7 +188,7 @@ export function createInstance(opts: InitOptions) {
       sampling: { analyze: analyzeOn, replay: recording === 'recording' || recording === 'paused', rule_id: d.rule_id },
       consent,
       viewport: [innerWidth, innerHeight],
-      screen: [read(() => screen.width) ?? 0, read(() => screen.height) ?? 0],
+      screen: read(() => [screen.width, screen.height]) ?? [0, 0],
       dpr: devicePixelRatio || 1,
       lang: read(() => navigator.language) ?? '',
       tz: read(() => Intl.DateTimeFormat().resolvedOptions().timeZone) ?? '',
@@ -259,7 +264,7 @@ export function createInstance(opts: InitOptions) {
     // Only a new session lifts a spent request budget.
     if (overBudget && !o.sid) sessionFor(!!o.rotate);
     if (!canSend()) return false;
-    const sid = o.sid ?? sessionFor(!!o.rotate);
+    const sid = o.sid ? mapped(o.sid) : sessionFor(!!o.rotate);
     if (!sid || (tier === ANALYZE && (gpc() || dnr || urlPaused))) return false;
     const kept = o.kind ? hook(e, o.kind) : e;
     if (!kept) return false;
@@ -304,6 +309,7 @@ export function createInstance(opts: InitOptions) {
           sessionId: sid,
           windowId: session.windowId,
           store: store(),
+          cookieDomain: session.mode === 'cookie' ? opts.cookieDomain : undefined,
           replayBase,
           token,
           // Replay sends only while it may record.
@@ -387,7 +393,8 @@ export function createInstance(opts: InitOptions) {
   const setRules = (fresh: boolean) => rules.set(cfg.rules, session.id, session.started, session.decision, fresh);
 
   /** A new session (rotated, or another tab's adopted): state, rules and the view start over. */
-  function changed(): void {
+  /** `adopt`: consent was granted and another tab's session adopted; this page's view goes on in it. */
+  function changed(adopt = false): void {
     // A new session lifts the session ceiling; the page ceiling holds until the next page load.
     if (overBudget && budget.pageOpen()) {
       overBudget = false;
@@ -395,15 +402,18 @@ export function createInstance(opts: InitOptions) {
       reason = undefined;
     }
     ctx = null;
-    ring = [];
-    crumbs = [];
+    if (!adopt) {
+      ring = [];
+      crumbs = [];
+    }
     analyzeOn = forced = false;
     dnr = dnrIds.has(user.id ?? '');
     resample();
     stopRecording();
-    setRules(true);
+    setRules(!adopt);
     identity();
-    if (!viewStarting) views?.restart('route_change', 'session');
+    // Adopted: the view goes on, its events mapped to the session in emit().
+    if (!adopt && !viewStarting) views?.restart('route_change', 'session');
     decide(session.decision);
     if (user.id) void checkIdentity(user.id);
   }
@@ -476,9 +486,15 @@ export function createInstance(opts: InitOptions) {
     ctx = null;
     log('consent', next);
     if (next === 'granted') {
-      if (session.setMode(target())) changed();
-      // Held events carry the ctx they were queued with; they go out as granted.
-      transport.rekey(ctxFor(session.id));
+      const was = session.id;
+      if (session.setMode(target())) {
+        memSid = was;
+        memTo = session.id;
+        changed(true);
+      }
+      // Held events go out as granted: the memory session's under the session now live.
+      const now = ctxFor(session.id);
+      transport.rekey((c) => (c.consent === 'granted' ? c : c.session_id === was ? now : { ...c, consent: 'granted' }));
       session.setDecision(session.decision);
       if (configAt) saveCachedConfig(appId, cfg);
       transport.hold(false);
@@ -579,13 +595,13 @@ export function createInstance(opts: InitOptions) {
         network?.flush();
       },
       onHistory: () => actions?.noteReaction(),
-      live: (sid) => sessionFor(false) === sid,
+      live: (sid) => sessionFor(false) === mapped(sid),
     });
   });
   start('vitals', () =>
     startVitals(hub, (fields, metric, value) => {
       views?.vital(fields);
-      if (views?.initial.sid === session.id) input({ k: 'vital', metric, value });
+      if (views && mapped(views.initial.sid) === session.id) input({ k: 'vital', metric, value });
       const url = (fields.lcp as { resource_url?: string } | undefined)?.resource_url;
       if (url) resources?.lcp(url);
     }),
@@ -681,7 +697,6 @@ export function createInstance(opts: InitOptions) {
   if (cached) applyConfig(cached.raw, false);
   const ready = refresh();
   if (explicit && explicit !== 'granted') setConsent(explicit);
-  log('started', session.id, consent);
 
   const strArg = (v: unknown) => (typeof v === 'string' && v ? cut(v, 256) : undefined);
 
@@ -774,7 +789,10 @@ export function createInstance(opts: InitOptions) {
       const n = strArg(name);
       if (n) views?.setRoute(n);
     },
-    setTrackingConsent: setConsent,
+    setTrackingConsent(c: Consent): void {
+      if (['granted', 'pending', 'not-granted'].includes(c)) explicit = c;
+      setConsent(c);
+    },
     optOut: () => setOptOut(true),
     optIn: () => setOptOut(false),
     isOptedOut: () => optedOut,
@@ -832,7 +850,7 @@ function eventTime(event: unknown): number {
   const t = now();
   const stamp = read(() => (event as Event).timeStamp);
   if (typeof stamp !== 'number' || !(stamp > 0)) return t;
-  // Older engines stamp events in epoch ms; trust that only near our own clock.
+  // Older engines (and jsdom) stamp events in epoch ms; trust that only near our own clock.
   const at = stamp > 1e12 ? Math.round(stamp) : epochOf(stamp);
   return at <= t && t - at < 3_600_000 ? at : t;
 }

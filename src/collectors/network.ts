@@ -250,6 +250,14 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     success(w.row);
   }
 
+  /** Request size and body; a traceparent unless the page set its own. */
+  function prep(req: Req, body: unknown, headers: Headers, trace: (value: string) => void): void {
+    req.reqBytes = bodySize(body);
+    if (req.body && typeof body === 'string') req.reqBody = body;
+    if (req.trace && !headers.has('traceparent')) trace(`00-${req.trace[0]}-${req.trace[1]}-01`);
+    else req.trace = undefined;
+  }
+
   function readBody(req: Req, get: () => Promise<string | undefined> | string | undefined): Promise<string | undefined> {
     if (!req.body) return Promise.resolve(undefined);
     try {
@@ -297,14 +305,11 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
         const source = init?.headers ?? (isReq ? (input as Request).headers : undefined);
         const headers = new Headers(source);
         req = begin(init?.method ?? (isReq ? (input as Request).method : 'GET'), url, 'fetch', headers);
-        if (req) {
-          req.reqBytes = bodySize(init?.body);
-          if (req.body && typeof init?.body === 'string') req.reqBody = init.body;
-          if (req.trace && !headers.has('traceparent')) {
-            headers.set('traceparent', `00-${req.trace[0]}-${req.trace[1]}-01`);
+        if (req)
+          prep(req, init?.body, headers, (v) => {
+            headers.set('traceparent', v);
             args = [input, { ...init, headers }];
-          } else if (req.trace) req.trace = undefined;
-        }
+          });
       } catch {
         req = null;
         args = [input, init];
@@ -362,10 +367,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
         const info = reqs.get(this);
         const req = info && begin(info.method, info.url, 'xhr', info.headers);
         if (req) {
-          req.reqBytes = bodySize(body);
-          if (req.body && typeof body === 'string') req.reqBody = body;
-          if (req.trace && !info.headers.has('traceparent')) setRequestHeader.call(this, 'traceparent', `00-${req.trace[0]}-${req.trace[1]}-01`);
-          else req.trace = undefined;
+          prep(req, body, info.headers, (v) => setRequestHeader.call(this, 'traceparent', v));
           let kind: string | undefined;
           const xhr = this;
           for (const type of ['abort', 'timeout', 'error'] as const) {

@@ -136,4 +136,14 @@ describe('SegmentSequence', () => {
     expect(take(new SegmentSequence('s1', 'memory'), 3)).toEqual([0, 1, 2]);
     expect(localStorage.length + sessionStorage.length).toBe(0);
   });
+
+  it('never reuses an index when the shared counter vanishes under it', () => {
+    const a = new SegmentSequence('s1', 'localStorage');
+    expect(take(a, 3)).toEqual([0, 1, 2]);
+    // Consent withdrawn in another tab removed the counter; this tab keeps recording.
+    localStorage.clear();
+    const next = a.take();
+    expect(next).toBeGreaterThanOrEqual(2 ** 31);
+    expect(a.take()).toBe(next + 1);
+  });
 });

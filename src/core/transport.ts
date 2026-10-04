@@ -112,6 +112,7 @@ export function createTransport(o: TransportOptions) {
       if (outcome.retryAfterMs) quietUntil = now() + wait;
       retryTimer = setTimeout(() => {
         retryTimer = null;
+        quietUntil = 0;
         flush();
       }, wait);
       return;
@@ -153,7 +154,7 @@ export function createTransport(o: TransportOptions) {
 
   /** Sends the next batch unless one is in flight, a retry is pending or consent is pending. */
   function flush(): void {
-    if (stopped || blocked || held || unloading || !queue.length || inFlight || retryTimer) return;
+    if (stopped || blocked || held || unloading || !queue.length || inFlight || retryTimer || now() < quietUntil) return;
     if (isHidden() && now() < lastSend + HIDDEN_SPACING_MS) {
       scheduleHidden();
       return;
@@ -248,9 +249,9 @@ export function createTransport(o: TransportOptions) {
       trim();
       if (!on) flush();
     },
-    /** Re-keys events held before consent to the granted ctx; granted ones keep theirs. */
-    rekey(c: Ctx): void {
-      for (const entry of queue) if (entry.c.consent !== 'granted') entry.c = c;
+    /** Gives queued events a new ctx (consent granted). */
+    rekey(map: (c: Ctx) => Ctx): void {
+      for (const entry of queue) entry.c = map(entry.c);
     },
     clear(): void {
       queue = [];

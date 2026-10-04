@@ -1,13 +1,10 @@
 // FNV-1a 32 over UTF-8 (shared with core-rs `common::rum::fingerprint::fnv1a32`) and ids.
-import { now } from './util';
-
-// Made on first use, so loading the script never needs it.
-let utf8: TextEncoder | undefined;
+import { now, utf8 } from './util';
 
 /** Over the UTF-8 bytes; a lone surrogate encodes as U+FFFD, as TextEncoder does. */
 export function fnv1a32(text: string): number {
   let h = 0x811c9dc5;
-  for (const b of (utf8 ||= new TextEncoder()).encode(text)) h = Math.imul(h ^ b, 0x01000193) >>> 0;
+  for (const b of utf8(text)) h = Math.imul(h ^ b, 0x01000193) >>> 0;
   return h;
 }
 

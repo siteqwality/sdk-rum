@@ -35,9 +35,10 @@ describe('textPatterns', () => {
     expect(p('https://shop.test/account/me')).toBe(false);
   });
 
-  it('expressions see the first 4 KB only; substrings the whole text', () => {
-    const text = `${'a'.repeat(5000)}needle`;
-    expect(textPatterns(['/needle/'])(text)).toBe(false);
+  it('expressions skip text over 4 KB, so the SDK never drops what the intake keeps; substrings see it all', () => {
+    const text = `needle${'a'.repeat(5000)}`;
+    expect(textPatterns(['/^needle/'])(text)).toBe(false);
+    expect(textPatterns(['/a$/'])('a'.repeat(4096))).toBe(true);
     expect(textPatterns(['needle'])(text)).toBe(true);
   });
 

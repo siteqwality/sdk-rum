@@ -17,8 +17,9 @@ export default defineConfig({
   reporter: [['list'], ['./e2e/lib/gap-reporter.js'], ['html', { open: 'never' }], ['json', { outputFile: 'test-results/results.json' }]],
   use: {
     trace: 'retain-on-failure',
-    // Every host but the fixture's fails to resolve, so nothing can reach production.
-    launchOptions: { args: ['--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1'] },
+    // Every host but the fixture's fails to resolve, so nothing can reach production. *.sq.test
+    // are subdomains of one site, for sessions shared through cookieDomain.
+    launchOptions: { args: ['--host-resolver-rules=MAP *.sq.test 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1'] },
   },
   projects: browsers.map((name) => ({
     name,

@@ -24,8 +24,9 @@ export function textPatterns(list: unknown, slashes = true): TextMatcher {
         }
     }
   }
-  // Expressions see at most 4 KB: JS regexes backtrack, where core-rs runs in linear time.
+  // Expressions skip text over 4 KB (JS regexes backtrack; core-rs runs in linear time), so the
+  // SDK never drops what the intake would keep.
   return (t) =>
     subs.some((s) => t.includes(s)) ||
-    res.some((r) => read(() => ((r.lastIndex = 0), r.test(t.slice(0, 4096)))) === true);
+    (t.length <= 4096 && res.some((r) => read(() => ((r.lastIndex = 0), r.test(t))) === true));
 }

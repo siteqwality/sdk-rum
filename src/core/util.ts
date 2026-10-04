@@ -43,15 +43,11 @@ export function cut(text: string, max: number): string {
   return /[\uD800-\uDBFF]$/.test(out) ? out.slice(0, -1) : out;
 }
 
-/** UTF-8 length of a string, counted without encoding a copy of it. */
-export function byteLength(text: string): number {
-  let bytes = text.length;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code >= 0x80) bytes += code >= 0x800 && (code < 0xd800 || code > 0xdfff) ? 2 : 1;
-  }
-  return bytes;
-}
+// UTF-8, with an encoder made on first use so loading the script never needs it.
+let encoder: TextEncoder | undefined;
+export const utf8 = (text: string): Uint8Array => (encoder ||= new TextEncoder()).encode(text);
+
+export const byteLength = (text: string): number => utf8(text).length;
 
 export const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 export const nonEmpty = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : undefined);

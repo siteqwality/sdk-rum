@@ -129,7 +129,7 @@ through a first-party cookie; each tab has its own window id.
 | `_sq_aid` | `localStorage` | Anonymous id, 13 months; not set without consent or under GPC |
 | `_sq_cfg_<app>` | `localStorage` | Cached config |
 | `_sq_bgt`, `_sq_bgr` | as the session | Request budget counters (core, replay) |
-| `_sq_rseq`, `_sq_rl` | as the session | Replay segment numbers; which tab records |
+| `_sq_rseq`, `_sq_rl` | `localStorage`, or a cookie with `cookieDomain` | Replay segment numbers; which tab records |
 | `_sq_optout` | `localStorage` | Opt-out |
 
 Nothing is stored while consent is pending or with `persistence: 'memory'`. Withdrawing consent
@@ -138,7 +138,8 @@ removes every key but the opt-out.
 ## Consent, GPC and opt-out
 
 - `'pending'` collects in memory only: nothing is sent or stored, replay does not start. Granting
-  sends what was held under a fresh session; `'not-granted'` drops it.
+  sends what was held, in the session another tab already has or a new one; `'not-granted'` drops
+  it. Consent set with `setTrackingConsent` is never overridden by the application's config.
 - With Global Privacy Control on and the app honouring it (the default), a session is Observe only:
   no Analyze detail, no replay, no user identity or anonymous id, and the session lives in
   `sessionStorage`. Cookieless apps get the same storage.
@@ -208,7 +209,8 @@ applies the same rules server-side.
   is marked in the replay. Recording never outlives its session.
 - **One tab at a time**: the tabs of a session share it, and the focused, visible tab records. A
   tab that takes over starts with a full snapshot, so the session plays back in order (`status`
-  reason `other_tab` in the others). Per-tab replay comes with 2.1.
+  reason `other_tab` in the others). With `cookieDomain`, tabs on its subdomains take turns the
+  same way, through a cookie on that domain. Per-tab replay comes with 2.1.
 - **Never-record URLs** use the same pattern language as the error lists: a substring of the page
   URL, or `/regex/`. Expressions see the first 4 KB of the text.
 - **Segments** close at 30 s, 500 events or about 750 KB, and when the tab hides or closes; a full

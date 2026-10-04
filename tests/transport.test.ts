@@ -209,6 +209,22 @@ describe('failures', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('a Retry-After outlives a budget block: nothing goes until it passes', async () => {
+    const fail = vi.fn(async () => new Response('', { status: 429, headers: { 'Retry-After': '600' } }));
+    const t = createTransport({ url: 'https://in.test/v2/batch', token: 'ct', fetch: fail as unknown as typeof fetch, count: () => {} });
+    t.push(ev(1), ctx());
+    t.flush();
+    await drain();
+    t.block(true);
+    t.block(false);
+    t.push(ev(2), ctx());
+    t.flush();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fail).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fail.mock.calls.length).toBeGreaterThan(1);
+  });
+
   it('drops a batch the request budget refused, never retrying it', async () => {
     const refuse = vi.fn(async () => {
       throw Object.assign(new Error('request budget'), { name: 'SqBudget' });
@@ -293,18 +309,18 @@ describe('consent', () => {
     await drain();
     expect(calls).toEqual([]);
     expect(t.size).toBe(MAX_PENDING);
-    t.rekey(ctx('s-granted'));
+    t.rekey(() => ctx('s-granted'));
     t.hold(false);
     await drain();
     expect(calls[0].body.ctx.session_id).toBe('s-granted');
   });
 
-  it('re-keys only events held before consent, never granted ones', async () => {
+  it('re-keys queued events through the mapping it is given', async () => {
     const t = make();
     t.hold(true);
     t.push(ev(1), ctx('s-old', 'p1', { consent: 'granted' }));
     t.push(ev(2), ctx('s-mem', 'p1', { consent: 'pending' }));
-    t.rekey(ctx('s-new', 'p1', { consent: 'granted' }));
+    t.rekey((c) => (c.consent === 'granted' ? c : ctx('s-new', 'p1', { consent: 'granted' })));
     t.hold(false);
     t.hide();
     await drain();

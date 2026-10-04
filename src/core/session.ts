@@ -277,7 +277,7 @@ export function createSession(opts: SessionOptions) {
     },
     /** Removes every key the SDK stores but the opt-out (consent withdrawn). */
     clear() {
-      writeCookie('', 0);
+      for (const k of [KEY, '_sq_rl', '_sq_rseq']) writeCookie('', 0, k);
       for (const kind of ['localStorage', 'sessionStorage'] as const) {
         for (const k of ['s', 'aid', 'w', 'bgt', 'bgr', 'act', 'rseq', 'rl'].map((k) => `_sq_${k}`).concat('sq_rum_session', `sq_rum_rules:${rec.id}`, `sq_rum_replay_next:${rec.id}`)) storage.del(kind, k);
       }

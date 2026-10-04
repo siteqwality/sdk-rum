@@ -235,6 +235,42 @@ describe('consent and privacy signals', () => {
     expect(of('in the second session')).not.toBe(first);
   });
 
+  it('a grant that adopts another tab\'s session moves this page\'s view into it, no phantom session', async () => {
+    const live = '01a10521-0000-7000-8000-0000000000bb';
+    document.cookie = `_sq_s=${live}|${Date.now() - 60_000}|${Date.now()}|0;path=/`;
+    const net = await boot({ trackingConsent: 'pending' });
+    const memory = SiteQwalityRUM.getStatus()!.session_id;
+    expect(memory).not.toBe(live);
+    SiteQwalityRUM.setTrackingConsent('granted');
+    expect(SiteQwalityRUM.getStatus()!.session_id).toBe(live);
+    SiteQwalityRUM.addAction('after grant');
+    pagehide();
+    await flush();
+    const sessions = new Set(net.batches.map((b) => b.body.ctx.session_id));
+    expect([...sessions]).toEqual([live]);
+    expect(net.events('view_start')).toHaveLength(1);
+    expect(net.events('view_end').every((e) => e.view_id === net.events('view_start')[0].view_id)).toBe(true);
+    // A later rotation ends that view in the adopted session, not the new one.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 16 * 60_000 });
+    SiteQwalityRUM.addAction('next session');
+    vi.useRealTimers();
+    await flush();
+    const ends = net.events('view_end').filter((e) => e.view_id === net.events('view_start')[0].view_id);
+    expect(new Set(ends.map((e) => e.ctx.session_id))).toEqual(new Set([live]));
+  });
+
+  it('a grant made before the config arrives holds, even when the app requires consent', async () => {
+    const net = stubNetwork(config({ privacy: { require_consent: true } }));
+    SiteQwalityRUM._reset();
+    const ready = SiteQwalityRUM.init({ applicationId: APP, clientToken: 'ct_1', ingestBase: 'https://in.test', replayBase: 'https://rp.test', configBase: 'https://cdn.test' });
+    SiteQwalityRUM.setTrackingConsent('granted');
+    await ready;
+    expect(SiteQwalityRUM.getStatus()!.consent).toBe('granted');
+    SiteQwalityRUM.addAction('a');
+    await flush();
+    expect(net.events('custom')).toHaveLength(1);
+  });
+
   it('an opt-out in another tab applies here at once', async () => {
     const net = await boot();
     localStorage.setItem('_sq_optout', '1');

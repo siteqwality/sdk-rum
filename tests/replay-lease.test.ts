@@ -39,7 +39,7 @@ afterEach(() => {
 });
 
 const url = createUrlSanitizer();
-function start(): ReplayHandle {
+function start(extra: Partial<ReplayStartOptions> = {}): ReplayHandle {
   handle = startReplay({
     mode: 'stream',
     sessionId: SID,
@@ -59,6 +59,8 @@ function start(): ReplayHandle {
     mask: (s) => s,
     onStatus: (state, why) => states.push(why ?? state),
     now: () => Date.now(),
+    idleMs: 300_000,
+    ...extra,
   });
   return handle;
 }
@@ -235,5 +237,59 @@ describe('the replay lease', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(writes).not.toHaveBeenCalled();
     handle = null;
+  });
+
+  it('the owner writes its lease at most every 5 s, however fast the user types', async () => {
+    start();
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS);
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    for (let i = 0; i < 50; i++) {
+      window.dispatchEvent(new Event('keydown'));
+      await vi.advanceTimersByTimeAsync(20);
+    }
+    expect(writes.mock.calls.filter(([k]) => k === LEASE_KEY).length).toBeLessThanOrEqual(1);
+  });
+
+  it('starting with the page replay budget spent and a shared session stops cleanly', async () => {
+    vi.resetModules();
+    vi.doMock('../src/core/budget', async (orig) => ({
+      ...(await orig<typeof import('../src/core/budget')>()),
+      createBudget: () => ({ pageOpen: () => false, take: () => false }),
+    }));
+    const spent = (await import('../src/replay/chunk')).startReplay;
+    vi.doUnmock('../src/core/budget');
+    const real = startReplay;
+    startReplay = spent;
+    try {
+      lease(ME);
+      expect(() => start()).not.toThrow();
+      expect(states).toEqual(['replay_budget']);
+      expect(localStorage.getItem(LEASE_KEY)).toBeNull();
+    } finally {
+      startReplay = real;
+      handle = null;
+    }
+  });
+
+  it('back from the back-forward cache, a tab that lost the lease waits for it before recording', async () => {
+    start();
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS);
+    lease('w-other');
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    expect(states.at(-1)).toBe('other_tab');
+  });
+
+  it('across subdomains the lease lives in a cookie on the session domain, polled', async () => {
+    start({ cookieDomain: 'localhost' });
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS * 4 + 100);
+    expect(states.at(-1)).toBe('recording');
+    expect(document.cookie).toContain(`${LEASE_KEY}=${SID}|${ME}|`);
+    expect(localStorage.getItem(LEASE_KEY)).toBeNull();
+    // A tab on another subdomain takes over: noticed within a poll, without storage events.
+    document.cookie = `${LEASE_KEY}=${SID}|w-sub|${Date.now()};path=/;domain=localhost`;
+    await vi.advanceTimersByTimeAsync(600);
+    expect(states.at(-1)).toBe('other_tab');
+    handle!.stop();
+    document.cookie = `${LEASE_KEY}=;path=/;max-age=0;domain=localhost`;
   });
 });

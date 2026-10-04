@@ -72,6 +72,7 @@ Mock control API (`http://127.0.0.1:4320/__mock`): `POST /reset`, `PUT /apps/<to
 - **Long-lived tabs** (`long-lived.e2e.js`): `/mpa/ticking-clock.html` ticks a clock every second.
   With the page clock faked, an hour hidden or idle must cost a few requests, then resume from a
   full snapshot.
-- **Two tabs** (`multi-tab.e2e.js`): two tabs share one session; replay records in one at a time
-  and the session's segments never interleave.
+- **Two tabs** (`multi-tab.e2e.js`, `subdomains.e2e.js`): two tabs share one session, on one
+  origin or on two subdomains through `cookieDomain` (`*.sq.test` maps to the fixture in
+  Chromium); replay records in one at a time and the session's segments never interleave.
 - Tests finish like a user: hide the tab (simulated, headless pages never hide), then close it.
