@@ -32,6 +32,7 @@ const defaults = (): Omit<SdkConfig, 'application_id' | 'rules'> => ({
     capture_user_email: true,
   },
   capture: {
+    canvas: null,
     resource_exclusions: [],
     network: { header_allowlist: ['content-type', 'x-request-id'], body_urls: [], trace_urls: [], max_body_bytes: 10_240 },
     console: ['error', 'warn'],

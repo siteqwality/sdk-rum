@@ -279,7 +279,7 @@ export function createSession(opts: SessionOptions) {
     clear() {
       for (const k of [KEY, '_sq_rl', '_sq_rseq']) writeCookie('', 0, k);
       for (const kind of ['localStorage', 'sessionStorage'] as const) {
-        for (const k of ['s', 'aid', 'w', 'bgt', 'bgr', 'act', 'rseq', 'rl', 'rcap'].map((k) => `_sq_${k}`).concat('sq_rum_session', `sq_rum_rules:${rec.id}`, `sq_rum_replay_next:${rec.id}`)) storage.del(kind, k);
+        for (const k of ['_sq_s', '_sq_aid', '_sq_w', '_sq_bgt', '_sq_bgr', '_sq_act', '_sq_rseq', '_sq_rl', '_sq_rcap', '_sq_cb', 'sq_rum_session', `sq_rum_rules:${rec.id}`, `sq_rum_replay_next:${rec.id}`]) storage.del(kind, k);
       }
     },
   };

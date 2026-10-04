@@ -1,6 +1,7 @@
 // The lazy replay chunk (design 5.2, 5.4, 5.5, 6.4): rrweb, the recorder diet, the replay ring
 // and segments v2. Every tab records its own window; pauses while hidden, idle or on a
 // never-record page; a request budget of its own.
+import { loadCanvas } from './canvas-load';
 import { record } from '@rrweb/record';
 import { ReplayRecorder, replayPrivacy, type ReplayState } from './recorder';
 import { ReplayTransport } from './transport';
@@ -188,6 +189,14 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     started = true;
     recorder.start({
       record,
+      canvas: o.cfg.capture.canvas?.enabled === true && o.cfg.privacy.level !== 'strict' ? emit => {
+        let alive = true;
+        let stop: (() => void) | undefined;
+        void loadCanvas().then(start => {
+          if (alive) stop = start({ config: o.cfg.capture.canvas, privacy: o.cfg.privacy, session: sid, store: o.store, mirror: record.mirror, now: o.now, emit, count: o.count });
+        }).catch(() => { if (alive) o.count('canvas_load_failed'); });
+        return () => { alive = false; stop?.(); };
+      } : undefined,
       privacy: replayPrivacy(o.cfg.privacy, o.mask),
       url: o.url,
       text: o.text,

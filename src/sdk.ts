@@ -459,8 +459,8 @@ export function createInstance(opts: InitOptions) {
     const d = session.decision;
     if (first || d.analyze || d.replay) decide(d);
     if (user.id) void checkIdentity(user.id);
-    if (replay && fresh && JSON.stringify(prev.privacy) !== JSON.stringify(cfg.privacy)) {
-      // New privacy settings apply from a fresh snapshot.
+    if (replay && fresh && JSON.stringify([prev.privacy, prev.capture]) !== JSON.stringify([cfg.privacy, cfg.capture])) {
+      // New privacy or capture settings apply from a fresh snapshot.
       stopRecording();
     }
     startRecording();

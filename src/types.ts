@@ -116,6 +116,8 @@ export interface SdkConfig {
     capture_user_email: boolean;
   };
   capture: {
+    /** Deferred validation in the opt-in canvas chunk. Null means disabled. */
+    canvas: { enabled?: boolean; selectors?: string[]; fps?: number; quality?: number } | null;
     resource_exclusions: string[];
     network: { header_allowlist: string[]; body_urls: string[]; trace_urls: string[]; max_body_bytes: number };
     console: string[];

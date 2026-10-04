@@ -57,10 +57,8 @@ describe('the replay ring in the core', () => {
     expect(captured.handle!.go).toHaveBeenCalledTimes(1);
     expect(captured.o!.session.decision).toEqual({ analyze: true, replay: true, rule_id: 'r_err' });
     setVisibility('hidden');
-    await settle(10);
     // The batch says the session is sampled for replay only once it is.
-    const ctxs = net.batches.map((b) => b.body.ctx.sampling as { replay: boolean });
-    expect(ctxs.at(-1)!.replay).toBe(true);
+    await vi.waitFor(() => expect(net.batches.at(-1)?.body.ctx.sampling).toMatchObject({ replay: true }));
   });
 
   it('a match already latched for the session streams from the first event', async () => {
@@ -174,6 +172,18 @@ describe('the replay ring in the core', () => {
     await settle(5);
     expect(captured.handle!.stop).toHaveBeenCalledWith(true);
     expect(Fresh.getStatus()!.recording).toBe('off');
+  });
+
+  it('restarts the recorder when canvas configuration changes without privacy changes', async () => {
+    const { net } = await boot([rule('replay')]);
+    const old = captured.handle!;
+    net.config = config({ rules: [rule('replay')], capture: { canvas: { enabled: true } } });
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 6 * 60_000 });
+    setVisibility('visible');
+    await settle(5);
+    expect(old.stop).toHaveBeenCalled();
+    expect(captured.starts).toBe(2);
+    expect(captured.o!.cfg.capture.canvas).toEqual({ enabled: true });
   });
 
   it("the check stops a recorder that belongs to another session than the page's", async () => {

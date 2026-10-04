@@ -65,10 +65,11 @@ function snapshotOnRecord(node?: Record<string, unknown>, loading = false) {
   });
 }
 
-function start(o: { buffer?: boolean; paused?: string; privacy?: Partial<ReplayPrivacy>; node?: Record<string, unknown>; loading?: boolean } = {}) {
+function start(o: { buffer?: boolean; paused?: string; privacy?: Partial<ReplayPrivacy>; node?: Record<string, unknown>; loading?: boolean; canvas?: (emit: Emit) => () => void } = {}) {
   const record = Object.assign(snapshotOnRecord(o.node, o.loading), { mirror: rrweb.record.mirror, addCustomEvent: rrweb.record.addCustomEvent });
   recorder.start({
     record: record as never,
+    canvas: o.canvas,
     privacy: { maskInputs: true, maskAllText: false, blockSelector: '', ...o.privacy },
     url,
     text: createTextUrlSanitizer(url),
@@ -116,6 +117,22 @@ describe('ReplayRecorder, streaming', () => {
       expect(segments).toHaveLength(1);
       expect(types(segments[0])).toEqual([4, 2]);
     }
+  });
+
+  it('stops canvas on pause and ignores pixels from a retired checkout', () => {
+    const emitters: Emit[] = [];
+    const stops = vi.fn();
+    start({ canvas: emit => { emitters.push(emit); return stops; } });
+    expect(emitters).toHaveLength(1);
+    recorder.pause('hidden');
+    expect(stops).toHaveBeenCalledTimes(1);
+    recorder.resume();
+    expect(emitters).toHaveLength(2);
+    emitters[0]({ type: 5, data: { tag: 'old-pixels' } });
+    emitters[1]({ type: 5, data: { tag: 'new-pixels' } });
+    recorder.stop(true);
+    expect(stops).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(segments)).not.toContain('old-pixels');
   });
 
   it('stamps events from the SDK clock, minimises the Meta URL and sends the first snapshot at once', () => {

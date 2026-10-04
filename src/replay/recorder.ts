@@ -28,6 +28,8 @@ export type Why = 'start' | 'resume' | 'checkout' | 'resync';
 
 export interface RecorderOptions {
   record: RecordFn;
+  /** Optional lazy pixel sampler, restarted with the same snapshot generation. */
+  canvas?: (emit: (event: unknown) => void) => () => void;
   privacy: ReplayPrivacy;
   url: UrlSanitizer;
   text: (s: string) => string;
@@ -52,6 +54,7 @@ interface Tagged extends Segment {
 export class ReplayRecorder {
   private o!: RecorderOptions;
   private options: ReturnType<typeof recordOptions> = {};
+  private stopCanvas?: () => void;
   private stopRecord: (() => void) | null = null;
   private segmenter!: Segmenter;
   private ring = new Ring();
@@ -173,6 +176,8 @@ export class ReplayRecorder {
   /** rrweb and the refill tick stop; nothing more is captured. */
   private halt(): void {
     this.generation++;
+    this.stopCanvas?.();
+    this.stopCanvas = undefined;
     clearInterval(this.tick);
     try {
       this.stopRecord?.();
@@ -251,6 +256,7 @@ export class ReplayRecorder {
       return this.o.onStatus?.('stopped', 'record_failed');
     }
     this.stopRecord = stop;
+    this.stopCanvas = this.o.canvas?.(event => this.onEvent(event, generation, getNode));
     this.tick = setInterval(() => this.refill(generation), 1_000);
     this.status('recording');
   }

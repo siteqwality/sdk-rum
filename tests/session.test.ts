@@ -141,11 +141,15 @@ describe('createSession', () => {
     expect(s.setMode('persist')).toBe(false);
     expect(cookie()).toContain(s.id);
     anonymousId();
+    localStorage.setItem('_sq_cb', `${s.id}|100|0`);
+    sessionStorage.setItem('_sq_cb', `${s.id}|100|0`);
     localStorage.setItem('_sq_rcap', s.id);
     sessionStorage.setItem('_sq_rcap', s.id);
     s.clear();
     expect(cookie()).toBeUndefined();
     expect(localStorage.getItem('_sq_aid')).toBeNull();
+    expect(localStorage.getItem('_sq_cb')).toBeNull();
+    expect(sessionStorage.getItem('_sq_cb')).toBeNull();
     expect(localStorage.getItem('_sq_rcap')).toBeNull();
     expect(sessionStorage.getItem('_sq_rcap')).toBeNull();
   });
