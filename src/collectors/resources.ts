@@ -3,11 +3,8 @@ import { ANALYZE, type Hub } from '../hub';
 import { epochOf, pct, read, observe } from '../core/util';
 
 /** Allowed `initiatorType` values; anything else is sent as `other`. */
-export const RESOURCE_TYPES: readonly string[] = [
-  'audio', 'beacon', 'body', 'css', 'early-hints', 'embed', 'eventsource', 'fetch',
-  'frame', 'icon', 'iframe', 'image', 'img', 'input', 'link', 'navigation', 'object',
-  'other', 'ping', 'script', 'track', 'video', 'xmlhttprequest',
-];
+export const RESOURCE_TYPES: readonly string[] =
+  'audio beacon body css early-hints embed eventsource fetch frame icon iframe image img input link navigation object other ping script track video xmlhttprequest'.split(' ');
 
 /** Chrome reports the page URL as the type of some favicon entries. */
 export function resourceType(initiatorType: unknown): string {

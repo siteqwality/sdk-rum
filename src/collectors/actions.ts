@@ -1,6 +1,6 @@
 // Actions (design 5.6): clicks, taps, input changes and submits with a name and a stable
 // selector; rage, dead and error clicks by Wave 1 F14, plus click counts and offsets.
-import { cut, perfNow as clock } from '../core/util';
+import { cut, read, perfNow as clock } from '../core/util';
 
 export type Frustration = 'rage_click' | 'dead_click' | 'error_click';
 
@@ -197,16 +197,9 @@ export function startActionCollector<C>(o: ActionCollectorOptions<C>): ActionCol
     [...pending].forEach(settle);
   };
 
+  // Errors (an inactive session throws to skip) never reach the host's handlers.
   const listen = (target: EventTarget, types: string, fn: (e: never) => void, capture = true) => {
-    for (const type of types.split(' ')) {
-      target.addEventListener(type, ((e: Event) => {
-        try {
-          fn(e as never);
-        } catch {
-          // Inactive session, or never throw into the host's handlers.
-        }
-      }) as EventListener, { capture });
-    }
+    for (const type of types.split(' ')) target.addEventListener(type, (e) => read(() => fn(e as never)), { capture });
   };
 
   // Menus often open on pointerdown: a reaction to the press counts for its click.

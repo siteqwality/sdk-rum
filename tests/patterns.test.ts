@@ -35,6 +35,12 @@ describe('textPatterns', () => {
     expect(p('https://shop.test/account/me')).toBe(false);
   });
 
+  it('expressions see the first 4 KB only; substrings the whole text', () => {
+    const text = `${'a'.repeat(5000)}needle`;
+    expect(textPatterns(['/needle/'])(text)).toBe(false);
+    expect(textPatterns(['needle'])(text)).toBe(true);
+  });
+
   it('init options keep strings as substrings and take RegExp values', () => {
     const p = textPatterns(['/literal/', /Re+gex/], false);
     expect(p('a /literal/ path')).toBe(true);

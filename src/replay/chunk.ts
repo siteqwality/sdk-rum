@@ -66,13 +66,17 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   let claimTimer: ReturnType<typeof setTimeout> | undefined;
   let beat: ReturnType<typeof setInterval> | undefined;
 
+  // Stopped for good: no listener, timer or lease outlives the recording.
+  const teardown = () => {
+    done = true;
+    ac.abort();
+    clearTimeout(claimTimer);
+    clearInterval(beat);
+    release();
+  };
   const handle: ReplayHandle = {
     stop(discard) {
-      done = true;
-      ac.abort();
-      clearTimeout(claimTimer);
-      clearInterval(beat);
-      release();
+      teardown();
       recorder.stop(discard);
       if (discard) transport.stop();
     },
@@ -108,13 +112,20 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   }
 
   const listen = (target: EventTarget, type: string, fn: (e: never) => void) => target.addEventListener(type, fn as EventListener, { signal: ac.signal });
+  // One live lease per session (`sid|window|beat`, `;` apart), so sessions never fight over one.
+  const leases = () =>
+    (storage.get('localStorage', LEASE_KEY) || '')
+      .split(';')
+      .map((l) => l.split('|'))
+      .filter(([s, , at]) => s && o.now() - Number(at) < LEASE_TTL_MS);
+  const others = () => leases().filter(([s]) => s !== o.sessionId).slice(0, 2);
+  const save = (list: string[][]) => (list.length ? storage.set('localStorage', LEASE_KEY, list.map((l) => l.join('|')).join(';')) : (storage.del('localStorage', LEASE_KEY), true));
   function owner(): string {
-    const [s, w, at] = (storage.get('localStorage', LEASE_KEY) || '').split('|');
-    return s === o.sessionId && o.now() - Number(at) < LEASE_TTL_MS ? w : '';
+    return leases().find(([s]) => s === o.sessionId)?.[1] ?? '';
   }
-  const write = () => storage.set('localStorage', LEASE_KEY, `${o.sessionId}|${me}|${o.now()}`);
+  const write = () => save([[o.sessionId, me, String(o.now())], ...others()]);
   function release(): void {
-    if (shared && owner() === me) storage.del('localStorage', LEASE_KEY);
+    if (shared && owner() === me) save(others());
   }
 
   function apply(): void {
@@ -131,21 +142,27 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
       privacy: replayPrivacy(o.privacy, o.mask),
       url: o.url,
       text: o.text,
-      onStatus: o.onStatus,
+      onStatus: (state, why) => {
+        if (state === 'stopped') teardown();
+        o.onStatus(state, why);
+      },
       now: o.now,
       store: o.store ?? 'memory',
       paused: why || undefined,
     });
   }
 
-  // This tab takes over; it records once the lease is still its own a moment later.
+  // This tab takes over: paused until the lease is still its own a moment later, so the tab it
+  // takes over from stops first. The owner only refreshes its lease.
   function claim(): void {
     if (!shared || done || isHidden()) return;
+    if (owner() === me) return void write();
     // Without storage there is no lease to share: record alone.
-    if (owner() !== me && !write()) return ((away = false), apply());
+    if (!write()) return ((away = false), apply());
+    away = claiming = true;
     clearTimeout(claimTimer);
-    claiming = true;
     claimTimer = setTimeout(check, TAKEOVER_MS);
+    apply();
   }
   function check(): void {
     claiming = false;
@@ -170,9 +187,11 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   listen(window, 'pagehide', release);
   beat = setInterval(() => {
     if (!idle && o.now() - lastInput >= o.idleMs) (idle = true), apply();
-    const w = shared && owner();
-    if (w === me) !isHidden() && write();
-    else if (shared && !w) claim();
+    if (!shared || isHidden()) return;
+    const w = owner();
+    if (w === me) write();
+    else if (!w) claim();
+    else if (!away) (away = true), apply();
   }, BEAT_MS);
 
   if (!shared) apply();
@@ -187,10 +206,9 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     listen(window, 'storage', (e: StorageEvent) => {
       if (e.key !== LEASE_KEY || done) return;
       const now = owner();
-      if (now && now !== me) {
-        away = true;
-        apply();
-      } else if (!now) claim();
+      // Another tab took over: stop now. A freed lease goes to a visible tab.
+      if (now && now !== me) (away = true), apply();
+      else if (!now) claim();
     });
   }
   return handle;

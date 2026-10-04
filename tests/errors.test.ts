@@ -13,6 +13,7 @@ import {
   type RawError,
 } from '../src/collectors/errors';
 import { normalizeConfig } from '../src/core/config';
+import { errorKey, normalisePath, topFrame, parseStack } from '../src/core/stack';
 import { createUrlSanitizer, createTextUrlSanitizer } from '../src/core/url';
 import { createScrubber } from '../src/core/sanitize';
 import type { Hub } from '../src/hub';
@@ -158,6 +159,25 @@ describe('the pipeline', () => {
     p.report(err('third party', 'Error: d\n    at f (https://widgets.example/w.js:1:1)\n    at g (https://app.test/app.js:1:1)'));
     p.report(err('vendored', `Error: d\n    at f (${location.origin}/node_modules/lib/x.js:1:1)`));
     expect(sent.map((e) => e.message)).toEqual(['third party', 'vendored']);
+  });
+
+  it('matches dashboard lists against the text as sent: minimised and scrubbed', () => {
+    cfg.capture.errors.ignore = ['?token=', 'mail <email> failed'];
+    cfg.capture.errors.deny_urls = ['app.js?v='];
+    const p = make();
+    p.report(err('failed https://x.test/a?token=1'));
+    p.report(err('mail jane@acme.test failed'));
+    p.report(err('versioned', `Error: d\n    at f (${location.origin}/app.js?v=3:1:1)`));
+    expect(sent.map((e) => e.message)).toEqual(['failed https://x.test/a', 'versioned']);
+    expect(counts.ignored_error).toBe(1);
+  });
+
+  it('keys an error on the type as sent, cut at 128', () => {
+    const p = make();
+    p.report({ ...err('x'), type: 'E'.repeat(200) });
+    const [e] = sent;
+    expect(e.error_type).toHaveLength(128);
+    expect(e.error_key).toBe(errorKey(String(e.error_type), String(e.message), normalisePath(topFrame(parseStack(String(e.stack)))!.file)));
   });
 
   it('turns console.error into an issue only when the app asks', () => {

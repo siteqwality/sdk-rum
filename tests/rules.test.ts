@@ -38,6 +38,8 @@ describe('conditions', () => {
     expect(holds({ kind: 'error', error_type: 'TypeError', message_contains: 'card' }, e, f)).toBe(true);
     expect(holds({ kind: 'error', error_type: 'RangeError' }, e, f)).toBe(false);
     expect(holds({ kind: 'error', unhandled_only: true }, e, f)).toBe(false);
+    expect(holds({ kind: 'error', unhandled_only: true }, { ...e, handling: 'console' }, f)).toBe(false);
+    expect(holds({ kind: 'error', unhandled_only: true }, { ...e, handling: 'unhandledrejection' }, f)).toBe(true);
   });
 
   it('network_error, frustration, vital, event, identified, attribute', () => {

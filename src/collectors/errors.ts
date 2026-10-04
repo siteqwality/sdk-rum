@@ -252,20 +252,21 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
       }
       const noise = noiseRule(raw.raw || raw.message, raw.stack, raw.filename, raw.message);
       if (noise) return h.count(`noise_${noise}`);
-      const msg = normalizeMessage(raw.message);
-      const full = `${raw.type}: ${msg}`;
+      const type = cut(raw.type, 128);
+      // Dashboard lists see what the intake sees: the message as sent, minimised and scrubbed.
+      const message = h.scrub(h.text(cut(raw.message, MAX_MESSAGE)));
+      const msg = normalizeMessage(message);
       // As core-rs is_ignored: the message, or type and message.
-      if (ignore(normalizeMessage(raw.raw || raw.message)) || ignore(full) || cfgIgnore(msg) || cfgIgnore(full)) {
+      if (ignore(normalizeMessage(raw.raw || raw.message)) || ignore(`${raw.type}: ${normalizeMessage(raw.message)}`) || cfgIgnore(msg) || cfgIgnore(`${type}: ${msg}`)) {
         return h.count('ignored_error');
       }
       const frame = topFrame(parseStack(raw.stack))?.file;
       const top = frame ?? raw.filename ?? '';
-      if ((top && deny(top)) || (frame && surelyInApp(frame) && cfgDeny(frame))) return h.count('denied_error');
+      if ((top && deny(top)) || (frame && surelyInApp(frame) && cfgDeny(h.url(frame)))) return h.count('denied_error');
       if (isHidden() && o.orphan()) return;
 
-      const message = h.scrub(h.text(cut(raw.message, MAX_MESSAGE)));
       const stack = cleanStack(h, raw.stack);
-      const key = errorKey(raw.type, message, normalisePath(topFrame(parseStack(stack))?.file ?? ''));
+      const key = errorKey(type, message, normalisePath(topFrame(parseStack(stack))?.file ?? ''));
       if (cfg.suppressed_keys.includes(key)) return h.count('suppressed_error');
       if (sent >= MAX_ERRORS_PER_PAGE) return h.count('rate_limited_error');
 
@@ -289,7 +290,7 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
         id: uuid(),
         // The page, so the intake places the error (and checks never_record_urls) on its own.
         url: h.pageUrl(),
-        error_type: cut(raw.type, 128),
+        error_type: type,
         message,
         stack,
         handling: raw.handling,

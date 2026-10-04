@@ -37,12 +37,10 @@ const FIXED = 'k t view_id id seq final error_key'.split(' ');
 const warn = (message: string, detail?: unknown) => read(() => console.warn(`[SiteQwality RUM] ${message}`, detail ?? ''));
 
 function isMobile(): boolean {
-  const ua = read(() => navigator.userAgent) ?? '';
-  return (
-    read(() => (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData?.mobile) === true ||
-    /Mobi|Android|iPhone|iPad|iPod|Tablet|Silk|Kindle/i.test(ua) ||
-    (/Macintosh/.test(ua) && (read(() => navigator.maxTouchPoints) ?? 0) > 1)
-  );
+  const n = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
+  const ua = read(() => n.userAgent) ?? '';
+  // An iPad asks for the desktop site: a Mac with touch.
+  return read(() => n.userAgentData?.mobile) === true || /Mobi|Android|iP(hone|ad|od)|Tablet|Silk|Kindle/i.test(ua) || (/Macintosh/.test(ua) && n.maxTouchPoints > 1);
 }
 
 const keyOf = (e: SqEvent) =>
@@ -116,7 +114,7 @@ export function createInstance(opts: InitOptions) {
   let observeIn = true;
   let dnr = false;
   let checked = '';
-  let dnrFor = '';
+  const dnrIds = new Set<string>();
   // On a never_record_urls page: no Analyze, replay paused (the chunk pauses for hidden and idle).
   let urlPaused = false;
   let watchdog: ReturnType<typeof setInterval> | undefined;
@@ -298,7 +296,10 @@ export function createInstance(opts: InitOptions) {
       (start) => {
         loading = false;
         if (replay || sid !== session.id || !wantReplay()) return;
-        replay = start({
+        // A recording can stop inside start() (a page too large to record): never keep that handle.
+        let handle: ReplayHandle | undefined;
+        let gone = false;
+        handle = start({
           mode: 'stream',
           sessionId: sid,
           windowId: session.windowId,
@@ -317,25 +318,28 @@ export function createInstance(opts: InitOptions) {
           paused: urlPaused ? 'privacy_url' : undefined,
           onStatus: (state, why) => {
             if (state === 'stopped') {
-              replay = null;
+              gone = true;
+              if (replay === handle) replay = null;
               if (why === 'too_large') latched = why;
               // Past its own budget only replay stops, for the rest of the session.
               if (why === 'replay_budget') {
                 replaySpent = sid;
                 count(why);
-                warnOnce(why, 'Replay stopped: replay request budget reached');
+                warnOnce(why, 'Replay stopped: replay budget reached');
               }
             }
             setRecording(state, why);
           },
         });
+        if (gone) return;
+        replay = handle;
         // Live replay never outlasts its session.
         clearInterval(watchdog);
         watchdog = setInterval(() => replay && !sessionFor(false) && stopRecording(), 15_000);
       },
       (err) => {
         loading = false;
-        warnOnce('recorder', 'Could not load the session replay recorder', err);
+        warnOnce('recorder', 'Replay recorder failed to load', err);
         latched = 'load_failed';
         setRecording('stopped', latched);
       },
@@ -394,13 +398,14 @@ export function createInstance(opts: InitOptions) {
     ring = [];
     crumbs = [];
     analyzeOn = forced = false;
-    dnr = !!user.id && user.id === dnrFor;
+    dnr = dnrIds.has(user.id ?? '');
     resample();
     stopRecording();
     setRules(true);
     identity();
     if (!viewStarting) views?.restart('route_change', 'session');
     decide(session.decision);
+    if (user.id) void checkIdentity(user.id);
   }
 
   function pauseFor(url: string): void {
@@ -464,7 +469,8 @@ export function createInstance(opts: InitOptions) {
     );
 
   function setConsent(next: Consent): void {
-    if (!['granted', 'pending', 'not-granted'].includes(next)) return;
+    // Consent tools repeat a grant on every route; only a change does anything.
+    if (!['granted', 'pending', 'not-granted'].includes(next) || (next === 'granted' && consent === next)) return;
     const prev = consent;
     consent = next;
     ctx = null;
@@ -502,7 +508,7 @@ export function createInstance(opts: InitOptions) {
         credentials: 'omit',
       });
       if ((await res.json())?.record === false) {
-        dnrFor = id;
+        dnrIds.add(id);
         if (user.id === id) {
           dnr = true;
           analyzeOn = false;
@@ -679,6 +685,23 @@ export function createInstance(opts: InitOptions) {
 
   const strArg = (v: unknown) => (typeof v === 'string' && v ? cut(v, 256) : undefined);
 
+  /** `store` false when another tab already wrote it (its storage event). */
+  function setOptOut(on: boolean, store = true): void {
+    optedOut = on;
+    if (store) on ? storage.set('localStorage', OPT_OUT, '1') : storage.del('localStorage', OPT_OUT);
+    if (on) {
+      transport.clear();
+      ring = [];
+      return stopRecording('opted_out', true);
+    }
+    decide(session.decision);
+    if (user.id) void checkIdentity(user.id);
+  }
+  // An opt-out in another tab applies here at once, before this tab can take the replay lease.
+  on(window, 'storage', (e: StorageEvent) => {
+    if (e.key === OPT_OUT && (e.newValue === '1') !== optedOut) setOptOut(e.newValue === '1', false);
+  }, false);
+
   return {
     ready,
     errors,
@@ -712,7 +735,7 @@ export function createInstance(opts: InitOptions) {
       if (traits) out.traits = traits;
       user = out;
       ctx = null;
-      dnr = !!out.id && out.id === dnrFor;
+      dnr = dnrIds.has(out.id ?? '');
       identity();
       if (out.id) void checkIdentity(out.id);
     },
@@ -752,18 +775,8 @@ export function createInstance(opts: InitOptions) {
       if (n) views?.setRoute(n);
     },
     setTrackingConsent: setConsent,
-    optOut(): void {
-      optedOut = true;
-      storage.set('localStorage', OPT_OUT, '1');
-      transport.clear();
-      ring = [];
-      stopRecording('opted_out', true);
-    },
-    optIn(): void {
-      optedOut = false;
-      storage.del('localStorage', OPT_OUT);
-      decide(session.decision);
-    },
+    optOut: () => setOptOut(true),
+    optIn: () => setOptOut(false),
     isOptedOut: () => optedOut,
     startReplay(o?: { force?: boolean }): void {
       userStopped = false;

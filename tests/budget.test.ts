@@ -114,13 +114,14 @@ describe('the SDK under a runaway loop', () => {
 
 describe('the replay budget', () => {
   type Opts = { fetch: typeof fetch; send: unknown; store: unknown; windowId: string; onStatus: (s: string, why?: string) => void };
-  async function bootWithReplay() {
+  async function bootWithReplay(stopsAtOnce = false) {
     vi.resetModules();
     const captured: { o?: Opts; stops: Array<boolean | undefined>; starts: number } = { stops: [], starts: 0 };
     vi.doMock('../src/replay/load-record', () => ({
       loadReplay: async () => (o: Opts) => {
         captured.o = o;
         captured.starts++;
+        if (stopsAtOnce) o.onStatus('stopped', 'too_large');
         return { stop: (d?: boolean) => captured.stops.push(d), pause() {}, resume() {} };
       },
     }));
@@ -149,7 +150,7 @@ describe('the replay budget', () => {
     captured.o!.onStatus('stopped', 'replay_budget');
     expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'replay_budget' });
     expect(Fresh.getStatus()!.dropped.replay_budget).toBe(1);
-    expect(warn.mock.calls.filter((c) => String(c[0]).includes('replay request budget'))).toHaveLength(1);
+    expect(warn.mock.calls.filter((c) => String(c[0]).includes('replay budget reached'))).toHaveLength(1);
     setVisibility('hidden');
     setVisibility('visible');
     await settle(5);
@@ -189,5 +190,12 @@ describe('the replay budget', () => {
     }
     expect(captured.starts).toBe(1);
     expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'too_large' });
+  });
+
+  it('never keeps a handle whose recording stopped inside start', async () => {
+    const { Fresh, captured } = await bootWithReplay(true);
+    expect(Fresh.getStatus()).toMatchObject({ recording: 'stopped', reason: 'too_large' });
+    Fresh.setTrackingConsent('pending');
+    expect(captured.stops).toEqual([]);
   });
 });

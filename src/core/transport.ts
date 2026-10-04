@@ -227,8 +227,13 @@ export function createTransport(o: TransportOptions) {
     flush,
     /** Tab hidden: send everything now, compressed; the page is still alive. */
     hide(): void {
-      if (stopped || blocked || held || unloading || retryTimer) return;
-      while (queue.length) void sendOne();
+      // A Retry-After holds everything; a plain backoff still tries one batch.
+      if (stopped || blocked || held || unloading || now() < quietUntil) return;
+      const backingOff = retryTimer !== null;
+      while (queue.length) {
+        void sendOne();
+        if (backingOff) break;
+      }
     },
     unload(): void {
       unloading = true;
@@ -243,9 +248,9 @@ export function createTransport(o: TransportOptions) {
       trim();
       if (!on) flush();
     },
-    /** Re-keys held events to the session adopted when consent was granted. */
+    /** Re-keys events held before consent to the granted ctx; granted ones keep theirs. */
     rekey(c: Ctx): void {
-      for (const entry of queue) entry.c = c;
+      for (const entry of queue) if (entry.c.consent !== 'granted') entry.c = c;
     },
     clear(): void {
       queue = [];

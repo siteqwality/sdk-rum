@@ -219,6 +219,35 @@ describe('consent and privacy signals', () => {
     expect(sessionStorage.getItem('_sq_w')).toBe(SiteQwalityRUM.getStatus()!.window_id);
   });
 
+  it('a repeated grant changes nothing: queued events keep their own session', async () => {
+    const net = await boot({ persistence: 'memory' });
+    await flush();
+    const first = SiteQwalityRUM.getStatus()!.session_id;
+    SiteQwalityRUM.addAction('in the first session');
+    // The session runs out; the next activity rotates it, and a consent tool grants again.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 16 * 60_000 });
+    SiteQwalityRUM.addAction('in the second session');
+    SiteQwalityRUM.setTrackingConsent('granted');
+    vi.useRealTimers();
+    await flush();
+    const of = (name: string) => net.events('custom').find((e) => e.name === name)!.ctx.session_id;
+    expect(of('in the first session')).toBe(first);
+    expect(of('in the second session')).not.toBe(first);
+  });
+
+  it('an opt-out in another tab applies here at once', async () => {
+    const net = await boot();
+    localStorage.setItem('_sq_optout', '1');
+    window.dispatchEvent(new StorageEvent('storage', { key: '_sq_optout', newValue: '1' }));
+    expect(SiteQwalityRUM.isOptedOut()).toBe(true);
+    SiteQwalityRUM.addAction('after');
+    await flush();
+    expect(net.events('custom')).toEqual([]);
+    localStorage.removeItem('_sq_optout');
+    window.dispatchEvent(new StorageEvent('storage', { key: '_sq_optout', newValue: null }));
+    expect(SiteQwalityRUM.isOptedOut()).toBe(false);
+  });
+
   it('withdrawing consent removes every key the SDK stored but the opt-out', async () => {
     const net = await boot();
     SiteQwalityRUM.addAction('a');
@@ -245,6 +274,10 @@ describe('consent and privacy signals', () => {
     SiteQwalityRUM.setUser({ id: 'u2' });
     await settle(5);
     expect(identity()).toBe(1);
+    // Opting back in checks the user it could not check while opted out.
+    SiteQwalityRUM.optIn();
+    await settle(10);
+    expect(identity()).toBe(2);
   });
 
   it('not-granted drops everything and clears storage', async () => {

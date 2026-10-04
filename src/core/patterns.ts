@@ -24,7 +24,8 @@ export function textPatterns(list: unknown, slashes = true): TextMatcher {
         }
     }
   }
+  // Expressions see at most 4 KB: JS regexes backtrack, where core-rs runs in linear time.
   return (t) =>
     subs.some((s) => t.includes(s)) ||
-    res.some((r) => read(() => ((r.lastIndex = 0), r.test(t))) === true);
+    res.some((r) => read(() => ((r.lastIndex = 0), r.test(t.slice(0, 4096)))) === true);
 }

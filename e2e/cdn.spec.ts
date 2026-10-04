@@ -178,7 +178,7 @@ test.describe('CDN core loaded from another origin, as from the CDN', () => {
     page.on('pageerror', (e) => pageErrors.push(e.message));
     await page.goto(intake.page('no-cors', `<!doctype html><html><head>${snippet(intake, `${intake.crossOrigin}/sdk-nocors/sdk.min.js`)}</head><body></body></html>`));
     await sdkLoaded(page);
-    await expect.poll(() => warnings.filter((w) => w.includes('session replay recorder')).length).toBe(1);
+    await expect.poll(() => warnings.filter((w) => w.includes('Replay recorder failed to load')).length).toBe(1);
     await hide(page);
     await expect.poll(() => intake.events('view_start').length).toBeGreaterThan(0);
     expect(intake.segments()).toHaveLength(0);

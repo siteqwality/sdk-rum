@@ -163,14 +163,60 @@ describe('fetch', () => {
     expect(fail[1]).toMatchObject({ status: 500, n: 11, err_n: 11 });
   });
 
-  it('matches body_urls and trace_urls as core-rs patterns: substrings or /regex/', async () => {
-    const net = analyze({ capture: { network: { trace_urls: ['/\\/api\\/v\\d+\\//'], body_urls: ['login'], max_body_bytes: 1000 } } });
-    const rows = await run(net, async () => {
-      await fetch('/api/v2/orders');
-      await fetch('/fr/login', { method: 'POST', body: '{"a":1}' });
+  it('trace_urls and body_urls are URL prefixes (core-rs rules): same-origin paths or absolute URLs, never patterns', async () => {
+    const net = analyze({
+      capture: { network: { trace_urls: ['/api/', 'https://api.partner.test/v1'], body_urls: ['/api/', 'checkout', '/\\/v\\d+/'], max_body_bytes: 1000 } },
     });
-    expect(new Headers(net.app.find((a) => a.url.includes('/api/v2/orders'))!.init!.headers).get('traceparent')).toMatch(/^00-/);
-    expect(rows.find((r) => String(r.url).endsWith('/fr/login'))!.req_body).toBe('{"a":1}');
+    const traced = (part: string) => new Headers(net.app.find((a) => a.url.includes(part))!.init?.headers).get('traceparent');
+    const rows = await run(net, async () => {
+      await fetch('/api/orders', { method: 'POST', body: '{"a":1}' });
+      await fetch('https://api.partner.test/v1/charge');
+      await fetch('https://api.partner.test/v2/charge');
+      await fetch('https://maps.googleapis.test/api/geo');
+      await fetch('/fr/checkout', { method: 'POST', body: '{"b":2}' });
+      await fetch('/v2/thing', { method: 'POST', body: '{"c":3}' });
+      await fetch('/apix/other', { method: 'POST', body: '{"d":4}' });
+    });
+    expect(traced('/api/orders')).toMatch(/^00-/);
+    expect(traced('partner.test/v1/charge')).toMatch(/^00-/);
+    // A third party gets no traceparent unless a rule names its origin.
+    expect(traced('partner.test/v2/charge')).toBeNull();
+    expect(traced('googleapis.test/api/geo')).toBeNull();
+    const body = (part: string) => rows.find((r) => String(r.url).includes(part))?.req_body;
+    expect(body('/api/orders')).toBe('{"a":1}');
+    expect(body('/fr/checkout')).toBeUndefined();
+    expect(body('/v2/thing')).toBeUndefined();
+    // A prefix ends at a path segment, as core-rs URL rules do.
+    expect(body('/apix/other')).toBeUndefined();
+    expect(traced('/apix/other')).toBeNull();
+  });
+
+  it('a body read that gives up after 10 s goes out marked truncated', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+    try {
+      const net = analyze({ capture: { network: { body_urls: ['/api/'], max_body_bytes: 1000 } } });
+      const base = net.fetch.getMockImplementation()!;
+      // A trickle that never reaches the cap and never ends.
+      const trickle = new ReadableStream<Uint8Array>({ start: (c) => c.enqueue(new TextEncoder().encode('{"partial":')) });
+      net.fetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).includes('/api/slow') ? Promise.resolve(new Response(trickle, { headers: { 'content-type': 'application/json' } })) : base(input, init),
+      );
+      await boot({}, net);
+      await fetch('/api/slow');
+      await vi.advanceTimersByTimeAsync(10_500);
+      await flush();
+      const row = net.events('network').find((r) => String(r.url).endsWith('/api/slow'))!;
+      expect(row).toMatchObject({ res_body: '{"partial":', truncated: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('with no rules nothing is traced or captured', async () => {
+    const net = analyze({ capture: { network: { max_body_bytes: 1000 } } });
+    const rows = await run(net, () => fetch('/api/orders', { method: 'POST', body: '{"a":1}' }));
+    expect(new Headers(net.app.at(-1)!.init?.headers).get('traceparent')).toBeNull();
+    expect(rows[0].req_body).toBeUndefined();
   });
 
   it('aggregates successful repeats per view into one row with count and percentiles', async () => {

@@ -3,7 +3,7 @@
 import type { RecordingRule, RuleCondition } from '../types';
 import type { Decision } from './session';
 import { sampledIn } from './hash';
-import { now } from './util';
+import { now, read } from './util';
 
 export type RuleInput =
   | { k: 'url'; url: string; path: string }
@@ -30,19 +30,12 @@ interface RuleState {
 }
 
 const HISTORY_MAX = 200;
-const regexCache = new Map<string, RegExp | null>();
+const regexCache = new Map<string, RegExp | undefined>();
 
-function regex(source: string): RegExp | null {
-  if (!regexCache.has(source)) {
-    let re: RegExp | null = null;
-    try {
-      re = new RegExp(source);
-    } catch {
-      re = null;
-    }
-    regexCache.set(source, re);
-  }
-  return regexCache.get(source) ?? null;
+/** Compiled once; undefined for an expression that does not compile. */
+function regex(source: string): RegExp | undefined {
+  if (!regexCache.has(source)) regexCache.set(source, read(() => new RegExp(source)));
+  return regexCache.get(source);
 }
 
 const statusClass = (s: number) => (s === 0 ? 'network' : s >= 500 ? '5xx' : s >= 400 ? '4xx' : '');
@@ -67,7 +60,7 @@ export function holds(c: RuleCondition, i: RuleInput | null, f: StaticFacts): bo
         i?.k === 'error' &&
         (!c.error_type || i.type === c.error_type) &&
         (!c.message_contains || i.message.includes(String(c.message_contains))) &&
-        (c.unhandled_only !== true || i.handling !== 'handled')
+        (c.unhandled_only !== true || i.handling.startsWith('unhandled'))
       );
     case 'network_error':
       return (

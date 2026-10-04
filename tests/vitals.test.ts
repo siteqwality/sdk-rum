@@ -43,9 +43,10 @@ beforeEach(() => {
 });
 
 describe('selector', () => {
-  it('matches web-vitals: #id, else tag and sorted classes, joined by >', () => {
-    expect(selector(document.querySelector('img'))).toBe('#app>img.a.b.hero');
+  it('is the stable action selector, so targets group across deploys', () => {
+    expect(selector(document.querySelector('img'))).toBe('#app > img.hero.b');
     expect(selector(null)).toBeUndefined();
+    expect(selector(document.createTextNode('x'))).toBeUndefined();
   });
 });
 
@@ -62,7 +63,7 @@ describe('vitals', () => {
     hide();
     const lcp = reports.find((r) => r.metric === 'lcp')!;
     expect(lcp.value).toBe(900);
-    expect(lcp.fields).toMatchObject({ lcp_ms: 900, lcp: { target: '#app>img.a.b.hero', resource_url: 'https://x.test/h.png', render_delay_ms: 900 } });
+    expect(lcp.fields).toMatchObject({ lcp_ms: 900, lcp: { target: '#app > img.hero.b', resource_url: 'https://x.test/h.png', render_delay_ms: 900 } });
     hide();
     expect(reports.filter((r) => r.metric === 'lcp')).toHaveLength(1);
   });
@@ -79,7 +80,7 @@ describe('vitals', () => {
     hide();
     const cls = reports.filter((r) => r.metric === 'cls');
     expect(cls).toHaveLength(1);
-    expect(cls[0].fields).toEqual({ cls: 0.15, cls_target: '#app>button.buy' });
+    expect(cls[0].fields).toEqual({ cls: 0.15, cls_target: '#app > button.buy' });
   });
 
   it('INP: the worst interaction (fewer than 50) with phases and the longest LoAF script', () => {
@@ -102,7 +103,7 @@ describe('vitals', () => {
     expect(inp.value).toBe(248);
     expect(inp.fields).toEqual({
       inp_ms: 248,
-      inp: { target: 'html>body>button.buy', event_type: 'click', input_delay_ms: 19, processing_ms: 180, presentation_ms: 49, script_url: 'https://x.test/app.js' },
+      inp: { target: 'button.buy', event_type: 'click', input_delay_ms: 19, processing_ms: 180, presentation_ms: 49, script_url: 'https://x.test/app.js' },
     });
     vi.unstubAllGlobals();
   });

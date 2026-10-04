@@ -177,4 +177,63 @@ describe('the replay lease', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(sent).toEqual([]);
   });
+
+  it('the owner refreshes its lease on input and focus without pausing', async () => {
+    start();
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS);
+    states = [];
+    for (const type of ['focus', 'pointerdown', 'keydown']) window.dispatchEvent(new Event(type));
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS * 2);
+    expect(states).toEqual([]);
+  });
+
+  it('a recording tab taking the lease back waits, paused, before its snapshot', async () => {
+    start();
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS);
+    lease('w-other');
+    announce();
+    await vi.advanceTimersByTimeAsync(10);
+    const before = sent.length;
+    window.dispatchEvent(new Event('pointerdown'));
+    // The other tab gets the takeover delay to stop before this one snapshots.
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS - 50);
+    expect(states.at(-1)).toBe('other_tab');
+    expect(sent.length).toBe(before);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(states.at(-1)).toBe('recording');
+    expect(sent.at(-1)!.types.slice(0, 2)).toEqual([4, 2]);
+  });
+
+  it('each session has its own lease: another session neither blocks this one nor loses its own', async () => {
+    const other = `01a10521-0000-7000-8000-00000000beef|w-elsewhere|${Date.now()}`;
+    localStorage.setItem(LEASE_KEY, other);
+    start();
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS);
+    expect(states).toEqual(['recording']);
+    const value = localStorage.getItem(LEASE_KEY)!;
+    expect(value).toContain(`${SID}|${ME}|`);
+    expect(value).toContain('w-elsewhere');
+    // The other session's heartbeat never makes this tab claim again.
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    announce();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(writes).not.toHaveBeenCalled();
+    handle!.stop();
+    expect(localStorage.getItem(LEASE_KEY)).toBe(other);
+  });
+
+  it('a page too large to record lets go of everything: lease, timers, listeners', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    document.body.innerHTML = `<p id="p">x</p><div>${'x'.repeat(4_100_000)}</div>`;
+    start();
+    await vi.advanceTimersByTimeAsync(TAKEOVER_MS + 10);
+    expect(states.at(-1)).toBe('too_large');
+    expect(localStorage.getItem(LEASE_KEY)).toBeNull();
+    const writes = vi.spyOn(Storage.prototype, 'setItem');
+    announce();
+    window.dispatchEvent(new Event('pointerdown'));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(writes).not.toHaveBeenCalled();
+    handle = null;
+  });
 });

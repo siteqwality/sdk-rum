@@ -196,6 +196,19 @@ describe('failures', () => {
     expect(fail).toHaveBeenCalledTimes(1);
   });
 
+  it('a plain backoff still lets hide try one batch', async () => {
+    status = 503;
+    const t = make();
+    t.push(ev(1), ctx());
+    t.flush();
+    await drain();
+    expect(calls).toHaveLength(1);
+    t.push(ev(2), ctx());
+    t.hide();
+    await drain();
+    expect(calls).toHaveLength(2);
+  });
+
   it('drops a batch the request budget refused, never retrying it', async () => {
     const refuse = vi.fn(async () => {
       throw Object.assign(new Error('request budget'), { name: 'SqBudget' });
@@ -284,6 +297,21 @@ describe('consent', () => {
     t.hold(false);
     await drain();
     expect(calls[0].body.ctx.session_id).toBe('s-granted');
+  });
+
+  it('re-keys only events held before consent, never granted ones', async () => {
+    const t = make();
+    t.hold(true);
+    t.push(ev(1), ctx('s-old', 'p1', { consent: 'granted' }));
+    t.push(ev(2), ctx('s-mem', 'p1', { consent: 'pending' }));
+    t.rekey(ctx('s-new', 'p1', { consent: 'granted' }));
+    t.hold(false);
+    t.hide();
+    await drain();
+    expect(calls.map((c) => [c.body.ctx.session_id, c.body.events.map((e) => e.n)])).toEqual([
+      ['s-old', [1]],
+      ['s-new', [2]],
+    ]);
   });
 
   it('clear drops everything held', () => {

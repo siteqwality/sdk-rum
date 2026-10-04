@@ -156,7 +156,7 @@ one with a `repeat` count; a burst of one error sends 10, then 1 per 10 s; a pag
 
 The application's ignore and deny lists use the intake's pattern language: a case-sensitive
 substring, or a regular expression written `/…/` (`/…/i` ignores case). Ignore patterns match the
-message, or the type and message (`TypeError: x is null`). The SDK applies a deny pattern only when
+message as sent (URLs minimised, PII scrubbed), or the type and message (`TypeError: x is null`). The SDK applies a deny pattern only when
 the top frame is surely the page's own code; the intake decides the rest. With "console errors as
 issues" on, `console.error` calls become errors with `handling: "console"`.
 
@@ -210,7 +210,7 @@ applies the same rules server-side.
   tab that takes over starts with a full snapshot, so the session plays back in order (`status`
   reason `other_tab` in the others). Per-tab replay comes with 2.1.
 - **Never-record URLs** use the same pattern language as the error lists: a substring of the page
-  URL, or `/regex/`.
+  URL, or `/regex/`. Expressions see the first 4 KB of the text.
 - **Segments** close at 30 s, 500 events or about 750 KB, and when the tab hides or closes; a full
   snapshot every 3 minutes keeps seeking fast. A page whose snapshot is over 4 MB is not recorded
   (`status` reason `too_large`).
@@ -218,14 +218,25 @@ applies the same rules server-side.
 A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
 watched it sends about two segments a minute.
 
+## Web Vitals
+
+LCP, INP and CLS with web-vitals' definitions and attribution sub-parts (LCP load delay, load
+time and render delay; INP input delay, processing and presentation, with the longest script of
+its animation frame), plus FCP and TTFB. They belong to the document's initial view. Attribution
+targets use the click selector (id, `data-testid`, `data-sq-*`, tag and up to two stable classes),
+so a target groups the same across deploys.
+
 ## Network capture
 
 Failed requests (status 0, 4xx, 5xx, aborts, timeouts) are recorded for every session; successful
 ones in Analyze sessions, with repeats of one request folded into counts and percentiles per 30 s.
 Repeated failures fold the same way, with `err_n`, so a page polling a broken endpoint costs one row
-per 30 s. Timing phases come from Resource Timing. A W3C `traceparent` header is added only to URLs
-matching trace URLs, headers only from the app's allowlist (never credentials), and bodies only for
-body URLs, redacted, read up to the size cap (event streams never), and given up after 10 s.
+per 30 s. Timing phases come from Resource Timing. Trace URLs and body URLs are URL prefixes, never
+patterns: `/api` is a path on the page's own origin (and below it, so not `/apix`), and
+`https://api.example.com/v1` that origin and path. A W3C `traceparent` header is added only to
+matching URLs, headers only from the app's allowlist (never credentials), and bodies only for
+matching URLs, redacted, read up to the size cap (event streams never), and given up after 10 s
+(marked `truncated`). With no rules, nothing is traced or captured.
 
 ## Limits that protect you
 

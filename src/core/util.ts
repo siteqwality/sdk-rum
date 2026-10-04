@@ -140,7 +140,8 @@ export function pct(values: number[], q: number): number {
 /** A buffered PerformanceObserver of one entry type, or undefined where it is unsupported. */
 export function observe(type: string, cb: (entries: PerformanceEntry[]) => void, extra: Record<string, unknown> = {}): PerformanceObserver | undefined {
   try {
-    if (!PerformanceObserver.supportedEntryTypes?.includes(type)) return undefined;
+    // Engines without supportedEntryTypes (before 2019) are tried; observe() throws if unsupported.
+    if (!(PerformanceObserver.supportedEntryTypes?.includes(type) ?? true)) return undefined;
     const po = new PerformanceObserver((l) => cb(l.getEntries()));
     po.observe({ type, buffered: true, ...extra } as PerformanceObserverInit);
     return po;

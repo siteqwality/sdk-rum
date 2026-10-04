@@ -1,8 +1,9 @@
 // Web Vitals with attribution (design 5.6), ported from web-vitals 5 to fit the core budget:
 // the same metric definitions, finalisation rules and attribution sub-parts.
 import type { Hub } from '../hub';
-import { round, cut, read, on, observe, navEntry as nav } from '../core/util';
+import { round, read, on, observe, navEntry as nav } from '../core/util';
 import { recentFrames } from './frames';
+import { selectorOf } from './actions';
 
 export type VitalSink = (fields: Record<string, unknown>, metric: string, value: number) => void;
 
@@ -22,23 +23,9 @@ interface Lcp extends PerformanceEntry {
   url?: string;
 }
 
-/** web-vitals' getSelector: `#id`, else tag and sorted classes, joined by `>`, 100 chars. */
-export function selector(node: Node | null | undefined): string | undefined {
-  let sel = '';
-  try {
-    while (node && node.nodeType !== 9) {
-      const el = node as Element;
-      const part = el.id ? `#${el.id}` : [node.nodeName.toLowerCase(), ...Array.from(el.classList || []).sort()].join('.');
-      if (sel.length + part.length > 99) return cut(sel || part, 256);
-      sel = sel ? `${part}>${sel}` : part;
-      if (el.id) break;
-      node = node.parentNode;
-    }
-  } catch {
-    // Detached nodes.
-  }
-  return sel || undefined;
-}
+/** Attribution targets use the action selector: stable across deploys, unlike hashed classes. */
+export const selector = (node: Node | null | undefined): string | undefined =>
+  node?.nodeType === 1 ? selectorOf(node as Element) || undefined : undefined;
 
 export function startVitals(h: Hub, sink: VitalSink): void {
   const start = () => {

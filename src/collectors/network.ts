@@ -4,8 +4,7 @@ import type { SqEvent } from '../types';
 import { OBSERVE, ANALYZE, type Hub } from '../hub';
 import { uuid, randomBytes, toHex } from '../core/hash';
 import { redactBody, allowedHeaders } from '../core/sanitize';
-import { timing } from './resources';
-import { textPatterns } from '../core/patterns';
+import { timing, createExclusionMatcher } from './resources';
 import { now, perfNow, round, byteLength, pct, read } from '../core/util';
 
 const JOIN_WAIT_MS = 5_000;
@@ -26,6 +25,8 @@ interface Req {
   reqBytes?: number;
   trace?: [string, string];
   body: boolean;
+  /** The response body read gave up at BODY_WAIT_MS. */
+  partial?: boolean;
   done?: () => void;
 }
 
@@ -66,8 +67,10 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     const net = h.cfg().capture.network;
     if (net !== cfgRef) {
       cfgRef = net;
-      traceMatch = textPatterns(net.trace_urls);
-      bodyMatch = textPatterns(net.body_urls);
+      // URL prefixes, never patterns (core-rs resource exclusion rules): "/api" is a same-origin
+      // path and below, "https://api.example.com/v1" that origin and path. No rules, no matches.
+      traceMatch = createExclusionMatcher(net.trace_urls);
+      bodyMatch = createExclusionMatcher(net.body_urls);
       headerNames = allowedHeaders(net.header_allowlist);
     }
     return net;
@@ -227,7 +230,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
         row[field] = r.body;
         truncated ||= !!r.truncated;
       }
-      if (truncated) row.truncated = true;
+      if (truncated || req.partial) row.truncated = true;
       if (status === 0 || status >= 400) {
         joinNow(req, row);
         success(row, true);
@@ -260,12 +263,15 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
   const textual = (type: string | null | undefined) => !!type && /json|xml|form-urlencoded|text\/(?!event-stream)/i.test(type);
 
   /** At most `max_body_bytes` (and a little) of a fetch response, then the copy is cancelled. */
-  async function head(res: Response): Promise<string | undefined> {
+  async function head(res: Response, req: Req): Promise<string | undefined> {
     const reader = textual(res.headers.get('content-type')) ? res.clone().body?.getReader() : undefined;
     if (!reader) return undefined;
     const max = h.cfg().capture.network.max_body_bytes;
     const dec = new TextDecoder();
-    const timer = setTimeout(() => void reader.cancel().catch(() => {}), BODY_WAIT_MS);
+    const timer = setTimeout(() => {
+      req.partial = true;
+      void reader.cancel().catch(() => {});
+    }, BODY_WAIT_MS);
     let out = '';
     try {
       for (let r = await reader.read(); !r.done; r = await reader.read()) {
@@ -309,7 +315,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
         p.then(
           (res) => {
             try {
-              complete(r, res.status, undefined, (n) => res.headers.get(n), readBody(r, () => head(res)));
+              complete(r, res.status, undefined, (n) => res.headers.get(n), readBody(r, () => head(res, r)));
             } catch {
               // Monitoring must never break the host page.
             }
