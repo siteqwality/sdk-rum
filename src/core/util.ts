@@ -8,20 +8,21 @@ export const perfNow = (): number => {
   }
 };
 
-/** Native Date may run ahead of the monotonic clock by system sleep; past this it is not trusted. */
-export const CLOCK_SANITY_MS = 24 * 60 * 60_000;
+/** Date runs ahead of the monotonic clock after sleep, never behind it; past these it is patched. */
+export const CLOCK_BEHIND_MS = 60_000;
+export const CLOCK_AHEAD_MS = 30 * 24 * 60 * 60_000;
 let lastNow = 0;
 
 /**
- * Epoch ms the page cannot skew: Date.now while it agrees with timeOrigin + performance.now within
- * CLOCK_SANITY_MS (pages patch Date; one shows the year 2000), else the monotonic clock. Small steps
- * back (clock slews) are held at the last value, so event times never run backwards.
+ * Epoch ms the page cannot skew: Date.now while it is within the bounds of timeOrigin +
+ * performance.now (pages patch Date; one shows the year 2000), else the monotonic clock. Small
+ * steps back (clock slews) are held at the last value, so event times never run backwards.
  */
 export function now(): number {
   let t = Date.now();
   try {
     const mono = performance.timeOrigin + performance.now();
-    if (mono > 0 && !(Math.abs(t - mono) <= CLOCK_SANITY_MS)) t = mono;
+    if (mono > 0 && !(t >= mono - CLOCK_BEHIND_MS && t <= mono + CLOCK_AHEAD_MS)) t = mono;
   } catch {
     // No performance clock: Date is all there is.
   }

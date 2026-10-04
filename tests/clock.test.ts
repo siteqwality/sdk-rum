@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { now, epochOf, CLOCK_SANITY_MS } from '../src/core/util';
+import { now, epochOf, CLOCK_AHEAD_MS } from '../src/core/util';
 import { uuid7 } from '../src/core/hash';
 
 const mono = () => performance.timeOrigin + performance.now();
@@ -11,17 +11,19 @@ describe('now', () => {
     expect(Math.abs(now() - Date.now())).toBeLessThan(5);
   });
 
-  it('ignores a page that patched Date into another year', () => {
+  it('ignores a page that patched Date into another year, or minutes into the past', () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2000, 9, 4));
+    expect(Math.abs(now() - mono())).toBeLessThan(5);
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 5 * 60_000);
     expect(Math.abs(now() - mono())).toBeLessThan(5);
   });
 
-  it('trusts Date ahead of the monotonic clock by sleep drift, within the bound', () => {
-    const drift = 8 * 60 * 60_000;
+  it('trusts Date ahead of the monotonic clock by sleep drift, even a weekend, not by years', () => {
     const real = Date.now();
-    vi.spyOn(Date, 'now').mockReturnValue(real + drift);
-    expect(now()).toBe(real + drift);
-    vi.spyOn(Date, 'now').mockReturnValue(real + CLOCK_SANITY_MS + 60_000);
+    const weekend = 60 * 60 * 60_000;
+    vi.spyOn(Date, 'now').mockReturnValue(real + weekend);
+    expect(now()).toBe(real + weekend);
+    vi.spyOn(Date, 'now').mockReturnValue(real + CLOCK_AHEAD_MS + 60_000);
     expect(Math.abs(now() - mono())).toBeLessThan(5);
   });
 
@@ -31,8 +33,8 @@ describe('now', () => {
     expect(now()).toBe(base);
     spy.mockReturnValue(base - 500);
     expect(now()).toBe(base);
-    spy.mockReturnValue(base - 60_000);
-    expect(now()).toBe(base - 60_000);
+    spy.mockReturnValue(base - 30_000);
+    expect(now()).toBe(base - 30_000);
   });
 
   it('puts performance timestamps on the same clock', () => {
