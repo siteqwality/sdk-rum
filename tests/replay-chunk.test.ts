@@ -95,6 +95,14 @@ async function run(ms: number): Promise<void> {
   } while (Date.now() < until);
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
 }
+/** Waits for gzip (real I/O) and the sends after it, up to `ms` of real time. */
+async function until(cond: () => boolean, ms = 5_000): Promise<void> {
+  const deadline = performance.now() + ms;
+  while (!cond() && performance.now() < deadline) {
+    await new Promise((r) => setImmediate(r));
+    await vi.advanceTimersByTimeAsync(0);
+  }
+}
 async function mutate(text: string) {
   document.getElementById('p')!.textContent = text;
   await run(50);
@@ -119,6 +127,7 @@ describe('startReplay', () => {
     start();
     await mutate('one');
     await run(21_000);
+    await until(() => sent.length >= 2);
     expect(sent.map((s) => s.q.q)).toEqual(['0', '1']);
     expect(sent[0].q).toMatchObject({ s: SID, w: 'w-1', p: pageLoad, fs: '1', r: 'r_1', v: VERSION });
     expect(sent[0].type).toBe('application/octet-stream');
@@ -136,6 +145,7 @@ describe('startReplay', () => {
     decision = { replay: true, rule_id: 'r_err' };
     handle!.go();
     await run(100);
+    await until(() => sent.length > 0);
     expect(states.at(-1)).toBe('recording');
     expect(sent[0].q).toMatchObject({ q: '0', fs: '1', r: 'r_err' });
     // The ring holds the previous checkout: the replay starts at least 60 s before the trigger.
@@ -148,8 +158,10 @@ describe('startReplay', () => {
     await mutate('one');
     visibility('hidden');
     await run(100);
+    const tagsOf = () => sent.flatMap((s) => s.events).map((e) => e.data?.tag).filter(Boolean);
+    await until(() => tagsOf().length > 0);
     expect(states.at(-1)).toBe('hidden');
-    const tags = sent.flatMap((s) => s.events).map((e) => e.data?.tag).filter(Boolean);
+    const tags = tagsOf();
     expect(tags).toEqual(['sq-pause']);
     const before = sent.length;
     await run(60_000);
@@ -160,6 +172,7 @@ describe('startReplay', () => {
     expect(sent.length).toBe(before);
     visibility('hidden');
     await run(100);
+    await until(() => sent.length > before);
     expect(sent.at(-1)!.q.fs).toBe('1');
   });
 
@@ -169,6 +182,7 @@ describe('startReplay', () => {
     expect(states.at(-1)).toBe('idle');
     window.dispatchEvent(new Event('pointerdown'));
     await run(100);
+    await until(() => states.at(-1) === 'recording');
     expect(states.at(-1)).toBe('recording');
   });
 
@@ -185,6 +199,7 @@ describe('startReplay', () => {
     await mutate('last words');
     pagehide();
     await run(100);
+    await until(() => sent.some((s) => s.q.fin === '1'));
     const tail = sent.at(-1)!;
     expect(tail.q).toMatchObject({ fin: '1', q: '1' });
     expect(tail.keepalive).toBe(true);
@@ -205,6 +220,7 @@ describe('startReplay', () => {
     visibility('hidden');
     pagehide();
     await run(200);
+    await until(() => JSON.stringify(sent.flatMap((s) => s.events)).includes('after coming back'));
     const back = sent.filter((s) => Number(s.q.q) >= 2);
     expect(back.some((s) => s.q.fs === '1'), 'the snapshot taken on coming back').toBe(true);
     expect(JSON.stringify(back.flatMap((s) => s.events))).toContain('after coming back');
@@ -227,6 +243,7 @@ describe('startReplay', () => {
     pageLoad = 'pl-restored';
     pageshow();
     await run(100);
+    await until(() => sent.some((s) => s.q.p === 'pl-restored'));
     const restored = sent.filter((s) => s.q.p === 'pl-restored');
     expect(restored[0].q).toMatchObject({ q: '0', fs: '1' });
   });
@@ -238,6 +255,7 @@ describe('startReplay', () => {
     await run(100);
     start();
     await run(100);
+    await until(() => sent.length >= 2);
     const qs = sent.map((s) => Number(s.q.q));
     expect(new Set(qs).size).toBe(qs.length);
     expect(qs).toEqual([...qs].sort((a, b) => a - b));
@@ -249,6 +267,7 @@ describe('startReplay', () => {
     await mutate('kept');
     handle!.stop();
     await run(100);
+    await until(() => JSON.stringify(sent.flatMap((s) => s.events)).includes('kept'));
     expect(JSON.stringify(sent.at(-1)!.events)).toContain('kept');
     start();
     await run(100);
@@ -263,6 +282,7 @@ describe('startReplay', () => {
     localStorage.setItem('_sq_bgr', `${SID}|${REPLAY_LIMITS[2]}|0`);
     start();
     await run(200);
+    await until(() => states.includes('replay_budget'));
     expect(sent).toEqual([]);
     expect(states.at(-1)).toBe('replay_budget');
     expect(counts).toContain('replay_budget');

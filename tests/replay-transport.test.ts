@@ -46,14 +46,15 @@ async function decode(body: unknown): Promise<string> {
   return gunzipSync(Buffer.from(buf)).toString('utf8');
 }
 
-/** Lets compression (real I/O) and settled fetches run. */
-async function until(cond: () => boolean, rounds = 200): Promise<void> {
-  for (let i = 0; i < rounds && !cond(); i++) {
+/** Lets compression (real I/O) and settled fetches run, up to `ms` of real time. */
+async function until(cond: () => boolean, ms = 5_000): Promise<void> {
+  const deadline = performance.now() + ms;
+  while (!cond() && performance.now() < deadline) {
     await new Promise((r) => setImmediate(r));
     await vi.advanceTimersByTimeAsync(0);
   }
 }
-const settle = () => until(() => false, 20);
+const settle = () => until(() => false, 50);
 
 const urls = () => fetchSpy.mock.calls.map((c) => new URL(String(c[0])));
 const query = (i: number) => Object.fromEntries(urls()[i].searchParams);
@@ -275,7 +276,7 @@ describe('ReplayTransport v2', () => {
     vi.stubGlobal('CompressionStream', undefined);
     const t = make();
     void t.push(fresh(), snap(9));
-    await until(() => fetchSpy.mock.calls.length === 1, 2000);
+    await until(() => fetchSpy.mock.calls.length === 1);
     const init = fetchSpy.mock.calls[0][1] as RequestInit;
     expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/octet-stream');
     vi.unstubAllGlobals();

@@ -13,8 +13,9 @@ const seg = (fs: boolean, pad: number): Segment => {
   const json = [JSON.stringify({ type: fs ? 2 : 3, timestamp: 1, pad: 'x'.repeat(pad) })];
   return { json, bytes: json[0].length, mem: json[0].length, ft: 1, lt: 1, fs, css: [] };
 };
-async function until(cond: () => boolean): Promise<void> {
-  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setImmediate(r));
+async function until(cond: () => boolean, ms = 5_000): Promise<void> {
+  const deadline = performance.now() + ms;
+  while (!cond() && performance.now() < deadline) await new Promise((r) => setImmediate(r));
 }
 
 beforeEach(() => {
