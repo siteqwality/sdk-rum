@@ -23,6 +23,12 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage: draw } as never);
   encode = vi.fn(function(this: HTMLCanvasElement, cb: BlobCallback) { cb(blob); });
   vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(encode);
+  // Real encoding is browser-tested. Unit assertions must not race FileReader's I/O task.
+  vi.stubGlobal('FileReader', class {
+    result = 'data:image/webp;base64,d2VicA==';
+    onload?: () => void;
+    readAsDataURL() { queueMicrotask(() => this.onload?.()); }
+  });
   vi.stubGlobal('requestAnimationFrame', vi.fn((cb: FrameRequestCallback) => (raf = cb, 1)));
   vi.stubGlobal('cancelAnimationFrame', vi.fn(() => { raf = undefined; }));
   vi.stubGlobal('IntersectionObserver', class {
@@ -35,7 +41,7 @@ beforeEach(() => {
 });
 afterEach(() => { stop?.(); stop = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 const options = (extra = {}) => ({ config: { enabled: true, selectors: [], fps: 2, quality: 0.4 }, privacy: privacy(), session: crypto.randomUUID(), store: undefined, mirror: { getIds: () => [7], getNode: () => canvas, getId: () => 7 }, now: () => time, emit: (e: unknown) => frames.push(e), ...extra });
-async function tick(t: number) { time = t; await Promise.resolve(); raf?.(t); await new Promise(r => setTimeout(r, 10)); }
+async function tick(t: number) { time = t; await Promise.resolve(); raf?.(t); for (let i = 0; i < 8; i++) await Promise.resolve(); }
 const pixels = () => frames.filter((e: any) => e.type === 3);
 
 describe('canvas config and frames', () => {
@@ -43,7 +49,7 @@ describe('canvas config and frames', () => {
     expect(normalizeConfig(null, 'app').capture.canvas).toBeNull();
     expect(normalizeConfig({ capture: { canvas: { enabled: true, selectors: ['canvas.chart'] } } }, 'app').capture.canvas).toEqual({ enabled: true, selectors: ['canvas.chart'] });
   });
-  it.each([null, {}, { enabled: false }, { enabled: 'true' }, { enabled: true, selectors: ['['] }, { enabled: true, selectors: [1] }])('fails closed for %j', raw => expect(normalizeCanvas(raw, privacy())).toBeNull());
+  it.each([null, {}, { enabled: false }, { enabled: 'true' }, { enabled: true, selectors: null }, { enabled: true, selectors: ['['] }, { enabled: true, selectors: [1] }])('fails closed for %j', raw => expect(normalizeCanvas(raw, privacy())).toBeNull());
   it('always disables Strict, and rejects invalid block selectors', () => {
     expect(normalizeCanvas({ enabled: true }, { ...privacy(), level: 'strict' })).toBeNull();
     expect(normalizeCanvas({ enabled: true }, { ...privacy(), block_selectors: ['['] })).toBeNull();

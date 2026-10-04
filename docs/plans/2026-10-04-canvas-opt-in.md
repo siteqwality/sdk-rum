@@ -46,6 +46,10 @@ selection, Strict, visibility and block/ancestor checks. The player can retain t
 by key and apply it to the new ID. New page loads or newly created elements have no inherited
 bitmap. Metadata markers do not spend the pixel-frame byte allowance.
 
+If the error ring or a selected playback range contains no earlier bitmap for a reference, show
+the canvas-cap placeholder. A reference never authorizes borrowing pixels from another page,
+session or element.
+
 WP7.2 must implement the reference/cap markers, cap UI, last-frame retention and seek tests.
 Native rrweb alone ignores those custom markers. The browser test proves native bitmap playback,
 not those future player features. Keep this candidate unpublished until that integration passes.

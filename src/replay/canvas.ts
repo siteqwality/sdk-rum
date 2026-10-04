@@ -22,7 +22,7 @@ export function normalizeCanvas(raw: unknown, privacy: SdkConfig['privacy']) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || privacy.level === 'strict') return null;
   const c = raw as Record<string, unknown>;
   if (c.enabled !== true) return null;
-  const selectors = c.selectors ?? [];
+  const selectors = c.selectors === undefined ? [] : c.selectors;
   if (!Array.isArray(selectors) || selectors.some(s => typeof s !== 'string' || !s.trim())) return null;
   try {
     for (const s of [...selectors, ...privacy.block_selectors]) document.documentElement.matches(s);

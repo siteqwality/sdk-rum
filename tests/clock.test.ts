@@ -47,7 +47,9 @@ describe('now', () => {
 describe('uuid7', () => {
   it('carries the SDK clock in its first 48 bits, whatever Date says', () => {
     vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2000, 9, 4));
+    const before = Math.floor(mono());
     const ms = parseInt(uuid7().replace(/-/g, '').slice(0, 12), 16);
-    expect(Math.abs(ms - mono())).toBeLessThan(5);
+    expect(ms).toBeGreaterThanOrEqual(before);
+    expect(ms).toBeLessThanOrEqual(Math.ceil(mono()));
   });
 });

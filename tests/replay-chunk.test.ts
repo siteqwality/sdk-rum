@@ -222,6 +222,8 @@ describe('startReplay', { timeout: 30_000 }, () => {
     pagehide();
     await run(200);
     await until(() => JSON.stringify(sent.flatMap((s) => s.events)).includes('after coming back'));
+    // The raw keepalive tail can decode before the gzip snapshot already in flight.
+    await until(() => sent.some((s) => Number(s.q.q) >= 2 && s.q.fs === '1'));
     const back = sent.filter((s) => Number(s.q.q) >= 2);
     expect(back.some((s) => s.q.fs === '1'), 'the snapshot taken on coming back').toBe(true);
     expect(JSON.stringify(back.flatMap((s) => s.events))).toContain('after coming back');
