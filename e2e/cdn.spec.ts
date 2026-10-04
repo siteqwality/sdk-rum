@@ -1,11 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { test, expect, snippet, sdkLoaded, hide, VERSION } from './fixtures';
-
-const MATCH_ALL_REPLAY = {
-  filters: [{ filter_type: 'custom', conditions: {}, capture_replay: true }],
-  settings: { privacy: { mask_inputs: true, mask_text: false } },
-};
+import { test, expect, snippet, sdkLoaded, hide, VERSION, REPLAY_ALL, ANALYZE_ALL } from './fixtures';
 
 const HOST_GLOBALS = `<script>
   window.$ = function jQuery() {};
@@ -16,59 +11,61 @@ const HOST_GLOBALS = `<script>
 </script>`;
 
 test.describe('CDN core loaded by the install snippet (classic script)', () => {
-  test('adds only window.SiteQwalityRUM and leaves host globals alone', async ({ page, intake }) => {
+  test('adds only window.SiteQwalityRUM, fetches config without a preflight and sends a gzip v2 batch', async ({ page, intake }) => {
     const pageErrors: string[] = [];
     page.on('pageerror', (e) => pageErrors.push(e.message));
-    const url = intake.page(
-      'classic',
-      `<!doctype html><html><head>${HOST_GLOBALS}${snippet(intake)}</head><body><h1>Shop</h1></body></html>`,
-    );
+    const url = intake.page('classic', `<!doctype html><html><head>${HOST_GLOBALS}${snippet(intake)}</head><body><h1>Shop</h1></body></html>`);
     await page.goto(url);
     await sdkLoaded(page);
 
     const added = await page.evaluate(() => {
       const w = window as unknown as Record<string, unknown> & { __before: string[] };
-      return Object.getOwnPropertyNames(window).filter(
-        (k) => !w.__before.includes(k) && !k.startsWith('__'),
-      );
+      return Object.getOwnPropertyNames(window).filter((k) => !w.__before.includes(k) && !k.startsWith('__'));
     });
     expect(added).toEqual(['SiteQwalityRUM']);
-    expect(
-      await page.evaluate(() => {
-        const w = window as unknown as Record<string, unknown>;
-        return w.$ === w.__hostJq && w._ === w.__hostLodash;
-      }),
-    ).toBe(true);
-
-    // A later host script may declare any short name the minifier might have used.
+    expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).$ === (window as unknown as Record<string, unknown>).__hostJq)).toBe(true);
     await page.addScriptTag({ content: 'var t = 1; let e = 2; const n = 3; function r() {} window.__declared = true;' });
     expect(await page.evaluate(() => (window as unknown as { __declared?: boolean }).__declared)).toBe(true);
     expect(pageErrors).toEqual([]);
 
+    await page.evaluate(() => {
+      for (let i = 0; i < 40; i++) (window as unknown as { SiteQwalityRUM: { addAction(n: string): void } }).SiteQwalityRUM.addAction(`padding action ${i}`);
+    });
     await hide(page);
-    await expect.poll(() => intake.of('measure').length).toBeGreaterThan(0);
-    expect(intake.of('measure')[0]).toMatchObject({ type: 'view', loading_type: 'initial_load' });
+    await expect.poll(() => intake.batches().length).toBeGreaterThan(0);
+    const [batch] = intake.batches();
+    expect(intake.received.find((r) => r.kind === 'batch')!.gzip).toBe(true);
+    expect(batch.ctx.session_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7/);
+    expect(intake.events('view_start')[0]).toMatchObject({ loading_type: 'initial_load', navigation_type: 'navigate' });
+    expect(intake.received.filter((r) => r.kind === 'config')).toHaveLength(1);
+    expect(intake.received.filter((r) => r.kind === 'preflight' && r.path.includes('/config/'))).toEqual([]);
   });
 
-  test('loads the recorder lazily beside the core and uploads replay', async ({ page, intake }) => {
-    intake.config = MATCH_ALL_REPLAY;
+  test('loads the replay chunk lazily beside the core and uploads replay', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
     const requested: string[] = [];
     page.on('request', (r) => requested.push(new URL(r.url()).pathname));
-    const url = intake.page(
-      'replay',
-      `<!doctype html><html><head>${snippet(intake)}</head><body><input type="email" value="jane@example.com"><p>Catalog</p></body></html>`,
-    );
+    const url = intake.page('replay', `<!doctype html><html><head>${snippet(intake)}</head><body><input type="email" value="jane@example.com"><p>Catalog</p></body></html>`);
     await page.goto(url);
     await sdkLoaded(page);
-
-    await expect.poll(() => intake.of('segments').length, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
     expect(requested).toContain(`/sdk/recorder-${VERSION}.min.js`);
-    expect(requested.some((p) => /rrweb-/.test(p))).toBe(false);
-    const [segment] = intake.of<{ segment_index: number; events: Array<{ type: number }> }>('segments');
+    const [segment] = intake.segments();
     expect(segment.segment_index).toBe(0);
     expect(segment.events.map((e) => e.type).slice(0, 2)).toEqual([4, 2]);
-    // Inputs are masked by default.
     expect(JSON.stringify(segment.events)).not.toContain('jane@example.com');
+    await hide(page);
+    await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
+    expect(intake.batches().at(-1)!.ctx.sampling).toMatchObject({ replay: true, rule_id: 'r_all' });
+  });
+
+  test('never downloads the replay chunk without a replay rule', async ({ page, intake }) => {
+    const requested: string[] = [];
+    page.on('request', (r) => requested.push(new URL(r.url()).pathname));
+    await page.goto(intake.page('observe', `<!doctype html><html><head>${snippet(intake)}</head><body></body></html>`));
+    await sdkLoaded(page);
+    await page.waitForTimeout(500);
+    expect(requested.filter((p) => p.includes('recorder-'))).toEqual([]);
   });
 
   test('captures errors raised before the SDK script arrives, with their own times', async ({ page, intake }) => {
@@ -86,17 +83,16 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     await sdkLoaded(page);
     const thrownAt = await page.evaluate(() => (window as unknown as { __thrownAt: number }).__thrownAt);
     const loadedAt = await page.evaluate(() => Date.now());
-
     await hide(page);
-    await expect.poll(() => intake.of('errors').length).toBe(2);
-    const errors = intake.of<{ error_message: string; error_source: string; timestamp: number }>('errors');
-    expect(errors.map((e) => [e.error_message, e.error_source]).sort()).toEqual([
-      ['Uncaught TypeError: early boom', 'source'],
-      ['early reject', 'console'],
+    await expect.poll(() => intake.events('error').length).toBe(2);
+    const errors = intake.events<{ error_type: string; message: string; handling: string; t: number }>('error');
+    expect(errors.map((e) => [e.error_type, e.message, e.handling]).sort()).toEqual([
+      ['Error', 'early reject', 'unhandledrejection'],
+      ['TypeError', 'early boom', 'unhandled'],
     ]);
     for (const e of errors) {
-      expect(e.timestamp).toBeGreaterThanOrEqual(thrownAt - 5);
-      expect(e.timestamp).toBeLessThan(loadedAt - 300);
+      expect(e.t).toBeGreaterThanOrEqual(thrownAt - 5);
+      expect(e.t).toBeLessThan(loadedAt - 300);
     }
   });
 
@@ -104,7 +100,7 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     const url = intake.page(
       'old-snippet',
       `<!doctype html><html><head><script>
-        (function(w,d,s,c,t){w.SiteQwalityRUM=w.SiteQwalityRUM||{_q:[]};
+        (function(w,d,s){w.SiteQwalityRUM=w.SiteQwalityRUM||{_q:[]};
         ['init','setUser','addError','addAction'].forEach(function(m){
           w.SiteQwalityRUM[m]=function(){w.SiteQwalityRUM._q.push([m,arguments])}
         });var e=d.createElement(s);e.async=1;
@@ -112,135 +108,131 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
         d.getElementsByTagName(s)[0].parentNode.insertBefore(e,d.getElementsByTagName(s)[0]);
         })(window,document,'script');
         SiteQwalityRUM.init({ applicationId: 'app-1', clientToken: 'ct_test',
-          ingestBase: location.origin + '/rum', replayBase: location.origin + '/replay' });
+          ingestBase: location.origin + '/rum', replayBase: location.origin + '/replay', configBase: location.origin + '/cdn' });
         SiteQwalityRUM.addError(new Error('queued by an old snippet'));
       </script></head><body></body></html>`,
     );
     await page.goto(url);
     await sdkLoaded(page);
     await hide(page);
-    await expect.poll(() => intake.of('errors').length).toBe(1);
-    expect(intake.of('errors')[0]).toMatchObject({ error_message: 'queued by an old snippet', error_source: 'custom' });
+    await expect.poll(() => intake.events('error').length).toBe(1);
+    expect(intake.events('error')[0]).toMatchObject({ message: 'queued by an old snippet', handling: 'handled' });
   });
 
   test('a second copy of the script is a no-op', async ({ page, intake }) => {
-    const url = intake.page(
-      'twice',
-      `<!doctype html><html><head>${snippet(intake)}</head><body></body></html>`,
-    );
-    await page.goto(url);
+    await page.goto(intake.page('twice', `<!doctype html><html><head>${snippet(intake)}</head><body></body></html>`));
     await sdkLoaded(page);
     await page.evaluate(() => {
-      const w = window as unknown as Record<string, unknown>;
-      w.__first = w.SiteQwalityRUM;
+      (window as unknown as Record<string, unknown>).__first = (window as unknown as Record<string, unknown>).SiteQwalityRUM;
     });
     await page.addScriptTag({ url: `${intake.origin}/sdk/sdk.min.js` });
-    const same = await page.evaluate(() => {
-      const w = window as unknown as Record<string, unknown>;
-      return w.SiteQwalityRUM === w.__first;
-    });
-    expect(same).toBe(true);
+    expect(await page.evaluate(() => (window as unknown as Record<string, unknown>).SiteQwalityRUM === (window as unknown as Record<string, unknown>).__first)).toBe(true);
     await hide(page);
-    await expect.poll(() => intake.of('measure').length).toBeGreaterThan(0);
-    expect(intake.of('measure').filter((m) => m.type === 'view')).toHaveLength(1);
+    await expect.poll(() => intake.events('view_start').length).toBeGreaterThan(0);
+    expect(intake.events('view_start')).toHaveLength(1);
+  });
+});
+
+test.describe('sessions in a real browser', () => {
+  test('two tabs share one session through the cookie; a new tab gets its own window id', async ({ context, intake }) => {
+    const url = intake.page('tabs', `<!doctype html><html><head>${snippet(intake)}</head><body></body></html>`);
+    const a = await context.newPage();
+    await a.goto(url);
+    await sdkLoaded(a);
+    const b = await context.newPage();
+    await b.goto(url);
+    await sdkLoaded(b);
+    const status = (p: typeof a) => p.evaluate(() => (window as unknown as { SiteQwalityRUM: { getStatus(): { session_id: string; window_id: string } } }).SiteQwalityRUM.getStatus());
+    const [sa, sb] = [await status(a), await status(b)];
+    expect(sb.session_id).toBe(sa.session_id);
+    expect(sb.window_id).not.toBe(sa.window_id);
+  });
+
+  test('closing the tab delivers the final view_end with keepalive', async ({ page, intake }) => {
+    await page.goto(intake.page('close', `<!doctype html><html><head>${snippet(intake)}</head><body></body></html>`));
+    await sdkLoaded(page);
+    await page.waitForTimeout(300);
+    await page.close({ runBeforeUnload: true });
+    await expect.poll(() => intake.events('view_end').some((e) => e.final === true)).toBe(true);
   });
 });
 
 test.describe('CDN core loaded from another origin, as from the CDN', () => {
-  test('imports the recorder cross-origin with the CDN CORS header', async ({ page, intake }) => {
-    intake.config = MATCH_ALL_REPLAY;
+  test('imports the replay chunk cross-origin with the CDN CORS header', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
     const requested: string[] = [];
     page.on('request', (r) => requested.push(r.url()));
-    const url = intake.page(
-      'cross-origin',
-      `<!doctype html><html><head>${snippet(intake, `${intake.crossOrigin}/sdk/sdk.min.js`)}</head><body><p>Shop</p></body></html>`,
-    );
-    await page.goto(url);
+    await page.goto(intake.page('cross-origin', `<!doctype html><html><head>${snippet(intake, `${intake.crossOrigin}/sdk/sdk.min.js`)}</head><body><p>Shop</p></body></html>`));
     await sdkLoaded(page);
-    await expect.poll(() => intake.of('segments').length, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
     expect(requested).toContain(`${intake.crossOrigin}/sdk/recorder-${VERSION}.min.js`);
   });
 
-  test('without CORS the recorder fails quietly: one warning, no page error, RUM still flows', async ({ page, intake }) => {
-    intake.config = MATCH_ALL_REPLAY;
+  test('without CORS the replay chunk fails quietly: one warning, no page error, RUM still flows', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
     const warnings: string[] = [];
     const pageErrors: string[] = [];
     page.on('console', (m) => {
       if (m.type() === 'warning') warnings.push(m.text());
     });
     page.on('pageerror', (e) => pageErrors.push(e.message));
-    const url = intake.page(
-      'no-cors',
-      `<!doctype html><html><head>${snippet(intake, `${intake.crossOrigin}/sdk-nocors/sdk.min.js`)}</head><body></body></html>`,
-    );
-    await page.goto(url);
+    await page.goto(intake.page('no-cors', `<!doctype html><html><head>${snippet(intake, `${intake.crossOrigin}/sdk-nocors/sdk.min.js`)}</head><body></body></html>`));
     await sdkLoaded(page);
-    await expect.poll(() => warnings.filter((w) => w.includes('session replay recorder')).length).toBe(1);
+    await expect.poll(() => warnings.filter((w) => w.includes('Replay recorder failed to load')).length).toBe(1);
     await hide(page);
-    await expect.poll(() => intake.of('measure').length).toBeGreaterThan(0);
-    expect(intake.of('segments')).toHaveLength(0);
+    await expect.poll(() => intake.events('view_start').length).toBeGreaterThan(0);
+    expect(intake.segments()).toHaveLength(0);
+    expect(intake.events('status').some((s) => s.reason === 'load_failed')).toBe(true);
     expect(pageErrors).toEqual([]);
   });
 });
 
 test.describe('CDN core loaded as type="module"', () => {
-  test('works, and finds the recorder at the CDN path without currentScript', async ({ page, intake }) => {
-    intake.config = MATCH_ALL_REPLAY;
+  test('works, and finds the replay chunk at the CDN v2 path without currentScript', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
     const recorder = await readFile(join(import.meta.dirname, `../dist/cdn/recorder-${VERSION}.min.js`));
     let fetchedRecorder = '';
-    await page.route('https://cdn.siteqwality.com/rum/v1/**', async (route) => {
+    await page.route('https://cdn.siteqwality.com/rum/v2/**', async (route) => {
       fetchedRecorder = route.request().url();
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/javascript',
-        headers: { 'access-control-allow-origin': '*' },
-        body: recorder,
-      });
+      await route.fulfill({ status: 200, contentType: 'application/javascript', headers: { 'access-control-allow-origin': '*' }, body: recorder });
     });
     const pageErrors: string[] = [];
     page.on('pageerror', (e) => pageErrors.push(e.message));
-    const url = intake.page(
-      'module',
-      `<!doctype html><html><head>${HOST_GLOBALS}
+    await page.goto(
+      intake.page(
+        'module',
+        `<!doctype html><html><head>${HOST_GLOBALS}
       <script type="module" src="${intake.origin}/sdk/sdk.min.js"></script>
       <script type="module">
         SiteQwalityRUM.init({ applicationId: 'app-1', clientToken: 'ct_test',
-          ingestBase: location.origin + '/rum', replayBase: location.origin + '/replay' });
+          ingestBase: location.origin + '/rum', replayBase: location.origin + '/replay', configBase: location.origin + '/cdn' });
       </script></head><body><p>Module install</p></body></html>`,
+      ),
     );
-    await page.goto(url);
     await sdkLoaded(page);
     const added = await page.evaluate(() => {
       const w = window as unknown as { __before: string[] };
       return Object.getOwnPropertyNames(window).filter((k) => !w.__before.includes(k) && !k.startsWith('__'));
     });
     expect(added).toEqual(['SiteQwalityRUM']);
-    await expect.poll(() => intake.of('segments').length, { timeout: 10_000 }).toBeGreaterThan(0);
-    expect(fetchedRecorder).toBe(`https://cdn.siteqwality.com/rum/v1/recorder-${VERSION}.min.js`);
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
+    expect(fetchedRecorder).toBe(`https://cdn.siteqwality.com/rum/v2/recorder-${VERSION}.min.js`);
     expect(pageErrors).toEqual([]);
   });
 
-  test('recorderUrl overrides where the recorder comes from', async ({ page, intake }) => {
-    intake.config = MATCH_ALL_REPLAY;
+  test('recorderUrl overrides where the replay chunk comes from', async ({ page, intake }) => {
+    intake.config = REPLAY_ALL;
     const requested: string[] = [];
     page.on('request', (r) => requested.push(r.url()));
-    const url = intake.page(
-      'recorder-url',
-      `<!doctype html><html><head>${snippet(intake, '/sdk/sdk.min.js', `recorderUrl: '/sdk/recorder-${VERSION}.min.js?self-hosted=1',`)}</head><body></body></html>`,
-    );
-    await page.goto(url);
-    await expect.poll(() => intake.of('segments').length, { timeout: 10_000 }).toBeGreaterThan(0);
+    await page.goto(intake.page('recorder-url', `<!doctype html><html><head>${snippet(intake, '/sdk/sdk.min.js', `recorderUrl: '/sdk/recorder-${VERSION}.min.js?self-hosted=1',`)}</head><body></body></html>`));
+    await expect.poll(() => intake.segments().length, { timeout: 10_000 }).toBeGreaterThan(0);
     expect(requested).toContain(`${intake.origin}/sdk/recorder-${VERSION}.min.js?self-hosted=1`);
   });
 });
 
 test.describe('page views and frustration in a real browser', () => {
-  test('init before load: a view without timings, then one timing vital; route changes dedupe', async ({ page, intake }) => {
-    const url = intake.page(
-      'timing',
-      `<!doctype html><html><head>${snippet(intake)}</head>
-      <body><img src="/slow.png?delay=800" alt=""></body></html>`,
-    );
+  test('init before load: load timings on the initial view_end; route changes dedupe', async ({ page, intake }) => {
+    const url = intake.page('timing', `<!doctype html><html><head>${snippet(intake)}</head><body><img src="/slow.png?delay=800" alt=""></body></html>`);
     await page.goto(url, { waitUntil: 'load' });
     await sdkLoaded(page);
     await page.waitForTimeout(100);
@@ -250,64 +242,37 @@ test.describe('page views and frustration in a real browser', () => {
       history.pushState(null, '', '/page/timing/next');
     });
     await hide(page);
-    await expect.poll(() => intake.of('measure').length).toBeGreaterThanOrEqual(3);
-
-    const measures = intake.of<Record<string, unknown>>('measure');
-    const views = measures.filter((m) => m.type === 'view');
-    expect(views).toHaveLength(2);
-    expect(views[0]).toMatchObject({ loading_type: 'initial_load' });
-    expect(views[0]).not.toHaveProperty('load_time_ms');
-    expect(views[1]).toMatchObject({ loading_type: 'route_change', url: `${intake.origin}/page/timing/next` });
-    expect(views[1]).not.toHaveProperty('load_time_ms');
-
-    const timing = measures.filter((m) => m.type === 'vital' && m.loading_type === 'initial_load');
-    expect(timing).toHaveLength(1);
-    expect(timing[0].view_id).toBe(views[0].view_id);
-    expect(timing[0].load_time_ms as number).toBeGreaterThan(700);
-    expect(timing[0].dom_ready_ms as number).toBeGreaterThan(0);
-    expect(timing[0].dom_ready_ms as number).toBeLessThanOrEqual(timing[0].load_time_ms as number);
+    await expect.poll(() => intake.events('view_end').length).toBeGreaterThanOrEqual(2);
+    const views = intake.events('view_start');
+    expect(views.map((v) => [v.loading_type, v.url])).toEqual([
+      ['initial_load', url],
+      ['route_change', `${intake.origin}/page/timing/next`],
+    ]);
+    const initialEnd = intake.events('view_end').filter((e) => e.view_id === views[0].view_id).at(-1)!;
+    expect(initialEnd.load_event_ms as number).toBeGreaterThan(700);
+    expect(initialEnd.dom_content_loaded_ms as number).toBeGreaterThan(0);
+    expect(initialEnd.fcp_ms as number).toBeGreaterThan(0);
+    expect(initialEnd.ttfb_ms as number).toBeGreaterThanOrEqual(0);
   });
 
-  test('a hash router gets one view per route; anchors and tokens stay out', async ({ page, intake }) => {
-    const url = intake.page('hash', `<!doctype html><html><head>${snippet(intake)}</head><body><h2 id="reviews">Reviews</h2></body></html>`);
+  test('a hash router gets one view per route with hashRouting; anchors and tokens stay out', async ({ page, intake }) => {
+    const url = intake.page('hash', `<!doctype html><html><head>${snippet(intake, '/sdk/sdk.min.js', 'hashRouting: true,')}</head><body><h2 id="reviews">Reviews</h2></body></html>`);
     await page.goto(url);
     await sdkLoaded(page);
     for (const hash of ['#/inbox', '#/inbox/42?token=secret', '#reviews', '#!/settings', '#access_token=abc', '#/access_token=secret&token_type=Bearer']) {
-      await page.evaluate((h) => { location.hash = h; }, hash);
+      await page.evaluate((h) => {
+        location.hash = h;
+      }, hash);
       await page.waitForTimeout(50);
     }
     await hide(page);
-    await expect.poll(() => intake.of('measure').filter((m) => m.type === 'view').length).toBeGreaterThanOrEqual(4);
-    expect(intake.of<{ type: string; url: string }>('measure').filter((m) => m.type === 'view').map((m) => m.url)).toEqual([
-      url,
-      `${url}#/inbox`,
-      `${url}#/inbox/42`,
-      `${url}#!/settings`,
-    ]);
+    await expect.poll(() => intake.events('view_start').length).toBeGreaterThanOrEqual(4);
+    expect(intake.events<{ url: string }>('view_start').map((v) => v.url)).toEqual([url, `${url}#/inbox`, `${url}#/inbox/42`, `${url}#!/settings`]);
     expect(JSON.stringify(intake.received)).not.toContain('secret');
   });
 
-  test('init after load: the view carries its timings', async ({ page, intake }) => {
-    const url = intake.page(
-      'loaded',
-      `<!doctype html><html><head></head><body><script>
-        window.addEventListener('load', function () { setTimeout(function () {
-          var s = document.createElement('script'); s.textContent = ${JSON.stringify(snippet(intake).replace(/<\/?script>/g, ''))};
-          document.head.appendChild(s);
-        }, 50); });
-      </script></body></html>`,
-    );
-    await page.goto(url, { waitUntil: 'load' });
-    await sdkLoaded(page);
-    await hide(page);
-    await expect.poll(() => intake.of('measure').length).toBeGreaterThan(0);
-    const [view] = intake.of<Record<string, unknown>>('measure');
-    expect(view).toMatchObject({ type: 'view', loading_type: 'initial_load' });
-    expect(view.load_time_ms as number).toBeGreaterThan(0);
-  });
-
-  test('a dead button and a rage burst', async ({ page, intake }) => {
-    intake.config = { filters: [{ filter_type: 'custom', conditions: {}, capture_replay: false }], settings: { privacy: { mask_inputs: true, mask_text: false } } };
+  test('a dead button and a rage burst, with selectors and click counts', async ({ page, intake }) => {
+    intake.config = ANALYZE_ALL;
     const url = intake.page(
       'clicks',
       `<!doctype html><html><head>${snippet(intake)}</head><body>
@@ -324,21 +289,22 @@ test.describe('page views and frustration in a real browser', () => {
     );
     await page.goto(url);
     await sdkLoaded(page);
-    await page.waitForTimeout(200);
+    await page.waitForTimeout(300);
     await page.click('#dead');
-    // Any DOM change counts as a reaction to every pending click, so the burst waits.
     await page.waitForTimeout(1_200);
     for (let i = 0; i < 5; i++) await page.click('#live', { delay: 0 });
     await page.waitForTimeout(1_300);
-    // Opens on pointerdown, like Radix menus: the click itself changes nothing.
     await page.click('#menu');
     await page.waitForTimeout(1_300);
     await hide(page);
-    await expect.poll(() => intake.of('events').filter((e) => e.type === 'action').length).toBe(7);
-    const actions = intake.of<{ type: string; action_target: string; frustration?: string }>('events').filter((e) => e.type === 'action');
-    expect(actions.find((a) => a.action_target.startsWith('#dead'))?.frustration).toBe('dead_click');
-    expect(actions.filter((a) => a.frustration === 'rage_click')).toHaveLength(1);
-    expect(actions.filter((a) => a.action_target === '#live' && a.frustration === 'dead_click')).toHaveLength(0);
-    expect(actions.find((a) => a.action_target === '#menu')?.frustration).toBeUndefined();
+    await expect.poll(() => intake.events('action').length).toBe(7);
+    const actions = intake.events<{ name: string; selector: string; frustration?: string; click_count?: number; offset_pct?: number[] }>('action');
+    expect(actions.find((a) => a.selector === '#dead')).toMatchObject({ name: 'Apply coupon', frustration: 'dead_click' });
+    const rage = actions.filter((a) => a.frustration === 'rage_click');
+    expect(rage).toHaveLength(1);
+    expect(rage[0].click_count).toBeGreaterThanOrEqual(3);
+    expect(actions.filter((a) => a.selector === '#live' && a.frustration === 'dead_click')).toHaveLength(0);
+    expect(actions.find((a) => a.selector === '#menu')?.frustration).toBeUndefined();
+    expect(actions[0].offset_pct).toHaveLength(2);
   });
 });

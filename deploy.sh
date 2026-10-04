@@ -1,27 +1,36 @@
 #!/bin/bash
 set -euo pipefail
 
-# Deploy RUM SDK to CloudFront CDN
+# Deploy the RUM SDK CDN files.
 # Usage: ./deploy.sh [distribution-id]
 #
-# Requires:
-#   - AWS CLI configured with siteqwality profile
-#   - SDK already built (npm run build)
-#
-# Uploads ALL files in dist/cdn/ (core SDK + versioned recorder)
-# to s3://bucket/rum/v<version>/ (immutable) and s3://bucket/rum/v1/ (latest 1.x)
+# Requires the siteqwality AWS profile and a build (npm run build). Uploads every file in
+# dist/cdn/ (the core and its versioned replay chunk) to:
+#   rum/v<version>/  pinned and immutable (customers may pin it, with Subresource Integrity)
+#   rum/v<major>/    the latest release of that major line (rum/v2/ for 2.x)
+# Another major line's prefix is never written, so a 2.x deploy leaves rum/v1/ on 1.x.
+# rum/config/ belongs to the api's config publisher and is never touched here.
 
 SDK_BUCKET="sq-prod-us-east-1-rum-sdk"
-SDK_PREFIX="rum/v1"
 DIST_DIR="dist/cdn"
 CDN_DISTRIBUTION_ID="${1:-}"
 VERSION="$(node -p "require('./package.json').version")"
-# rum/v<exact version>/ never changes once written, so customers can pin a
-# release (and use Subresource Integrity). rum/v1/ follows the latest 1.x.
+MAJOR="${VERSION%%.*}"
 PINNED_PREFIX="rum/v${VERSION}"
+MAJOR_PREFIX="rum/v${MAJOR}"
 
-if [ ! -d "$DIST_DIR" ]; then
-  echo "Error: $DIST_DIR not found. Run 'npm run build' first."
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Error: refusing to deploy pre-release version ${VERSION}."
+  exit 1
+fi
+
+if [ ! -f "$DIST_DIR/sdk.min.js" ] || [ ! -f "$DIST_DIR/recorder-${VERSION}.min.js" ]; then
+  echo "Error: $DIST_DIR has no ${VERSION} build. Run 'npm run build' first."
+  exit 1
+fi
+
+if ! grep -q "VERSION = '${VERSION}'" src/version.ts; then
+  echo "Error: src/version.ts does not match package.json ${VERSION}."
   exit 1
 fi
 
@@ -30,7 +39,7 @@ if aws s3 ls "s3://${SDK_BUCKET}/${PINNED_PREFIX}/sdk.min.js" --profile siteqwal
   exit 1
 fi
 
-# No --delete: cached 1.0.x cores still load their rrweb-*.js chunks from v1/.
+# No --delete: cached cores keep loading the replay chunk of their own version.
 upload() {
   local prefix="$1" js_cache="$2"
   echo "Uploading SDK files to s3://${SDK_BUCKET}/${prefix}/..."
@@ -50,15 +59,17 @@ upload() {
 }
 
 upload "$PINNED_PREFIX" "public, max-age=31536000, immutable"
-upload "$SDK_PREFIX" "public, max-age=86400"
+upload "$MAJOR_PREFIX" "public, max-age=86400"
 
-echo "Upload complete: ${PINNED_PREFIX}/ (pinned) and ${SDK_PREFIX}/ (latest 1.x)."
+echo "Upload complete: ${PINNED_PREFIX}/ (pinned) and ${MAJOR_PREFIX}/ (latest ${MAJOR}.x)."
+echo "Subresource Integrity for ${PINNED_PREFIX}/sdk.min.js:"
+echo "  sha384-$(openssl dgst -sha384 -binary "$DIST_DIR/sdk.min.js" | openssl base64 -A)"
 
 if [ -n "$CDN_DISTRIBUTION_ID" ]; then
-  echo "Invalidating CloudFront cache..."
+  echo "Invalidating CloudFront cache for /${MAJOR_PREFIX}/*..."
   aws cloudfront create-invalidation \
     --distribution-id "$CDN_DISTRIBUTION_ID" \
-    --paths "/${SDK_PREFIX}/*" \
+    --paths "/${MAJOR_PREFIX}/*" \
     --profile siteqwality
   echo "Invalidation submitted."
 else

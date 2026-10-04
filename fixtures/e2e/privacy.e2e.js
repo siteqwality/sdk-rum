@@ -58,7 +58,7 @@ for (const level of ['strict', 'balanced', 'relaxed']) {
     for (const [id, { value, guard, where }] of Object.entries(CANARIES)) {
       const hits = findCanary(captures, value);
       const want = expectation(guard, SDK, level);
-      const proof = PROOF[id](captures, app);
+      const proof = PROOF[id](captures, app, level);
       const seen = hits.length ? `found in ${hits.map((h) => h.kind).join(', ')}: ...${hits[0].context}...` : 'not found';
       if (proof !== true) {
         ledger.check(id, false, { detail: `not exercised: ${proof}` });

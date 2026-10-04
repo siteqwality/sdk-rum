@@ -1,10 +1,5 @@
-import {
-  sendJson,
-  isRefused,
-  Backoff,
-  byteLength,
-  KEEPALIVE_MAX_BYTES,
-} from '../send';
+import { send as coreSend, isRefused, Backoff, KEEPALIVE_MAX_BYTES } from '../core/send';
+import { byteLength } from '../core/util';
 
 /** Segments held while one is in flight or while backing off. */
 export const MAX_BUFFERED_SEGMENTS = 10;
@@ -45,7 +40,7 @@ interface PendingSegment {
  * for the rest of the page.
  *
  * A segment is often past the 64 KiB keepalive cap, where a keepalive request
- * is refused outright; `sendJson` sends those as plain requests instead of
+ * is refused outright; `send` sends those as plain requests instead of
  * silently dropping them.
  *
  * Losing a snapshot segment drops the ones after it until the next snapshot:
@@ -62,10 +57,22 @@ export class ReplayTransport {
   private snapshotLost = false;
   private warnedTooLarge = false;
 
+  /** `send` is the core's on the CDN, so both share one keepalive budget. */
   constructor(
     private endpoint: string,
     private clientToken: string,
+    private fetchFn: typeof fetch = (...a) => fetch(...a),
+    private send: typeof coreSend = coreSend,
   ) {}
+
+  /** Drops everything queued and sends nothing more (consent withdrawn, opted out, over budget). */
+  stop(): void {
+    this.stopped = true;
+    this.buffer = [];
+    this.bufferedBytes = 0;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
 
   /**
    * Queues a segment and starts sending if nothing is in flight. The promise
@@ -118,7 +125,7 @@ export class ReplayTransport {
         !this.inFlight?.snapshot &&
         !this.buffer.some((s) => s.snapshot));
     if (!based || bytes > KEEPALIVE_MAX_BYTES) return;
-    void sendJson(url, this.clientToken, `${head}${segment.json.join(',')}]}`, bytes);
+    void this.send(this.fetchFn, url, this.clientToken, `${head}${segment.json.join(',')}]}`, 'application/json', bytes);
   }
 
   private canSend(): boolean {
@@ -139,12 +146,7 @@ export class ReplayTransport {
       const segment = this.buffer.shift()!;
       this.bufferedBytes -= segment.bytes;
       this.inFlight = segment;
-      const outcome = await sendJson(
-        segment.url,
-        this.clientToken,
-        segment.body,
-        segment.bytes,
-      );
+      const outcome = await this.send(this.fetchFn, segment.url, this.clientToken, segment.body, 'application/json', segment.bytes);
       this.inFlight = null;
       if (this.stopped) break;
       if (outcome.kind === 'ok') {
@@ -157,10 +159,9 @@ export class ReplayTransport {
           this.retryTimer = null;
           void this.pump();
         }, this.backoff.next(outcome.retryAfterMs));
-      } else if (isRefused(outcome)) {
-        this.stopped = true;
-        this.buffer = [];
-        this.bufferedBytes = 0;
+      } else if (isRefused(outcome) || outcome.status === 0) {
+        // Refused by the intake, or by the request budget: nothing more goes.
+        this.stop();
       } else {
         // Any other permanent failure drops just this segment.
         if (outcome.status === 413) this.warnTooLarge();

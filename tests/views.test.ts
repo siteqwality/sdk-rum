@@ -1,279 +1,174 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { startViewCollector, readLoadTimings, pageUrl } from '../src/collectors/views';
-import { createUrlSanitizer } from '../src/privacy/url';
-import type { ViewEvent } from '../src/types';
-
-const sanitize = createUrlSanitizer();
-
-function navigationEntry(loadEventEnd: number, domContentLoadedEventEnd: number) {
-  const entry = { loadEventEnd, domContentLoadedEventEnd };
-  vi.spyOn(performance, 'getEntriesByType').mockImplementation((type: string) =>
-    type === 'navigation' ? ([entry] as unknown as PerformanceEntryList) : [],
-  );
-  return entry;
-}
-
-function setReadyState(state: DocumentReadyState) {
-  Object.defineProperty(document, 'readyState', { value: state, configurable: true });
-}
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { SiteQwalityRUM } from '../src/sdk';
+import { pageUrl } from '../src/collectors/views';
+import { createUrlSanitizer } from '../src/core/url';
+import { boot, clearStorage, flush, pagehide, settle, stubNetwork } from './helpers/sdk';
+import { FakePerformanceObserver } from './setup';
 
 beforeEach(() => {
-  vi.useFakeTimers();
-  history.replaceState({}, '', '/start');
+  clearStorage();
+  history.replaceState(null, '', '/');
 });
-
 afterEach(() => {
-  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
-  setReadyState('complete');
 });
 
-function collect(options: Parameters<typeof startViewCollector>[2] = {}) {
-  const views: ViewEvent[] = [];
-  const collector = startViewCollector((v) => views.push(v), sanitize, options);
-  return { views, collector };
-}
-
-describe('initial view', () => {
-  it('carries Navigation Timing load times when the load has ended', () => {
-    navigationEntry(1234.6, 800.2);
-    const { views } = collect();
-    expect(views).toHaveLength(1);
-    expect(views[0]).toMatchObject({
-      loading_type: 'initial_load',
-      url: 'http://localhost:3000/start',
-      load_time_ms: 1235,
-      dom_ready_ms: 800,
-    });
-  });
-
-  it('goes out without timings before the load ends, then reports them once after load', () => {
-    const entry = navigationEntry(0, 0);
-    setReadyState('loading');
-    const onLoadTimings = vi.fn();
-    const { views } = collect({ onLoadTimings });
-    expect(views[0]).not.toHaveProperty('load_time_ms');
-    expect(views[0]).not.toHaveProperty('dom_ready_ms');
-
-    entry.domContentLoadedEventEnd = 400;
-    window.dispatchEvent(new Event('load'));
-    expect(onLoadTimings).not.toHaveBeenCalled();
-    entry.loadEventEnd = 950;
-    vi.advanceTimersByTime(0);
-    expect(onLoadTimings).toHaveBeenCalledTimes(1);
-    expect(onLoadTimings).toHaveBeenCalledWith({ load_time_ms: 950, dom_ready_ms: 400 });
-
-    window.dispatchEvent(new Event('load'));
-    vi.advanceTimersByTime(0);
-    expect(onLoadTimings).toHaveBeenCalledTimes(1);
-  });
-
-  it('inside a load handler (complete, loadEventEnd 0) reads one macrotask later', () => {
-    const entry = navigationEntry(0, 300);
-    setReadyState('complete');
-    const onLoadTimings = vi.fn();
-    collect({ onLoadTimings });
-    entry.loadEventEnd = 700;
-    vi.advanceTimersByTime(0);
-    expect(onLoadTimings).toHaveBeenCalledWith({ load_time_ms: 700, dom_ready_ms: 300 });
-  });
-
-  it('never reports a zero or negative time', () => {
-    navigationEntry(0, 0);
-    expect(readLoadTimings()).toBeNull();
-    navigationEntry(500, -3);
-    expect(readLoadTimings()).toEqual({ load_time_ms: 500 });
-  });
-
-  it('sends no timings where Navigation Timing is missing', () => {
-    vi.spyOn(performance, 'getEntriesByType').mockReturnValue([]);
-    const onLoadTimings = vi.fn();
-    const { views } = collect({ onLoadTimings });
-    vi.advanceTimersByTime(10);
-    expect(views[0]).not.toHaveProperty('load_time_ms');
-    expect(onLoadTimings).not.toHaveBeenCalled();
+describe('pageUrl', () => {
+  const s = createUrlSanitizer();
+  it('drops the fragment unless hash routing keeps a #/route', () => {
+    expect(pageUrl('https://x.test/a?q=1#/inbox/42?token=t', s, false)).toBe('https://x.test/a');
+    expect(pageUrl('https://x.test/a#/inbox/42?token=t', s, true)).toBe('https://x.test/a#/inbox/42');
+    expect(pageUrl('https://x.test/a#!/settings', s, true)).toBe('https://x.test/a#!/settings');
+    expect(pageUrl('https://x.test/a#access_token=abc', s, true)).toBe('https://x.test/a');
+    expect(pageUrl('https://x.test/a#/access_token=s&token_type=Bearer', s, true)).toBe('https://x.test/a');
   });
 });
 
-describe('route changes', () => {
-  beforeEach(() => navigationEntry(1000, 500));
-
-  it('replaceState with the same URL emits nothing', () => {
-    const { views } = collect();
-    history.replaceState({ hydrated: true }, '', '/start');
-    expect(views).toHaveLength(1);
-  });
-
-  it('a query-only or hash-only change emits nothing, as both are stripped', () => {
-    const { views } = collect();
-    history.replaceState({}, '', '/start?tab=2');
-    history.pushState({}, '', '/start?tab=3#section');
-    expect(views).toHaveLength(1);
-  });
-
-  it('pushState to a new path is a route change with no timings', () => {
-    const { views } = collect();
-    history.pushState({}, '', '/products/42');
-    expect(views).toHaveLength(2);
-    expect(views[1]).toMatchObject({ loading_type: 'route_change', url: 'http://localhost:3000/products/42' });
-    expect(views[1]).not.toHaveProperty('load_time_ms');
-    expect(views[1]).not.toHaveProperty('dom_ready_ms');
-    expect(views[1].view_id).not.toBe(views[0].view_id);
-  });
-
-  it('popstate starts a view only when the URL changed', () => {
-    const { views } = collect();
-    window.dispatchEvent(new PopStateEvent('popstate'));
-    expect(views).toHaveLength(1);
-    history.replaceState({}, '', '/back');
-    // replaceState itself starts that view; a later popstate to the same URL adds none.
-    window.dispatchEvent(new PopStateEvent('popstate'));
-    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/start', 'http://localhost:3000/back']);
-  });
-
-  it('reports every history call, changed or not', () => {
-    const onHistoryChange = vi.fn();
-    collect({ onHistoryChange });
-    history.replaceState({}, '', '/start');
-    history.pushState({}, '', '/a');
-    window.dispatchEvent(new PopStateEvent('popstate'));
-    expect(onHistoryChange).toHaveBeenCalledTimes(3);
-  });
-
-  it('restart starts a new view for the current URL', () => {
-    const { views, collector } = collect();
-    collector.restart();
-    expect(views).toHaveLength(2);
-    expect(views[1]).toMatchObject({ loading_type: 'route_change', url: 'http://localhost:3000/start' });
-  });
-
-  it('keeps the host navigation call intact, failures included', () => {
-    collect();
-    expect(history.pushState({}, '', '/ok')).toBeUndefined();
-    expect(() => history.pushState({}, '', 'https://elsewhere.example/')).toThrow();
-  });
-
-  it('never throws into the host navigation call', () => {
-    startViewCollector(
-      (v) => {
-        if (v.loading_type === 'route_change') throw new Error('handler bug');
-      },
-      sanitize,
-    );
-    expect(() => history.pushState({}, '', '/still-fine')).not.toThrow();
-  });
-});
-
-describe('hash routes', () => {
-  beforeEach(() => navigationEntry(1000, 500));
-
-  it('a hash-routed app gets one view per route', () => {
-    history.replaceState({}, '', '/app#/inbox');
-    const { views } = collect();
-    history.pushState({}, '', '/app#/inbox/42?tab=thread&token=abc');
-    history.pushState({}, '', '/app#/settings');
-    history.replaceState({}, '', '/app#/settings');
-    expect(views.map((v) => v.url)).toEqual([
-      'http://localhost:3000/app#/inbox',
-      'http://localhost:3000/app#/inbox/42',
-      'http://localhost:3000/app#/settings',
+describe('views', () => {
+  it('view_start on load with loading and navigation type, then one per URL change', async () => {
+    const net = await boot();
+    history.pushState(null, '', '/products?sort=price');
+    history.replaceState(null, '', '/products?sort=name');
+    history.pushState(null, '', '/products/42');
+    await flush();
+    const starts = net.events('view_start');
+    expect(starts.map((v) => [v.url, v.loading_type, v.navigation_type])).toEqual([
+      ['http://localhost:3000/', 'initial_load', 'navigate'],
+      ['http://localhost:3000/products', 'route_change', 'push'],
+      ['http://localhost:3000/products/42', 'route_change', 'push'],
     ]);
-    expect(views.slice(1).every((v) => v.loading_type === 'route_change')).toBe(true);
+    expect(new Set(starts.map((v) => v.ctx.session_id)).size).toBe(1);
   });
 
-  it('keeps hashbang routes too', () => {
-    history.replaceState({}, '', '/app#!/a');
-    const { views } = collect();
-    history.pushState({}, '', '/app#!/b');
-    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#!/a', 'http://localhost:3000/app#!/b']);
-  });
-
-  it('follows a router that assigns location.hash (hashchange)', async () => {
-    vi.useRealTimers();
-    history.replaceState({}, '', '/app#/a');
-    const { views } = collect();
-    window.location.hash = '#/b';
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#/a', 'http://localhost:3000/app#/b']);
-  });
-
-  it('still drops any other fragment: anchors and tokens', () => {
-    history.replaceState({}, '', '/app');
-    const { views } = collect();
-    history.pushState({}, '', '/app#reviews');
-    history.replaceState({}, '', '/app#access_token=secret&state=1');
-    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app']);
-  });
-
-  it('leaving a route for an anchor or a token fragment starts no view', () => {
-    history.replaceState({}, '', '/app#/inbox');
-    const { views } = collect();
-    history.pushState({}, '', '/app#reviews');
-    history.replaceState({}, '', '/app#access_token=secret');
-    history.pushState({}, '', '/app#/inbox');
-    history.pushState({}, '', '/other#top');
-    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#/inbox', 'http://localhost:3000/other']);
-  });
-
-  // The same table as core-rs common::rum::url_privacy minimise_page_url, so both keep the same routes.
-  const SHARED_PAGE_URLS: Array<[string, string]> = [
-    ['https://a.example/app?x=1#/orders/7?tab=2&email=a@b.c', 'https://a.example/app#/orders/7'],
-    ['https://a.example/app#/orders/7#frag', 'https://a.example/app#/orders/7'],
-    ['https://a.example/app#/', 'https://a.example/app#/'],
-    ['https://a.example/app#!/inbox/42?token=abc', 'https://a.example/app#!/inbox/42'],
-    ['https://u:p@a.example/app#/x', 'https://a.example/app#/x'],
-    ['https://a.example/app#/redirect/https://u:p@h.example/x', 'https://a.example/app#/redirect/https://h.example/x'],
-    ['  https://a.example/app#/x  ', 'https://a.example/app#/x'],
-    ['/app?sid=9#/x?y=1', '/app#/x'],
-    ['#/route/tok_1', '#/route/tok_1'],
-    // OAuth implicit-flow and other parameter fragments are never routes.
-    ['https://a.example/cb#/access_token=ya29.a0Af&token_type=Bearer&expires_in=3599', 'https://a.example/cb'],
-    ['https://a.example/cb#!/id_token=eyJhbGciOi.x.y&state=af0ifjsldkj', 'https://a.example/cb'],
-    ['https://a.example/app#/state=xyz', 'https://a.example/app'],
-    ['https://a.example/app#/a&b', 'https://a.example/app'],
-    ['https://a.example/app#/login?redirect=/x&token=abc', 'https://a.example/app#/login'],
-    ['https://a.example/app#/reset/token=abc?x=1', 'https://a.example/app'],
-    // Not routes: dropped as everywhere else.
-    ['https://a.example/cart#access_token=abc123', 'https://a.example/cart'],
-    ['https://a.example/p#section-2', 'https://a.example/p'],
-    ['https://a.example/p#route/x', 'https://a.example/p'],
-    ['https://a.example/p#!', 'https://a.example/p'],
-    ['https://a.example/p#!!/x', 'https://a.example/p'],
-    ['https://a.example/p#', 'https://a.example/p'],
-    ['https://a.example/p?q=1', 'https://a.example/p'],
-    ['', ''],
-  ];
-
-  for (const [input, expected] of SHARED_PAGE_URLS) {
-    it(`page URL ${JSON.stringify(input)} -> ${JSON.stringify(expected)}`, () => {
-      expect(pageUrl(input, sanitize)).toBe(expected);
-      expect(pageUrl(pageUrl(input, sanitize), sanitize)).toBe(expected);
+  it('the first view of a session carries referrer, UTM and click-id type; later ones do not', async () => {
+    vi.spyOn(document, 'referrer', 'get').mockReturnValue('https://search.test/results?q=secret');
+    history.replaceState(null, '', '/?utm_source=news&utm_campaign=fall&gclid=abc123&utm_content=a@b.io');
+    const net = await boot();
+    history.pushState(null, '', '/next');
+    await flush();
+    const [first, second] = net.events('view_start');
+    expect(first).toMatchObject({
+      url: 'http://localhost:3000/',
+      referrer: 'https://search.test/results',
+      utm: { source: 'news', campaign: 'fall', content: '<email>' },
+      click_id_type: 'gclid',
     });
-  }
-
-  it('an OAuth redirect into a hash route starts no view', () => {
-    history.replaceState({}, '', '/app#/inbox');
-    const { views } = collect();
-    history.replaceState({}, '', '/app#/access_token=ya29.a0Af&token_type=Bearer');
-    history.pushState({}, '', '/app#/state=xyz');
-    history.pushState({}, '', '/app#/settings');
-    expect(views.map((v) => v.url)).toEqual(['http://localhost:3000/app#/inbox', 'http://localhost:3000/app#/settings']);
+    expect(JSON.stringify(net.batches)).not.toContain('abc123');
+    expect(second.referrer).toBeUndefined();
+    expect(second.utm).toBeUndefined();
   });
 
-  it('an allowed parameter stays on a route, and never makes it look like a token', () => {
-    const allowTab = createUrlSanitizer({ allowedQueryParams: ['tab'] });
-    expect(pageUrl('https://a.example/app#/orders/7?tab=2', allowTab)).toBe('https://a.example/app#/orders/7?tab=2');
-    expect(pageUrl('https://a.example/app#/state=xyz?tab=2', allowTab)).toBe('https://a.example/app');
+  it('a direct visit sends referrer as "", and so does the first view of a rotated session', async () => {
+    vi.spyOn(document, 'referrer', 'get').mockReturnValue('');
+    // In memory, so no earlier test's instance hands this page its session.
+    const net = await boot({ persistence: 'memory' });
+    history.pushState(null, '', '/later');
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 16 * 60_000 });
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    vi.useRealTimers();
+    await flush();
+    const starts = net.events('view_start');
+    const [first, pushed, rotated] = ['navigate', 'push', 'session'].map((n) => starts.find((v) => v.navigation_type === n)!);
+    expect(first.referrer).toBe('');
+    expect(pushed.referrer).toBeUndefined();
+    expect(rotated.ctx.session_id).not.toBe(first.ctx.session_id);
+    expect(rotated).toMatchObject({ referrer: '' });
+    expect(rotated.utm).toBeUndefined();
   });
 
-  it('minimises a route like a path, allowed query parameters included', () => {
-    const allowTab = createUrlSanitizer({ allowedQueryParams: ['tab'] });
-    expect(pageUrl('https://a.example/app?x=1#/orders/7?tab=2&email=a@b.c', allowTab)).toBe(
-      'https://a.example/app#/orders/7?tab=2',
-    );
-    expect(pageUrl('https://a.example/app#/orders/7#frag', sanitize)).toBe('https://a.example/app#/orders/7');
-    expect(pageUrl('https://a.example/app#/', sanitize)).toBe('https://a.example/app#/');
-    expect(pageUrl('https://a.example/app#', sanitize)).toBe('https://a.example/app');
-    expect(pageUrl(undefined as unknown as string, sanitize)).toBe(sanitize(undefined));
+  it('routes come from routeName or setView', async () => {
+    const net = await boot({ routeName: (path) => (path.startsWith('/users/') ? '/users/:id' : undefined) });
+    history.pushState(null, '', '/users/7');
+    history.pushState(null, '', '/about');
+    SiteQwalityRUM.setView('About page');
+    await flush();
+    expect(net.events('view_start').map((v) => v.route)).toEqual([undefined, '/users/:id', 'About page']);
+  });
+
+  it('hash routing makes one view per #/ route', async () => {
+    const net = await boot({ hashRouting: true });
+    location.hash = '#/inbox';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    location.hash = '#reviews';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    await flush();
+    expect(net.events('view_start').map((v) => v.url)).toEqual(['http://localhost:3000/', 'http://localhost:3000/#/inbox']);
+  });
+
+  it('view_end: interim on hide, final on the next view and on pagehide, seq increasing', async () => {
+    const net = await boot();
+    await flush();
+    history.pushState(null, '', '/two');
+    pagehide();
+    await settle();
+    const ends = net.events('view_end');
+    const [first, second] = net.events('view_start').map((v) => v.view_id);
+    expect(ends.filter((e) => e.view_id === first).map((e) => [e.seq, e.final])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect(ends.filter((e) => e.view_id === second).map((e) => [e.seq, e.final])).toEqual([[1, true]]);
+    expect(ends[0]).toMatchObject({ errors: 0, actions: 0, frustrations: 0 });
+    expect(typeof ends[0].time_spent_ms).toBe('number');
+    expect(typeof ends[0].session_active_ms).toBe('number');
+  });
+
+  it('counts errors on the view and measures active time from input', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const net = await boot();
+    window.dispatchEvent(new Event('pointerdown'));
+    vi.advanceTimersByTime(2000);
+    window.dispatchEvent(new Event('keydown'));
+    vi.advanceTimersByTime(30_000);
+    SiteQwalityRUM.addError(new Error('x'));
+    await flush();
+    const end = net.events('view_end')[0];
+    expect(end.errors).toBe(1);
+    expect(end.active_ms).toBe(7000);
+  });
+
+  it('a late vital for the ended initial view goes out as one more final view_end', async () => {
+    const net = await boot();
+    history.pushState(null, '', '/two');
+    FakePerformanceObserver.emit('paint', [{ name: 'first-contentful-paint', startTime: 321 }]);
+    await settle();
+    await flush();
+    const first = net.events('view_start')[0].view_id;
+    const late = net.events('view_end').filter((e) => e.view_id === first);
+    expect(late.at(-1)).toMatchObject({ final: true, fcp_ms: 321 });
+  });
+
+  it('a back-forward cache restore starts a view on a new page load', async () => {
+    const net = await boot();
+    const before = SiteQwalityRUM.getStatus()!;
+    pagehide(true);
+    const show = new Event('pageshow') as PageTransitionEvent;
+    Object.defineProperty(show, 'persisted', { value: true });
+    window.dispatchEvent(show);
+    await flush();
+    const restored = net.events('view_start').at(-1)!;
+    expect(restored).toMatchObject({ loading_type: 'bfcache_restore', navigation_type: 'back_forward_cache' });
+    expect(restored.ctx.session_id).toBe(before.session_id);
+    expect(restored.ctx.page_load_id).not.toBe(net.events('view_start')[0].ctx.page_load_id);
+  });
+
+  it('the route-change loading time waits for requests and DOM changes to settle', async () => {
+    const net = stubNetwork();
+    await boot({}, net);
+    let release: () => void = () => {};
+    net.fetch.mockImplementationOnce(() => new Promise((r) => (release = () => r(new Response('{}')))));
+    history.pushState(null, '', '/slow');
+    const p = fetch('/api/data');
+    await new Promise((r) => setTimeout(r, 150));
+    document.body.append(document.createElement('div'));
+    release();
+    await p;
+    await new Promise((r) => setTimeout(r, 250));
+    await flush();
+    const slow = net.events('view_start').find((v) => String(v.url).endsWith('/slow'))!;
+    const end = net.events('view_end').find((e) => e.view_id === slow.view_id)!;
+    expect(end.loading_time_ms).toBeGreaterThanOrEqual(140);
+    expect(end.loading_time_ms).toBeLessThan(1000);
   });
 });

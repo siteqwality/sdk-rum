@@ -1,13 +1,9 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import {
-  startResourceCollector,
-  createOwnRequestMatcher,
-  createExclusionMatcher,
-  resourceType,
-  RESOURCE_TYPES,
-  type CollectedResource,
-} from '../src/collectors/resources';
-import { createUrlSanitizer } from '../src/privacy/url';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import { startResources, createOwnRequestMatcher, createExclusionMatcher, resourceType, RESOURCE_TYPES } from '../src/collectors/resources';
+import type { Hub } from '../src/hub';
+import type { SqEvent } from '../src/types';
+import { FakePerformanceObserver } from './setup';
+import { createUrlSanitizer } from '../src/core/url';
 
 const DEFAULT_BASES = ['https://rum.siteqwality.com', 'https://replay.siteqwality.com'];
 
@@ -155,119 +151,109 @@ describe('createExclusionMatcher', () => {
   });
 });
 
-describe('startResourceCollector', () => {
-  type Callback = (list: { getEntries: () => unknown[] }) => void;
+describe('startResources', () => {
+  let events: SqEvent[];
+  let requests: PerformanceEntry[];
+  let exclusions: string[];
+  let view = 'v1';
 
-  function installObserver(): { emit: (entries: object[]) => void } {
-    let callback: Callback | null = null;
-    vi.stubGlobal(
-      'PerformanceObserver',
-      class {
-        constructor(cb: Callback) {
-          callback = cb;
-        }
-        observe(): void {}
-      },
-    );
-    return {
-      emit: (entries) => callback!({ getEntries: () => entries }),
-    };
+  function start() {
+    events = [];
+    requests = [];
+    const url = createUrlSanitizer();
+    const own = createOwnRequestMatcher(['https://in.test', 'https://rp.test']);
+    const hub = {
+      opts: { applicationId: 'a', clientToken: 't' },
+      cfg: () => ({ capture: { resource_exclusions: exclusions } }),
+      url,
+      text: (s: string) => s,
+      scrub: (s: string) => s,
+      emit: (e: SqEvent) => (events.push(e), true),
+      input: () => {},
+      crumb: () => {},
+      count: () => {},
+      isOwn: own,
+      pageUrl: () => '',
+      viewId: () => view,
+    } as unknown as Hub;
+    return startResources(hub, { onRequestEntry: (e) => requests.push(e) });
   }
 
-  function entry(name: string, initiatorType = 'fetch') {
-    return { name, initiatorType, duration: 12, transferSize: 300 };
-  }
-
-  it('never records requests to the ingest or replay base', () => {
-    const observer = installObserver();
-    const seen: CollectedResource[] = [];
-    startResourceCollector((r) => seen.push(r), createUrlSanitizer(), DEFAULT_BASES);
-
-    observer.emit([
-      entry('https://rum.siteqwality.com/v1/events'),
-      entry('https://rum.siteqwality.com/v1/measure'),
-      entry('https://rum.siteqwality.com/v1/config'),
-      entry('https://replay.siteqwality.com/v1/segments?session_id=s&segment_index=0'),
-      entry('https://api.example.com/orders?id=7'),
-      entry('https://cdn.example.com/app.js', 'script'),
-    ]);
-
-    expect(seen.map((r) => r.resource_url)).toEqual([
-      'https://api.example.com/orders',
-      'https://cdn.example.com/app.js',
-    ]);
+  const entry = (name: string, extra: Record<string, unknown> = {}) => ({
+    name,
+    initiatorType: 'img',
+    startTime: 10,
+    duration: 42,
+    transferSize: 300,
+    decodedBodySize: 900,
+    encodedBodySize: 300,
+    domainLookupStart: 0,
+    domainLookupEnd: 0,
+    connectStart: 0,
+    connectEnd: 0,
+    secureConnectionStart: 0,
+    requestStart: 12,
+    responseStart: 30,
+    responseEnd: 52,
+    ...extra,
   });
 
-  it('never records requests to a custom ingest base', () => {
-    const observer = installObserver();
-    const seen: CollectedResource[] = [];
-    startResourceCollector((r) => seen.push(r), createUrlSanitizer(), [
-      'https://telemetry.customer.example/rum',
-      'https://replay.siteqwality.com',
-    ]);
-
-    observer.emit([
-      entry('https://telemetry.customer.example/rum/v1/events'),
-      entry('https://telemetry.customer.example/api/cart'),
-      // The default base is not ours once a custom one is configured.
-      entry('https://rum.siteqwality.com/v1/events'),
-    ]);
-
-    expect(seen.map((r) => r.resource_url)).toEqual([
-      'https://telemetry.customer.example/api/cart',
-      'https://rum.siteqwality.com/v1/events',
-    ]);
+  beforeEach(() => {
+    exclusions = [];
+    view = 'v1';
   });
 
-  it('skips resources matching the remote exclusions', () => {
-    const observer = installObserver();
-    const seen: CollectedResource[] = [];
-    startResourceCollector(
-      (r) => seen.push(r),
-      createUrlSanitizer(),
-      DEFAULT_BASES,
-      () => ['/b', 'https://us.i.posthog.com'],
-    );
-
-    observer.emit([
-      entry(`${location.origin}/b?t=1`),
-      entry(`${location.origin}/blocks`),
-      entry('https://us.i.posthog.com/e/?ip=1'),
-      entry('https://rum.siteqwality.com/v1/events'),
-      entry('https://api.example.com/orders'),
-    ]);
-
-    expect(seen.map((r) => r.resource_url)).toEqual([
-      `${location.origin}/blocks`,
-      'https://api.example.com/orders',
-    ]);
+  it('sends each resource of the initial view with minimised URL, timing and sizes', () => {
+    start();
+    FakePerformanceObserver.emit('resource', [entry(`${location.origin}/img/a.png?sig=x`, { renderBlockingStatus: 'blocking', responseStatus: 200 })]);
+    expect(events[0]).toMatchObject({
+      k: 'resource',
+      view_id: 'v1',
+      initiator: 'img',
+      url: `${location.origin}/img/a.png`,
+      duration_ms: 42,
+      ttfb_ms: 18,
+      download_ms: 22,
+      transfer_bytes: 300,
+      decoded_bytes: 900,
+      render_blocking: true,
+      status: 200,
+    });
   });
 
-  it('applies a new rule list on the next batch', () => {
-    const observer = installObserver();
-    const seen: CollectedResource[] = [];
-    let rules: string[] | undefined;
-    startResourceCollector(
-      (r) => seen.push(r),
-      createUrlSanitizer(),
-      DEFAULT_BASES,
-      () => rules,
-    );
+  it('hands fetch and XHR entries to the network collector', () => {
+    start();
+    FakePerformanceObserver.emit('resource', [entry('https://api.test/x', { initiatorType: 'fetch' }), entry('https://api.test/y', { initiatorType: 'xmlhttprequest' })]);
+    expect(events).toEqual([]);
+    expect(requests).toHaveLength(2);
+  });
 
-    observer.emit([entry(`${location.origin}/b`)]);
-    rules = ['/b'];
-    observer.emit([entry(`${location.origin}/b`), entry(`${location.origin}/c`)]);
-    rules = ['/c'];
-    observer.emit([entry(`${location.origin}/b`), entry(`${location.origin}/c`)]);
-    rules = undefined;
-    observer.emit([entry(`${location.origin}/c`)]);
+  it('never records its own requests or excluded resources', () => {
+    exclusions = ['/b'];
+    start();
+    FakePerformanceObserver.emit('resource', [entry('https://in.test/v2/batch', { initiatorType: 'beacon' }), entry(`${location.origin}/b?t=1`), entry(`${location.origin}/c`)]);
+    expect(events.map((e) => e.url)).toEqual([`${location.origin}/c`]);
+  });
 
-    expect(seen.map((r) => new URL(r.resource_url).pathname)).toEqual([
-      '/b',
-      '/c',
-      '/b',
-      '/c',
-    ]);
+  it('aggregates past the first 150 and in later views, per origin, with percentiles', () => {
+    const r = start();
+    FakePerformanceObserver.emit('resource', Array.from({ length: 152 }, (_, i) => entry(`${location.origin}/i/${i}.png`, { duration: i })));
+    expect(events).toHaveLength(150);
+    view = 'v2';
+    FakePerformanceObserver.emit('resource', [entry('https://cdn.test/a.js', { initiatorType: 'script', duration: 10 }), entry('https://cdn.test/b.js', { initiatorType: 'script', duration: 30 })]);
+    r.flush();
+    const agg = events.slice(150);
+    expect(agg).toHaveLength(2);
+    expect(agg[0]).toMatchObject({ view_id: 'v1', url: location.origin, n: 2 });
+    expect(agg[1]).toMatchObject({ view_id: 'v2', initiator: 'script', url: 'https://cdn.test', n: 2, p50_ms: 30, p95_ms: 30 });
+  });
+
+  it('sends the LCP resource on its own', () => {
+    const r = start();
+    FakePerformanceObserver.emit('resource', Array.from({ length: 151 }, (_, i) => entry(`${location.origin}/i/${i}.png`)));
+    vi.spyOn(performance, 'getEntriesByName').mockReturnValue([entry(`${location.origin}/hero.jpg`) as unknown as PerformanceEntry]);
+    r.lcp(`${location.origin}/hero.jpg`);
+    expect(events.at(-1)).toMatchObject({ url: `${location.origin}/hero.jpg`, initiator: 'img' });
   });
 });
 
@@ -291,25 +277,4 @@ describe('resource types', () => {
     }
   });
 
-  it('the collector never sends an initiatorType outside the set', () => {
-    let callback: ((list: { getEntries: () => unknown[] }) => void) | null = null;
-    vi.stubGlobal(
-      'PerformanceObserver',
-      class {
-        constructor(cb: typeof callback) {
-          callback = cb;
-        }
-        observe(): void {}
-      },
-    );
-    const seen: CollectedResource[] = [];
-    startResourceCollector((r) => seen.push(r), createUrlSanitizer(), []);
-    callback!({
-      getEntries: () => [
-        { name: 'https://a.example/favicon.ico', initiatorType: 'https://a.example/p?f=1', duration: 1, transferSize: 0 },
-        { name: 'https://a.example/x.css', initiatorType: 'css', duration: 1, transferSize: 0 },
-      ],
-    });
-    expect(seen.map((r) => r.resource_type)).toEqual(['other', 'css']);
-  });
 });

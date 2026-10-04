@@ -1,6 +1,6 @@
 {
   "name": "@siteqwality/rum",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "SiteQwality Real User Monitoring SDK",
   "main": "dist/cjs/index.cjs",
   "module": "dist/esm/index.js",
@@ -26,10 +26,11 @@
     "test:watch": "vitest",
     "test:bundle": "vitest run --config vitest.bundle.config.ts",
     "test:browser": "playwright test",
-    "size": "node scripts/size.cjs",
+    "size": "node scripts/size.mjs",
     "lint": "eslint src/",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run clean && npm run build && npm run build:types && npm run test && npm run test:bundle && node scripts/check-package.cjs"
+    "prepublishOnly": "npm run clean && npm run build && npm run build:types && npm run test && npm run test:bundle && node scripts/check-package.cjs",
+    "size:modules": "node scripts/size.mjs --modules"
   },
   "keywords": [
     "rum",
@@ -72,8 +73,7 @@
   },
   "dependencies": {
     "@rrweb/record": "2.1.4",
-    "tslib": "^2.8.1",
-    "web-vitals": "^5.1.0"
+    "tslib": "^2.8.1"
   },
   "overrides": {
     "rrweb": "2.1.4",

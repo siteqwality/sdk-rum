@@ -1,7 +1,7 @@
-import type { RecordFn } from './load-record';
+import type { StartReplay } from './load-record';
 import { VERSION } from '../version';
 
-export const DEFAULT_RECORDER_BASE = 'https://cdn.siteqwality.com/rum/v1/';
+export const DEFAULT_RECORDER_BASE = 'https://cdn.siteqwality.com/rum/v2/';
 
 // Read while the CDN script evaluates; null for a module script.
 const CORE_SRC = currentScriptSrc();
@@ -26,7 +26,7 @@ export function recorderUrlFor(recorderUrl?: string, coreSrc: string | undefined
 }
 
 /** CDN build: imports the recorder file natively, so the core stays one classic script. */
-export async function loadRecord(recorderUrl?: string): Promise<RecordFn> {
+export async function loadReplay(recorderUrl?: string): Promise<StartReplay> {
   const module = await import(/* webpackIgnore: true */ /* @vite-ignore */ recorderUrlFor(recorderUrl));
-  return module.record as RecordFn;
+  return module.startReplay as StartReplay;
 }

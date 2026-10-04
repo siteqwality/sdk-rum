@@ -1,0 +1,330 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { SiteQwalityRUM } from '../src/sdk';
+import { boot, clearStorage, config, flush, rule, settle, stubNetwork, type Net } from './helpers/sdk';
+import { FakePerformanceObserver } from './setup';
+
+const analyze = (extra: Record<string, unknown> = {}) => stubNetwork(config({ rules: [rule('analyze')], ...extra }));
+
+beforeEach(() => clearStorage());
+afterEach(() => vi.unstubAllGlobals());
+
+async function run(net: Net, fn: () => Promise<unknown>) {
+  await boot({}, net);
+  await fn();
+  await settle();
+  await flush();
+  return net.events('network');
+}
+
+describe('fetch', () => {
+  it('records failures at Observe, without any rule', async () => {
+    const net = stubNetwork();
+    const rows = await run(net, async () => {
+      await fetch('/api/ok');
+      await fetch('/api/fail');
+      await fetch('/api/drop').catch(() => {});
+    });
+    expect(rows.map((r) => [r.url, r.status, r.error_kind])).toEqual([
+      ['http://localhost:3000/api/fail', 500, undefined],
+      ['http://localhost:3000/api/drop', 0, 'network'],
+    ]);
+    expect(rows[0]).toMatchObject({ method: 'GET', initiator: 'fetch' });
+    expect(typeof rows[0].duration_ms).toBe('number');
+  });
+
+  it('records successes once Analyze is on, minimised, with request size', async () => {
+    const rows = await run(analyze(), () => fetch('/api/search?q=x&api_key=secret', { method: 'post', body: '{"a":1}' }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ method: 'POST', url: 'http://localhost:3000/api/search', status: 200, req_bytes: 7 });
+  });
+
+  it('tells aborts and timeouts from network failures', async () => {
+    const net = stubNetwork();
+    net.fetch.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/rum/config/')) return new Response(JSON.stringify(config()));
+      if (url.endsWith('/v2/batch')) {
+        net.batches.push({ url, headers: {}, gzip: false, body: JSON.parse(typeof init?.body === 'string' ? init.body : await new Response((init!.body as Blob).stream().pipeThrough(new DecompressionStream('gzip'))).text()) });
+        return new Response('', { status: 202 });
+      }
+      if (init?.signal?.aborted) throw init.signal.reason;
+      return new Promise((_, reject) => init?.signal?.addEventListener('abort', () => reject(init.signal!.reason)));
+    });
+    const rows = await run(net, async () => {
+      const ctl = new AbortController();
+      const a = fetch('/api/slow', { signal: ctl.signal }).catch((e) => e.name);
+      ctl.abort();
+      const t = fetch('/api/slow', { signal: AbortSignal.timeout(10) }).catch((e) => e.name);
+      expect(await a).toBe('AbortError');
+      expect(await t).toBe('TimeoutError');
+    });
+    expect(rows.map((r) => r.error_kind).sort()).toEqual(['abort', 'timeout']);
+  });
+
+  it('returns exactly what the page would get, and adds no headers by default', async () => {
+    const net = stubNetwork();
+    await boot({}, net);
+    const res = await fetch('/api/ok', { headers: { 'X-App': '1' } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    const init = net.app.at(-1)!.init!;
+    expect(new Headers(init.headers).get('traceparent')).toBeNull();
+    expect(new Headers(init.headers).get('x-app')).toBe('1');
+  });
+
+  it('never records its own requests', async () => {
+    const net = analyze();
+    const rows = await run(net, async () => {
+      await fetch('https://cdn.test/rum/config/v2/x.json');
+      await fetch('https://in.test/v2/identity?h=1');
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it('injects traceparent only for trace_urls and stores the ids on the row', async () => {
+    const net = analyze({ capture: { network: { trace_urls: ['http://localhost:3000/api'] } } });
+    const rows = await run(net, async () => {
+      await fetch('/api/ok');
+      await fetch('/other');
+    });
+    const traced = new Headers(net.app.find((a) => a.url.includes('/api/ok'))!.init!.headers).get('traceparent');
+    expect(traced).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+    expect(new Headers(net.app.find((a) => a.url.includes('/other'))!.init?.headers).get('traceparent')).toBeNull();
+    const row = rows.find((r) => String(r.url).endsWith('/api/ok'))!;
+    expect(traced).toBe(`00-${row.trace_id}-${row.span_id}-01`);
+  });
+
+  it('keeps an existing traceparent', async () => {
+    const net = analyze({ capture: { network: { trace_urls: ['http://localhost:3000/api'] } } });
+    const rows = await run(net, () => fetch('/api/ok', { headers: { traceparent: '00-aaaa-bbbb-01' } }));
+    expect(new Headers(net.app.at(-1)!.init!.headers).get('traceparent')).toBe('00-aaaa-bbbb-01');
+    expect(rows[0].trace_id).toBeUndefined();
+  });
+
+  it('captures allowlisted headers only, never credentials', async () => {
+    const net = analyze();
+    const rows = await run(net, () => fetch('/api/ok', { headers: { Authorization: 'Bearer x', 'Content-Type': 'application/json' } }));
+    expect(rows[0].req_headers).toEqual({ 'content-type': 'application/json' });
+    expect(rows[0].res_headers).toEqual({ 'content-type': 'application/json', 'x-request-id': 'rid-1' });
+  });
+
+  it('captures bodies only for body_urls, redacted and scrubbed', async () => {
+    const net = analyze({ capture: { network: { body_urls: ['/api/login'], max_body_bytes: 1000 } } });
+    const rows = await run(net, async () => {
+      await fetch('/api/login', { method: 'POST', body: JSON.stringify({ email: 'j@x.io', password: 'hunter2' }) });
+      await fetch('/api/other', { method: 'POST', body: '{"password":"p"}' });
+    });
+    const login = rows.find((r) => String(r.url).endsWith('/api/login'))!;
+    expect(JSON.parse(String(login.req_body))).toEqual({ email: '<email>', password: '[redacted]' });
+    expect(login.res_body).toBe('{"ok":true}');
+    expect(rows.find((r) => String(r.url).endsWith('/api/other'))!.req_body).toBeUndefined();
+  });
+
+  it('never reads an event stream, and reads at most max_body_bytes of any other body', async () => {
+    const net = analyze({ capture: { network: { body_urls: ['/api/'], max_body_bytes: 1000 } } });
+    const base = net.fetch.getMockImplementation()!;
+    // Streams that never end: the page keeps reading, the row must not wait for them.
+    const endless = () =>
+      new ReadableStream<Uint8Array>({
+        pull(c) {
+          c.enqueue(new TextEncoder().encode('{"chunk":"' + 'x'.repeat(500) + '"}\n'));
+          return new Promise((r) => setTimeout(r, 5));
+        },
+      });
+    net.fetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/sse')) return Promise.resolve(new Response(endless(), { headers: { 'content-type': 'text/event-stream' } }));
+      if (url.includes('/api/ndjson')) return Promise.resolve(new Response(endless(), { headers: { 'content-type': 'application/x-ndjson' } }));
+      return base(input, init);
+    });
+    let pageRead = '';
+    const rows = await run(net, async () => {
+      const sse = await fetch('/api/sse');
+      const reader = sse.body!.getReader();
+      pageRead = new TextDecoder().decode((await reader.read()).value);
+      await fetch('/api/ndjson');
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    expect(pageRead).toContain('chunk');
+    const sse = rows.find((r) => String(r.url).endsWith('/api/sse'))!;
+    const nd = rows.find((r) => String(r.url).endsWith('/api/ndjson'))!;
+    expect(sse.res_body).toBeUndefined();
+    expect(String(nd.res_body).length).toBeLessThanOrEqual(1100);
+    expect(nd.truncated).toBe(true);
+  });
+
+  it('folds repeated failures per view into one Observe row with err_n', async () => {
+    const rows = await run(stubNetwork(), async () => {
+      for (let i = 0; i < 12; i++) await fetch('/api/fail');
+    });
+    const fail = rows.filter((r) => String(r.url).endsWith('/api/fail'));
+    expect(fail).toHaveLength(2);
+    expect(fail[0].n).toBeUndefined();
+    expect(fail[1]).toMatchObject({ status: 500, n: 11, err_n: 11 });
+  });
+
+  it('trace_urls and body_urls are URL prefixes (core-rs rules): same-origin paths or absolute URLs, never patterns', async () => {
+    const net = analyze({
+      capture: { network: { trace_urls: ['/api/', 'https://api.partner.test/v1'], body_urls: ['/api/', 'checkout', '/\\/v\\d+/'], max_body_bytes: 1000 } },
+    });
+    const traced = (part: string) => new Headers(net.app.find((a) => a.url.includes(part))!.init?.headers).get('traceparent');
+    const rows = await run(net, async () => {
+      await fetch('/api/orders', { method: 'POST', body: '{"a":1}' });
+      await fetch('https://api.partner.test/v1/charge');
+      await fetch('https://api.partner.test/v2/charge');
+      await fetch('https://maps.googleapis.test/api/geo');
+      await fetch('/fr/checkout', { method: 'POST', body: '{"b":2}' });
+      await fetch('/v2/thing', { method: 'POST', body: '{"c":3}' });
+      await fetch('/apix/other', { method: 'POST', body: '{"d":4}' });
+    });
+    expect(traced('/api/orders')).toMatch(/^00-/);
+    expect(traced('partner.test/v1/charge')).toMatch(/^00-/);
+    // A third party gets no traceparent unless a rule names its origin.
+    expect(traced('partner.test/v2/charge')).toBeNull();
+    expect(traced('googleapis.test/api/geo')).toBeNull();
+    const body = (part: string) => rows.find((r) => String(r.url).includes(part))?.req_body;
+    expect(body('/api/orders')).toBe('{"a":1}');
+    expect(body('/fr/checkout')).toBeUndefined();
+    expect(body('/v2/thing')).toBeUndefined();
+    // A prefix ends at a path segment, as core-rs URL rules do.
+    expect(body('/apix/other')).toBeUndefined();
+    expect(traced('/apix/other')).toBeNull();
+  });
+
+  it('a body read that gives up after 10 s goes out marked truncated', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true });
+    try {
+      const net = analyze({ capture: { network: { body_urls: ['/api/'], max_body_bytes: 1000 } } });
+      const base = net.fetch.getMockImplementation()!;
+      // A trickle that never reaches the cap and never ends.
+      const trickle = new ReadableStream<Uint8Array>({ start: (c) => c.enqueue(new TextEncoder().encode('{"partial":')) });
+      net.fetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).includes('/api/slow') ? Promise.resolve(new Response(trickle, { headers: { 'content-type': 'application/json' } })) : base(input, init),
+      );
+      await boot({}, net);
+      await fetch('/api/slow');
+      await vi.advanceTimersByTimeAsync(10_500);
+      await flush();
+      const row = net.events('network').find((r) => String(r.url).endsWith('/api/slow'))!;
+      expect(row).toMatchObject({ res_body: '{"partial":', truncated: true });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('with no rules nothing is traced or captured', async () => {
+    const net = analyze({ capture: { network: { max_body_bytes: 1000 } } });
+    const rows = await run(net, () => fetch('/api/orders', { method: 'POST', body: '{"a":1}' }));
+    expect(new Headers(net.app.at(-1)!.init?.headers).get('traceparent')).toBeNull();
+    expect(rows[0].req_body).toBeUndefined();
+  });
+
+  it('aggregates successful repeats per view into one row with count and percentiles', async () => {
+    const net = analyze();
+    const rows = await run(net, async () => {
+      for (let i = 0; i < 12; i++) await fetch('/api/poll');
+    });
+    const poll = rows.filter((r) => String(r.url).endsWith('/api/poll'));
+    expect(poll).toHaveLength(2);
+    expect(poll[0].n).toBeUndefined();
+    expect(poll[1]).toMatchObject({ n: 11 });
+    expect(typeof poll[1].p50_ms).toBe('number');
+    expect(typeof poll[1].p95_ms).toBe('number');
+  });
+
+  it('joins resource timing phases', async () => {
+    const net = analyze();
+    const rows = await run(net, async () => {
+      const p = fetch('/api/timed');
+      FakePerformanceObserver.emit('resource', [
+        {
+          name: 'http://localhost:3000/api/timed',
+          initiatorType: 'fetch',
+          startTime: performance.now(),
+          duration: 120,
+          domainLookupStart: 1,
+          domainLookupEnd: 6,
+          connectStart: 6,
+          connectEnd: 20,
+          secureConnectionStart: 10,
+          requestStart: 20,
+          responseStart: 80,
+          responseEnd: 110,
+          encodedBodySize: 512,
+        },
+      ]);
+      await p;
+    });
+    expect(rows[0]).toMatchObject({ duration_ms: 120, dns_ms: 5, connect_ms: 14, tls_ms: 10, ttfb_ms: 60, download_ms: 30, res_bytes: 512 });
+  });
+});
+
+describe('XMLHttpRequest', () => {
+  class FakeXhr extends EventTarget {
+    status = 0;
+    responseType = '';
+    responseText = '';
+    response: unknown = '';
+    headers: Record<string, string> = {};
+    url = '';
+    open(_m: string, url: string) {
+      this.url = url;
+    }
+    setRequestHeader(n: string, v: string) {
+      this.headers[n.toLowerCase()] = v;
+    }
+    getResponseHeader(n: string) {
+      return n === 'content-type' ? 'application/json' : null;
+    }
+    send() {
+      queueMicrotask(() => {
+        if (this.url.includes('drop')) this.dispatchEvent(new Event('error'));
+        else if (this.url.includes('slow')) this.dispatchEvent(new Event('timeout'));
+        else {
+          this.status = this.url.includes('fail') ? 500 : 200;
+          this.responseText = '{}';
+          this.dispatchEvent(new Event('load'));
+        }
+        this.dispatchEvent(new Event('loadend'));
+      });
+    }
+  }
+
+  it('records status, failures and timeouts without changing what the page sees', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    const net = analyze();
+    const seen: number[] = [];
+    const rows = await run(net, async () => {
+      for (const path of ['/x/ok', '/x/fail', '/x/drop', '/x/slow']) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', path);
+        await new Promise((r) => {
+          xhr.addEventListener('loadend', r);
+          xhr.send();
+        });
+        seen.push(xhr.status);
+      }
+    });
+    expect(seen).toEqual([200, 500, 0, 0]);
+    expect(rows.map((r) => [String(r.url).replace('http://localhost:3000', ''), r.status, r.error_kind ?? null, r.initiator])).toEqual([
+      ['/x/fail', 500, null, 'xhr'],
+      ['/x/drop', 0, 'network', 'xhr'],
+      ['/x/slow', 0, 'timeout', 'xhr'],
+      ['/x/ok', 200, null, 'xhr'],
+    ]);
+  });
+});
+
+describe('rules and breadcrumbs', () => {
+  it('a failed request is a rule input and a breadcrumb on the next error', async () => {
+    const net = stubNetwork(config({ rules: [rule('analyze', [{ kind: 'network_error', status_class: '5xx' }])] }));
+    await boot({}, net);
+    await fetch('/api/fail');
+    await settle();
+    expect(SiteQwalityRUM.getStatus()?.sampled.analyze).toBe(true);
+    SiteQwalityRUM.addError(new Error('after'));
+    await flush();
+    const crumbs = net.events('error')[0].breadcrumbs as Array<{ k: string; msg: string }>;
+    expect(crumbs.some((c) => c.k === 'network' && c.msg === 'GET http://localhost:3000/api/fail 500')).toBe(true);
+  });
+});

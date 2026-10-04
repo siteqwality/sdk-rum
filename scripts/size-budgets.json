@@ -1,0 +1,5 @@
+{
+  "_about": "gzip -9 budgets in bytes, enforced by scripts/size.mjs and tests/cdn-bundle.test.ts. Design 5.2 estimated 18432 for the core; 26624 is the accepted 2.0 budget (README, Bundle size).",
+  "core": 26624,
+  "replay": 30720
+}

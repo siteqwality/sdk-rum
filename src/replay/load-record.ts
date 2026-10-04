@@ -1,10 +1,10 @@
-import type { record as rrwebRecord } from '@rrweb/record';
+import type { ReplayStartOptions, ReplayHandle } from './chunk';
 
-export type RecordFn = typeof rrwebRecord;
+export type StartReplay = (o: ReplayStartOptions) => ReplayHandle;
 
-// npm builds: the customer's bundler splits rrweb into a lazy chunk.
+// npm builds: the customer's bundler splits the replay chunk (and rrweb) out of the core.
 // The CDN build swaps in load-record.cdn.ts.
-export async function loadRecord(_recorderUrl?: string): Promise<RecordFn> {
-  const { record } = await import('@rrweb/record');
-  return record;
+export async function loadReplay(_recorderUrl?: string): Promise<StartReplay> {
+  const { startReplay } = await import('./chunk');
+  return startReplay;
 }

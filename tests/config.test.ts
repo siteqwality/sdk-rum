@@ -1,204 +1,106 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { ConfigManager, defaultSdkConfig } from '../src/config';
-import type { SdkConfig } from '../src/types';
+import { normalizeConfig, fetchConfig, loadCachedConfig, saveCachedConfig, clearCachedConfig } from '../src/core/config';
 
-const APP_ID = 'a1b2c3d4-0000-0000-0000-000000000000';
-const INGEST_BASE = 'https://rum.example.com';
-
-const remoteConfig: SdkConfig = {
-  application_id: APP_ID,
-  filters: [{ filter_type: 'error', conditions: {}, capture_replay: true }],
-  settings: { privacy: { mask_inputs: false, mask_text: true } },
-};
-
-function okResponse(body: unknown) {
-  return { ok: true, json: async () => body } as Response;
-}
+const APP = 'app-1';
 
 afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
   vi.useRealTimers();
+  localStorage.clear();
 });
 
-describe('ConfigManager', () => {
-  it('returns the remote config when the fetch succeeds', async () => {
-    const fetchMock = vi.fn(async () => okResponse({ data: remoteConfig }));
-    vi.stubGlobal('fetch', fetchMock);
+describe('normalizeConfig', () => {
+  it('has safe defaults: no rules, inputs masked, Balanced patterns, GPC honoured', () => {
+    const c = normalizeConfig(null, APP);
+    expect(c.rules).toEqual([]);
+    expect(c.status).toBe('active');
+    expect(c.privacy).toMatchObject({ level: 'balanced', mask_inputs: true, mask_text: false, pii_patterns: ['email', 'card', 'digits9'], honor_gpc: true, require_consent: false });
+    expect(c.capture.console).toEqual(['error', 'warn']);
+    expect(c.capture.network.header_allowlist).toEqual(['content-type', 'x-request-id']);
+    expect(c.capture.network.max_body_bytes).toBe(10240);
+  });
 
-    const mgr = new ConfigManager();
-    const cfg = await mgr.init(APP_ID, 'token-1', INGEST_BASE);
-    mgr.destroy();
-
-    expect(cfg).toEqual(remoteConfig);
-    expect(mgr.getConfig()).toEqual(remoteConfig);
-    expect(fetchMock).toHaveBeenCalledWith(
-      `${INGEST_BASE}/v1/config`,
-      expect.objectContaining({
-        headers: { Authorization: 'Bearer token-1' },
-      }),
+  it('reads the 6.2 example', () => {
+    const c = normalizeConfig(
+      {
+        v: 2,
+        application_id: APP,
+        revision: 42,
+        status: 'active',
+        observe: { sample_rate: 1.0 },
+        rules: [
+          { id: 'r_1f2e', capture: 'replay', sample_rate: 1.0, conditions: [{ kind: 'error' }], min_duration_ms: 0, require_interaction: false },
+          { id: 'r_8a0c', capture: 'replay', sample_rate: 0.083, auto: true, conditions: [], min_duration_ms: 3000, require_interaction: true },
+          { id: 'bad', capture: 'nope', sample_rate: 1 },
+        ],
+        privacy: { level: 'balanced', never_record_urls: ['/checkout/payment'], honor_gpc: true },
+        capture: { resource_exclusions: ['/b'], errors: { suppressed_keys: [3141592653, 'x'] }, frustration_ignore_selectors: ['.carousel-next'] },
+        limits: { dnr: true },
+      },
+      APP,
     );
+    expect(c.revision).toBe(42);
+    expect(c.rules.map((r) => r.id)).toEqual(['r_1f2e', 'r_8a0c']);
+    expect(c.rules[1]).toMatchObject({ auto: true, min_duration_ms: 3000, require_interaction: true, sample_rate: 0.083 });
+    expect(c.privacy.never_record_urls).toEqual(['/checkout/payment']);
+    expect(c.capture.errors.suppressed_keys).toEqual([3141592653]);
+    expect(c.capture.resource_exclusions).toEqual(['/b']);
+    expect(c.limits.dnr).toBe(true);
   });
 
-  it('falls back to defaults when the fetch rejects (network error)', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => {
-        throw new TypeError('Failed to fetch');
-      }),
-    );
-
-    const mgr = new ConfigManager();
-    const cfg = await mgr.init(APP_ID, 'token-1', INGEST_BASE);
-    mgr.destroy();
-
-    expect(cfg).toEqual(defaultSdkConfig(APP_ID));
-    expect(cfg.filters).toEqual([]);
-    expect(cfg.settings.privacy.mask_inputs).toBe(true);
+  it('derives level defaults: Strict masks text and click names, Relaxed scrubs nothing, null is legacy', () => {
+    expect(normalizeConfig({ privacy: { level: 'strict' } }, APP).privacy).toMatchObject({ mask_text: true, hide_action_text: true });
+    expect(normalizeConfig({ privacy: { level: 'relaxed' } }, APP).privacy.pii_patterns).toEqual([]);
+    const legacy = normalizeConfig({ privacy: { level: null, mask_text: true, pii_patterns: [] } }, APP).privacy;
+    expect(legacy).toMatchObject({ level: null, mask_text: true, pii_patterns: [] });
   });
 
-  it('falls back to defaults on a non-2xx response', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({ ok: false, status: 401 }) as Response),
-    );
-
-    const mgr = new ConfigManager();
-    const cfg = await mgr.init(APP_ID, 'bad-token', INGEST_BASE);
-    mgr.destroy();
-
-    expect(cfg).toEqual(defaultSdkConfig(APP_ID));
+  it('ignores mistyped values and clamps rates and sizes', () => {
+    const c = normalizeConfig({ observe: { sample_rate: 7 }, privacy: { mask_inputs: 'no', block_selectors: ['a', 3] }, capture: { network: { max_body_bytes: 1e9 } } }, APP);
+    expect(c.observe.sample_rate).toBe(1);
+    expect(c.privacy.mask_inputs).toBe(true);
+    expect(c.privacy.block_selectors).toEqual(['a']);
+    expect(c.capture.network.max_body_bytes).toBe(65536);
   });
 
-  it('falls back to defaults when the response shape is unexpected', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => okResponse({ nope: true })),
-    );
-
-    const mgr = new ConfigManager();
-    const cfg = await mgr.init(APP_ID, 'token-1', INGEST_BASE);
-    mgr.destroy();
-
-    expect(cfg).toEqual(defaultSdkConfig(APP_ID));
-  });
-
-  it('falls back to defaults when the fetch times out', async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        (_url: string, opts: { signal: AbortSignal }) =>
-          new Promise((_resolve, reject) => {
-            opts.signal.addEventListener('abort', () =>
-              reject(new DOMException('Aborted', 'AbortError')),
-            );
-          }),
-      ),
-    );
-
-    const mgr = new ConfigManager();
-    const initPromise = mgr.init(APP_ID, 'token-1', INGEST_BASE);
-    await vi.advanceTimersByTimeAsync(6_000);
-    const cfg = await initPromise;
-    mgr.destroy();
-
-    expect(cfg).toEqual(defaultSdkConfig(APP_ID));
-  });
-
-  it('keeps the last known config when a periodic refresh fails', async () => {
-    vi.useFakeTimers();
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(okResponse({ data: remoteConfig }))
-      .mockRejectedValue(new TypeError('Failed to fetch'));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const mgr = new ConfigManager();
-    await mgr.init(APP_ID, 'token-1', INGEST_BASE);
-    expect(mgr.getConfig()).toEqual(remoteConfig);
-
-    // Advance past the 5-minute refresh; the failing refresh must not
-    // clobber the config.
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1_000);
-    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
-    expect(mgr.getConfig()).toEqual(remoteConfig);
-    mgr.destroy();
-  });
-
-  it('replaces the config on a successful periodic refresh', async () => {
-    vi.useFakeTimers();
-    const refreshed: SdkConfig = {
-      ...remoteConfig,
-      settings: { ...remoteConfig.settings, resource_exclusions: ['/b'] },
-    };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(okResponse({ data: remoteConfig }))
-      .mockResolvedValue(okResponse({ data: refreshed }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    const mgr = new ConfigManager();
-    await mgr.init(APP_ID, 'token-1', INGEST_BASE);
-    expect(mgr.getConfig()?.settings.resource_exclusions).toBeUndefined();
-
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 1_000);
-    expect(mgr.getConfig()?.settings.resource_exclusions).toEqual(['/b']);
-    mgr.destroy();
+  it('a paused app', () => {
+    expect(normalizeConfig({ v: 2, status: 'paused' }, APP).status).toBe('paused');
   });
 });
 
-describe('ConfigManager change notifications', () => {
-  it('calls onChange with the first config and each refreshed one', async () => {
+describe('fetchConfig', () => {
+  it('is a simple CORS GET: no credentials, no custom headers', async () => {
+    const f = vi.fn(async () => new Response('{"v":2}'));
+    await expect(fetchConfig('https://cdn.example/', APP, f)).resolves.toEqual({ v: 2 });
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('https://cdn.example/rum/config/v2/app-1.json');
+    expect(init.credentials).toBe('omit');
+    expect(init.headers).toBeUndefined();
+    expect(init.method).toBeUndefined();
+  });
+
+  it('rejects other shapes, errors, and after 3 s', async () => {
+    await expect(fetchConfig('https://c', APP, async () => new Response('{"v":1}'))).rejects.toThrow();
+    await expect(fetchConfig('https://c', APP, async () => new Response('', { status: 404 }))).rejects.toThrow();
     vi.useFakeTimers();
-    const next: SdkConfig = { ...remoteConfig, filters: [] };
-    vi.stubGlobal(
-      'fetch',
-      vi.fn()
-        .mockResolvedValueOnce(okResponse({ data: remoteConfig }))
-        .mockResolvedValue(okResponse({ data: next })),
-    );
-    const onChange = vi.fn();
-    const mgr = new ConfigManager();
-    await mgr.init(APP_ID, 'token-1', INGEST_BASE, onChange);
-    expect(onChange).toHaveBeenCalledWith(remoteConfig);
-    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 10);
-    expect(onChange).toHaveBeenLastCalledWith(next);
-    mgr.destroy();
+    const p = fetchConfig('https://c', APP, () => new Promise(() => {}));
+    vi.advanceTimersByTime(3001);
+    await expect(p).rejects.toThrow('timeout');
+  });
+});
+
+describe('the config cache', () => {
+  it('stores the raw config with its time under _sq_cfg_<app>', () => {
+    saveCachedConfig(APP, { v: 2, revision: 3 });
+    const c = loadCachedConfig(APP)!;
+    expect(c.config.revision).toBe(3);
+    expect(c.raw).toEqual({ v: 2, revision: 3 });
+    expect(Date.now() - c.at).toBeLessThan(1000);
+    clearCachedConfig(APP);
+    expect(loadCachedConfig(APP)).toBeNull();
   });
 
-  it('calls onChange with the defaults when the fetch fails, and survives a throwing listener', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
-    const mgr = new ConfigManager();
-    await expect(
-      mgr.init(APP_ID, 'token-1', INGEST_BASE, () => {
-        throw new Error('listener bug');
-      }),
-    ).resolves.toEqual(defaultSdkConfig(APP_ID));
-    mgr.destroy();
-  });
-
-  it('settles at the timeout even when fetch ignores the abort signal', async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
-    const mgr = new ConfigManager();
-    let result: SdkConfig | undefined;
-    void mgr.init(APP_ID, 'token-1', INGEST_BASE).then((c) => (result = c));
-    await vi.advanceTimersByTimeAsync(4_999);
-    expect(result).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(result).toEqual(defaultSdkConfig(APP_ID));
-    mgr.destroy();
-  });
-
-  it('fills in safe privacy defaults when the config omits them', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => okResponse({ data: { application_id: APP_ID, filters: [], settings: {} } })),
-    );
-    const mgr = new ConfigManager();
-    const cfg = await mgr.init(APP_ID, 'token-1', INGEST_BASE);
-    mgr.destroy();
-    expect(cfg.settings.privacy).toEqual({ mask_inputs: true, mask_text: false });
+  it('ignores a corrupt entry', () => {
+    localStorage.setItem(`_sq_cfg_${APP}`, '{nope');
+    expect(loadCachedConfig(APP)).toBeNull();
   });
 });

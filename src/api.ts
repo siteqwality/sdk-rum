@@ -1,20 +1,19 @@
-import type { RumConfig, UserContext } from './types';
-
-export interface PublicAPI {
-  init(config: RumConfig): Promise<void>;
-  setUser(user: UserContext): void;
-  setGlobalAttribute(key: string, value: string): void;
-  removeGlobalAttribute(key: string): void;
-  addError(error: unknown, context?: Record<string, string>): void;
-  addAction(name: string, context?: Record<string, string>): void;
-}
-
-/** The methods the CDN snippet stub queues; equal to the keys of `PublicAPI`. */
+/** Methods the CDN snippet stub queues and replays once the script loads (design 6.1). */
 export const PUBLIC_METHODS = [
   'init',
   'setUser',
+  'clearUser',
   'setGlobalAttribute',
   'removeGlobalAttribute',
   'addError',
   'addAction',
-] as const satisfies readonly (keyof PublicAPI)[];
+  'setView',
+  'setTrackingConsent',
+  'optOut',
+  'optIn',
+  'isOptedOut',
+  'startReplay',
+  'stopReplay',
+  'getSessionUrl',
+  'getStatus',
+] as const;

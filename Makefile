@@ -5,11 +5,11 @@ build:
 
 # Never ship a CDN core that leaks globals or misses its budget.
 check: build
-	npm test && npm run test:bundle && npm run test:browser
+	npm test && npm run test:bundle && npm run size && npm run test:browser
 
 deploy: check
 	AWS_PROFILE=siteqwality ./deploy.sh E23MTP7VCRLRPV
 
 # The same bundle checks against the live file, after a deploy.
 probe:
-	SDK_BUNDLE_URL=https://cdn.siteqwality.com/rum/v1/sdk.min.js npm run test:bundle
+	SDK_BUNDLE_URL=https://cdn.siteqwality.com/rum/v2/sdk.min.js npm run test:bundle

@@ -1,7 +1,8 @@
-import type { UrlSanitizer } from '../privacy/url';
-import { loadRecord, type RecordFn } from './load-record';
-import { byteLength } from '../send';
-import { SegmentSequence } from './sequence';
+import type { UrlSanitizer } from '../core/url';
+import type { SdkConfig } from '../types';
+import type { record as rrwebRecord } from '@rrweb/record';
+import { byteLength } from '../core/util';
+import { SegmentSequence, type SeqStore } from './sequence';
 import { MAX_SEGMENT_BYTES, type ReplaySegment } from './transport';
 
 export type { ReplaySegment } from './transport';
@@ -29,9 +30,10 @@ const ENVELOPE_BYTES = 128;
 /** Longest a segment stays open before it is sent. */
 export const SEGMENT_MAX_AGE_MS = 30_000;
 
-/** A fresh full snapshot this often, each one starting a new segment. */
-export const CHECKOUT_EVERY_MS = 60_000;
+/** A fresh full snapshot this often while streaming (design 5.4), each starting a segment. */
+export const CHECKOUT_EVERY_MS = 180_000;
 
+export type RecordFn = typeof rrwebRecord;
 type RecordOptions = NonNullable<Parameters<RecordFn>[0]>;
 type GetNode = (id: number) => unknown;
 
@@ -220,74 +222,236 @@ function counter(): () => number {
   return () => next++;
 }
 
+/** Privacy options from the app's level and selectors (design 7.1). */
+export interface ReplayPrivacy {
+  maskInputs: boolean;
+  /** Every text node masked except `unmaskSelector` (Strict, or legacy mask_text). */
+  maskAllText: boolean;
+  maskSelector?: string;
+  unmaskSelector?: string;
+  /** The app's block selectors; Strict adds media. Hidden inputs are always blocked. */
+  blockSelector: string;
+  ignoreSelector?: string;
+  /** PII patterns, masked with `*` to keep the layout. */
+  scrub?: (text: string) => string;
+}
+
+export type ReplayState = 'recording' | 'paused' | 'stopped';
+
+const STRICT_MEDIA = ['img', 'video', 'audio', 'picture', 'svg'];
+
+function valid(list: string[]): string | undefined {
+  const probe = document.createElement('div');
+  return (
+    list
+      .filter((s) => {
+        try {
+          probe.matches(s);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .join(',') || undefined
+  );
+}
+
+/** rrweb privacy from the app's level and selectors (design 7.1); block selectors always win. */
+export function replayPrivacy(p: SdkConfig['privacy'], mask: (s: string) => string): ReplayPrivacy {
+  const strict = p.level === 'strict';
+  return {
+    maskInputs: p.level !== null || p.mask_inputs,
+    maskAllText: strict || p.mask_text,
+    maskSelector: valid(p.mask_selectors),
+    unmaskSelector: strict ? valid(p.unmask_selectors) : undefined,
+    blockSelector: valid([...p.block_selectors, ...(strict ? STRICT_MEDIA : [])]) ?? '',
+    ignoreSelector: valid(p.ignore_input_selectors),
+    scrub: p.pii_patterns.length ? mask : undefined,
+  };
+}
+
+
+const URL_ATTRS = ['href', 'src', 'action', 'formaction', 'poster', 'data', 'background', 'cite', 'ping', 'xlink:href'];
+
+const closest = (el: Element | null, selector?: string) => {
+  try {
+    return !!selector && !!el?.closest?.(selector);
+  } catch {
+    return false;
+  }
+};
+
+export function recordOptions(p: ReplayPrivacy): RecordOptions {
+  const stars = (t: string) => t.replace(/\S/g, '*');
+  const masking = p.maskAllText || !!p.maskSelector || !!p.scrub;
+  return {
+    sampling: { mousemove: 50, scroll: 150 },
+    slimDOMOptions: 'all',
+    inlineStylesheet: true,
+    recordCrossOriginIframes: false,
+    recordCanvas: false,
+    maskAllInputs: p.maskInputs,
+    // Password, email, phone and card fields can never be unmasked (7.1).
+    maskInputOptions: { password: true, email: true, tel: true },
+    // Hidden inputs (CSRF tokens) are never recorded, whatever the level.
+    blockSelector: [HIDDEN_INPUT_SELECTOR, p.blockSelector, p.maskInputs ? '' : 'input[autocomplete^="cc-" i]'].filter(Boolean).join(','),
+    ignoreSelector: p.ignoreSelector,
+    maskTextSelector: masking ? '*' : undefined,
+    maskTextFn: masking
+      ? (text: string, el: HTMLElement | null) =>
+          (p.maskAllText ? !closest(el, p.unmaskSelector) : closest(el, p.maskSelector))
+            ? stars(text)
+            : p.scrub
+              ? p.scrub(text)
+              : text
+      : undefined,
+  };
+}
+
+interface SerializedNode {
+  attributes?: Record<string, unknown>;
+  childNodes?: SerializedNode[];
+}
+
+/** URL attributes minimised and the rest PII-scrubbed, in snapshots and mutations, in place. */
+export function cleanAttributes(
+  attrs: Record<string, unknown> | undefined,
+  url: UrlSanitizer,
+  text: (s: string) => string,
+  scrub?: (s: string) => string,
+): void {
+  if (!attrs) return;
+  for (const name of Object.keys(attrs)) {
+    const v = attrs[name];
+    if (name === '_cssText' || name.startsWith('rr_')) continue;
+    if (typeof v === 'string') {
+      let out = URL_ATTRS.includes(name.toLowerCase())
+        ? url(v)
+        : name === 'srcset'
+          ? v.split(',').map((part) => part.trim().replace(/^\S+/, (u) => url(u))).join(', ')
+          : text(v);
+      if (scrub) out = scrub(out);
+      attrs[name] = out;
+    } else if (v && typeof v === 'object') {
+      // A style diff: property to value or [value, priority].
+      for (const [k, sv] of Object.entries(v as Record<string, unknown>)) {
+        if (typeof sv === 'string') (v as Record<string, unknown>)[k] = text(sv);
+      }
+    }
+  }
+}
+
+function cleanNode(n: SerializedNode | undefined, clean: (a?: Record<string, unknown>) => void): void {
+  if (!n) return;
+  clean(n.attributes);
+  if (Array.isArray(n.childNodes)) for (const c of n.childNodes) cleanNode(c, clean);
+}
+
+/** Minimises URLs in DOM attributes of full snapshots and mutations (mutates the event). */
+export function cleanDomEvent(event: unknown, clean: (a?: Record<string, unknown>) => void): void {
+  const e = event as { type?: number; data?: { node?: SerializedNode; source?: number; adds?: Array<{ node?: SerializedNode }>; attributes?: Array<{ attributes?: Record<string, unknown> }> } } | null;
+  const d = e?.data;
+  if (!d) return;
+  if (e.type === RRWEB_FULL_SNAPSHOT_EVENT_TYPE) cleanNode(d.node, clean);
+  else if (e.type === RRWEB_INCREMENTAL_EVENT_TYPE && d.source === RRWEB_MUTATION_SOURCE) {
+    for (const a of d.adds ?? []) cleanNode(a.node, clean);
+    for (const a of d.attributes ?? []) clean(a.attributes);
+  }
+}
+
+export interface RecorderOptions {
+  sessionId: string;
+  record: RecordFn;
+  onSegment: (segment: ReplaySegment) => void;
+  privacy: ReplayPrivacy;
+  url: UrlSanitizer;
+  text: (s: string) => string;
+  onStatus?: (state: ReplayState, reason?: string) => void;
+  /** The SDK's clock: rrweb stamps events with Date, which pages patch. */
+  now?: () => number;
+  /** Where segment numbers live: shared by the session's tabs, this tab, or memory. */
+  store?: SeqStore;
+  /** Starts paused for this reason: nothing is captured until resume(). */
+  paused?: string;
+}
+
 export class ReplayRecorder {
   private record: RecordFn | null = null;
-  /** Bumped by every start and stop, so a start overtaken while loading gives up. */
-  private startEpoch = 0;
   private options: RecordOptions = {};
   private stopRecord: (() => void) | null = null;
   private buffer: SegmentBuffer | null = null;
   private sanitizeUrl: UrlSanitizer = String;
+  private clean: (a?: Record<string, unknown>) => void = () => {};
+  private onStatus: RecorderOptions['onStatus'];
+  private now: RecorderOptions['now'];
   /** Bumped on every restart, so a stopped recording's late events are ignored. */
   private generation = 0;
   private snapshotAt = 0;
   private checkoutQueued = false;
+  private paused = false;
   private onPageHide = () => this.buffer?.flush(true);
   private onPageShow = (event: PageTransitionEvent) => {
     // Back from the back-forward cache: other pages may have run since.
-    if (event.persisted) this.capture();
+    if (event.persisted && !this.paused) this.capture();
   };
   private onVisibilityChange = () => {
     if (document.visibilityState === 'hidden') this.buffer?.flush();
   };
 
-  async start(
-    sessionId: string,
-    onSegment: (segment: ReplaySegment) => void,
-    privacySettings: { maskInputs: boolean; maskText: boolean },
-    sanitizeUrl: UrlSanitizer,
-    recorderUrl?: string,
-  ): Promise<void> {
-    if (this.buffer) return; // already recording
-    const epoch = ++this.startEpoch;
-
-    // Lazy-loaded so the core bundle stays small; fetched only when replay starts.
-    const record = await loadRecord(recorderUrl);
-    if (this.buffer || epoch !== this.startEpoch) return;
-    const sequence = new SegmentSequence(sessionId);
-    this.buffer = new SegmentBuffer(onSegment, () => sequence.take());
-    this.record = record;
-    this.sanitizeUrl = sanitizeUrl;
-    this.options = {
-      sampling: { mousemove: 50, scroll: 150 },
-      slimDOMOptions: 'all',
-      inlineStylesheet: true,
-      recordCrossOriginIframes: false,
-      recordCanvas: false,
-      maskAllInputs: privacySettings.maskInputs,
-      // maskAllInputs skips hidden inputs (CSRF tokens and the like): never record them.
-      blockSelector: HIDDEN_INPUT_SELECTOR,
-      maskTextSelector: privacySettings.maskText ? '*' : undefined,
-    };
-    this.capture();
-
-    // Sends the open segment while the page can still send it.
+  start(o: RecorderOptions): void {
+    if (this.buffer) return;
+    const sequence = new SegmentSequence(o.sessionId, o.store);
+    this.buffer = new SegmentBuffer(o.onSegment, () => sequence.take());
+    this.record = o.record;
+    this.sanitizeUrl = o.url;
+    this.onStatus = o.onStatus;
+    this.now = o.now;
+    this.clean = (a) => cleanAttributes(a, o.url, o.text, o.privacy.scrub);
+    this.options = recordOptions(o.privacy);
+    if (o.paused) {
+      this.paused = true;
+      this.onStatus?.('paused', o.paused);
+    } else this.capture();
     window.addEventListener('pagehide', this.onPageHide);
     window.addEventListener('pageshow', this.onPageShow);
     document.addEventListener('visibilitychange', this.onVisibilityChange);
   }
 
-  /** Stops recording and sends whatever the open segment holds. */
-  stop(): void {
-    this.startEpoch++;
+  /** Stops recording and sends whatever the open segment holds, or drops it (`discard`). */
+  stop(discard = false): void {
     this.generation++;
     this.stopRecord?.();
     this.stopRecord = null;
     window.removeEventListener('pagehide', this.onPageHide);
     window.removeEventListener('pageshow', this.onPageShow);
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
-    this.buffer?.flush();
+    if (discard) this.buffer?.discard();
+    else this.buffer?.flush();
     this.buffer = null;
+  }
+
+  /** Pauses on a never-record page; a custom `sq-pause` event marks the gap. */
+  pause(reason: string): void {
+    if (!this.buffer || !this.record) return;
+    if (this.paused) return this.onStatus?.('paused', reason);
+    this.paused = true;
+    try {
+      this.record.addCustomEvent('sq-pause', { reason });
+    } catch {
+      // Not recording yet.
+    }
+    this.generation++;
+    this.stopRecord?.();
+    this.stopRecord = null;
+    this.buffer.flush();
+    this.onStatus?.('paused', reason);
+  }
+
+  /** Resumes with a full snapshot. */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.capture();
   }
 
   /**
@@ -295,7 +459,7 @@ export class ReplayRecorder {
    * leaves one set of observers per iframe instead of one more each time.
    */
   private capture(): void {
-    if (!this.buffer || !this.record) return;
+    if (!this.buffer || !this.record || this.paused) return;
     this.stopRecord?.();
     this.stopRecord = null;
     this.buffer.flush();
@@ -306,18 +470,23 @@ export class ReplayRecorder {
         ...this.options,
         emit: (event) => this.onEvent(event, generation, (id) => mirror.getNode(id)),
       }) ?? null;
+    // A snapshot too large to send has already stopped this recording.
+    if (generation === this.generation) this.onStatus?.('recording');
   }
 
   private onEvent(event: unknown, generation: number, getNode: GetNode): void {
     if (generation !== this.generation || !this.buffer) return;
     const kept = withoutFrameContent(event, getNode);
     if (kept === null) return;
+    if (this.now) (kept as { timestamp?: number }).timestamp = this.now();
+    cleanDomEvent(kept, this.clean);
     if (!this.buffer.add(sanitizeReplayEvent(kept, this.sanitizeUrl))) {
       // Its later events would replay onto another page, so the page stops here.
       // The Meta event alone cannot play, so nothing of the page is sent.
       this.buffer.discard();
       this.generation++;
       console.warn('[SiteQwality RUM] Stopped session replay: this page is too large to record');
+      this.onStatus?.('stopped', 'too_large');
       queueMicrotask(() => this.stop());
       return;
     }

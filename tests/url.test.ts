@@ -5,7 +5,7 @@ import {
   sanitizeUrl,
   sanitizeTextUrls,
   DEFAULT_DENIED_QUERY_PARAMS,
-} from '../src/privacy/url';
+} from '../src/core/url';
 
 describe('sanitizeUrl: the defaults', () => {
   it('strips the fragment entirely', () => {

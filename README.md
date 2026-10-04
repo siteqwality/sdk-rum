@@ -1,7 +1,9 @@
 # @siteqwality/rum
 
-SiteQwality Real User Monitoring SDK: Web Vitals, page views, errors (with
-source-map symbolication server-side), user actions, and session replay.
+SiteQwality Real User Monitoring for the browser: page views, Core Web Vitals with attribution,
+errors grouped across deploys, user actions with frustration signals, network and console detail,
+and session replay. One small core on every page; the replay recorder loads only for sessions that
+can be replayed.
 
 ## Install
 
@@ -9,229 +11,324 @@ source-map symbolication server-side), user actions, and session replay.
 npm install @siteqwality/rum
 ```
 
-## Usage
-
 ```ts
 import { SiteQwalityRUM } from '@siteqwality/rum';
 
 SiteQwalityRUM.init({
   applicationId: 'YOUR_APPLICATION_ID',
   clientToken: 'YOUR_CLIENT_TOKEN',
-  version: '1.4.2', // your app release, enables error symbolication
+  service: 'web',
+  env: 'production',
+  version: '1.4.2', // your release, matched to source maps
 });
 
-SiteQwalityRUM.setUser({ id: 'user_123', email: 'user@example.com' });
+SiteQwalityRUM.setUser({ id: 'user_123', email: 'user@example.com', name: 'Jane' });
 SiteQwalityRUM.setGlobalAttribute('plan', 'pro');
-SiteQwalityRUM.addError(new Error('custom error'));
-SiteQwalityRUM.addAction('checkout-clicked');
+SiteQwalityRUM.addAction('checkout-completed', { items: '3' });
+SiteQwalityRUM.addError(new Error('payment declined'));
 ```
 
-`init()` starts collecting before it returns: the first page view is queued
-and errors are captured from that line on. Its promise resolves once the
-remote config is applied, or has failed (5 s timeout; then safe defaults: no
-replay, inputs masked). There is no need to await it. No method ever throws;
-calls made before `init()` are ignored. `addError` accepts any value: a
-non-Error is sent as `String(value)` with no stack.
-
-From 1.0.6 the user's id and email go on every event, page views and Web
-Vitals included, so every session shows its user.
+`init()` starts collecting before it returns: the first page view is queued and errors are captured
+from that line on. Its promise resolves once the application's config is applied, or has failed
+(3 s timeout), and never rejects; there is no need to await it. No method ever throws.
 
 ## CDN
 
-`https://cdn.siteqwality.com/rum/v1/sdk.min.js` is a classic script whose only
-global is `window.SiteQwalityRUM` (it also works as `type="module"`). Use the
-snippet from the dashboard: its stub queues calls, and errors raised before
-the script arrives, and replays both with their original times. Loading the
-script twice is harmless, and if `init()` comes later (say, after consent),
-page errors raised in between are still kept. The session-replay recorder loads on demand as
-`recorder-<version>.min.js` from beside the SDK script; set `recorderUrl` to
-self-host it. A strict CSP needs `script-src https://cdn.siteqwality.com` and
-`connect-src https://rum.siteqwality.com https://replay.siteqwality.com`.
+Use the snippet from the dashboard. It defines a stub that queues calls and catches errors raised
+before the script arrives, then loads `https://cdn.siteqwality.com/rum/v2/sdk.min.js`, a classic
+script whose only global is `window.SiteQwalityRUM` (it also works as `type="module"`). Queued
+calls replay in order with their original times, a second copy of the script does nothing, and
+page errors raised between the script load and a late `init()` (say, after consent) are kept.
+
+| Path | Contents | Cache |
+|---|---|---|
+| `rum/v2/sdk.min.js` | Latest 2.x | 1 day |
+| `rum/v2.0.0/sdk.min.js` | This release, immutable; pin it with Subresource Integrity | 1 year |
+| `recorder-<version>.min.js` | The replay chunk, beside the core it belongs to | as its folder |
+
+`rum/v1/` stays on 1.x. The replay chunk is fetched from beside the core; set `recorderUrl` to
+self-host it.
+
+## Content Security Policy
+
+```
+script-src  https://cdn.siteqwality.com
+connect-src https://in.siteqwality.com https://replay.siteqwality.com https://cdn.siteqwality.com
+```
+
+`in.siteqwality.com` takes events, `replay.siteqwality.com` replay segments, and the CDN serves
+the script, the replay chunk and the application's config (fetched with `fetch`, hence
+`connect-src`). To proxy through your own domain, set `ingestBase`, `replayBase` and `configBase`.
+
+## Options
+
+| Option | Default | Effect |
+|---|---|---|
+| `applicationId`, `clientToken` | required | From the RUM application's settings |
+| `service`, `env`, `version` | none | Sent with every batch; `version` selects source maps |
+| `trackingConsent` | `'granted'`, or `'pending'` when the app requires consent | See Consent |
+| `persistence` | `'cookie'` | `'localStorage'` or `'memory'` (one page load, nothing stored) |
+| `cookieDomain` | the page's host | Share the session across subdomains, e.g. `'example.com'` |
+| `hashRouting` | `false` | One page view per `#/route` |
+| `routeName(path)` | none | Route name for a path, e.g. `'/users/:id'` |
+| `allowedQueryParams`, `deniedQueryParams` | none | See URL minimisation |
+| `ignoreErrors`, `denyUrls` | none | See Errors |
+| `beforeSend(event, kind)` | none | See beforeSend |
+| `ingestBase`, `replayBase`, `configBase` | SiteQwality hosts | First-party proxies |
+| `recorderUrl` | beside the core | CDN build: where the replay chunk is loaded from |
+| `debug` | `false` | Logs config, rule decisions, recording state and sends to the console |
+
+## Methods
+
+| Method | |
+|---|---|
+| `init(options)` | Once per page; later calls are ignored |
+| `setUser({ id, email, name, traits })`, `clearUser()` | Identity on every later batch; `traits` holds up to 20 strings |
+| `setGlobalAttribute(key, value)`, `removeGlobalAttribute(key)` | Up to 50 string attributes, 4 KB in all, on every later batch |
+| `addError(error, context?)` | Any value; `context['sq.fingerprint']` sets your own grouping |
+| `addAction(name, context?)` | A custom event, always recorded |
+| `setView(name)` | Names the current view's route |
+| `setTrackingConsent(consent)` | `'granted'`, `'pending'` or `'not-granted'` |
+| `optOut()`, `optIn()`, `isOptedOut()` | Persistent per browser; work before `init()` |
+| `startReplay({ force? })`, `stopReplay()` | `force` records regardless of rules; consent still applies |
+| `getSessionUrl({ atCurrentTime? })` | Link to this session in the dashboard |
+| `getStatus()` | Session, consent, sampling, recording state and reason, drop counters |
+
+Calls before `init()` are ignored, except the opt-out methods. The CDN stub queues them instead.
+
+## What is recorded
+
+The application's config (sampling, rules, privacy and capture settings) comes from the CDN, is
+cached in `localStorage` for the next page, and refreshes when a tab becomes visible with a copy
+older than 5 minutes. A paused application sends nothing.
+
+- **Observe**, every sampled session: page views and their measures, Web Vitals, errors, failed
+  requests, frustration signals, custom events.
+- **Analyze**, once a recording rule matches: every action, request and resource, console output
+  and long animation frames. The last 60 s before the match (up to 500 events) are kept in memory
+  and sent with it.
+- **Replay**, once a replay rule matches (or `startReplay`): the recorder loads and records.
+
+A rule matches when all its conditions have held at some point in the session (URL, error, failed
+request, frustration, vital, custom event, identified user, attribute, device, release,
+environment), after its sample rate (deterministic per session) and its minimum duration and
+interaction gates; error conditions skip the gates. A match lasts for the rest of the session in
+every tab.
+
+## Sessions and storage
+
+The first view of a session carries its referrer (`""` for a direct visit), UTM parameters and
+click-id type. A session ends after 15 minutes without user input (pointer, key, scroll, touch, the tab becoming
+visible) and lasts at most 4 hours. The SDK's own sends never keep it alive. Tabs share the session
+through a first-party cookie; each tab has its own window id.
+
+| Key | Where | Holds |
+|---|---|---|
+| `_sq_s` | cookie (or `localStorage`) | Session id, start, last activity, rule decision |
+| `_sq_w` | `sessionStorage` | Window id of this tab |
+| `_sq_aid` | `localStorage` | Anonymous id, 13 months; not set without consent or under GPC |
+| `_sq_cfg_<app>` | `localStorage` | Cached config |
+| `_sq_bgt`, `_sq_bgr` | as the session | Request budget counters (core, replay) |
+| `_sq_rseq`, `_sq_rl` | `localStorage`, or a cookie with `cookieDomain` | Replay segment numbers; which tab records |
+| `_sq_optout` | `localStorage` | Opt-out |
+
+Nothing is stored while consent is pending or with `persistence: 'memory'`. Withdrawing consent
+removes every key but the opt-out.
+
+## Consent, GPC and opt-out
+
+- `'pending'` collects in memory only: nothing is sent or stored, replay does not start. Granting
+  sends what was held, in the session another tab already has or a new one; `'not-granted'` drops
+  it. Consent set with `setTrackingConsent` is never overridden by the application's config.
+- With Global Privacy Control on and the app honouring it (the default), a session is Observe only:
+  no Analyze detail, no replay, no user identity or anonymous id, and the session lives in
+  `sessionStorage`. Cookieless apps get the same storage.
+- `optOut()` stops everything in this browser until `optIn()`.
 
 ## Errors
 
-Known browser noise is never sent: ResizeObserver loop warnings, a
-cross-origin `Script error.` with no stack, and errors whose stack frames all
-come from extensions (`chrome-extension://`, `moz-extension://`,
-`safari(-web)-extension://`, `webkit-masked-url://`, `ms-browser-extension://`).
-The ingestor drops the same noise for older versions. A burst of one message
-sends 10 errors, then 1 per 10 s; a page load sends at most 500.
+Captured from `error` and `unhandledrejection`, and from `addError`. Never sent: browser noise
+(ResizeObserver loop warnings, cross-origin `Script error.` with no stack, errors raised only in
+extension code, and Sentry's default ignore list), messages matching `ignoreErrors` (substring or
+RegExp, on the message trimmed and without a leading `Uncaught `), errors whose top frame URL matches
+`denyUrls`, and the app's ignore, deny and suppressed lists. Identical errors within 5 s fold into
+one with a `repeat` count; a burst of one error sends 10, then 1 per 10 s; a page load sends at most
+500.
+
+The application's ignore and deny lists use the intake's pattern language: a case-sensitive
+substring, or a regular expression written `/…/` (`/…/i` ignores case). Ignore patterns match the
+message as sent (URLs minimised, PII scrubbed), or the type and message (`TypeError: x is null`). The SDK applies a deny pattern only when
+the top frame is surely the page's own code; the intake decides the rest. With "console errors as
+issues" on, `console.error` calls become errors with `handling: "console"`.
+
+Each error carries the page `url`, its stack, up to three `cause` levels, the last 30 breadcrumbs (clicks,
+navigations, failed requests, console), the Debug IDs of bundles built with our plugins, and an
+`error_key`: a hash of the type, the message with digits removed and the top frame's normalised
+path, so an error groups the same across deploys and browsers.
+
+## beforeSend
 
 ```ts
 SiteQwalityRUM.init({
   applicationId: 'YOUR_APPLICATION_ID',
   clientToken: 'YOUR_CLIENT_TOKEN',
-  // Substring of the message (trimmed, one leading "Uncaught " removed), or a RegExp.
-  ignoreErrors: ['Network request failed', /Loading chunk \d+ failed/],
-  // false or null drops; an object replaces; nothing sends your in-place changes.
-  beforeSend: (event) => {
-    if (event.error_message.includes('third-party-widget')) return false;
+  beforeSend: (event, kind) => {
+    if (kind === 'error' && String(event.message).includes('third-party-widget')) return false;
+    if (kind === 'network') event.url = String(event.url).replace(/\/users\/\d+/, '/users/:id');
   },
 });
 ```
 
-`beforeSend` runs on errors only. If it throws, the original is sent. URLs in
-what it returns are minimised again, and the ids and timestamp cannot change.
-A dropped or ignored error never marks the session as errored and never
-matches an error rule.
-
-## Page views and sessions
-
-A page view starts on load and whenever the URL (after minimisation) changes
-through pushState, replaceState, popstate or hashchange, so router noise is not
-counted; hash-routed apps get one view per `#/` route.
-Views carry `loading_type` `initial_load` or `route_change`. Load and DOM-ready
-times come from Navigation Timing, for the initial view only; if the page has
-not finished loading at init they follow in a separate measure. Web Vitals
-always belong to the document's initial view.
-
-A session ends after 15 minutes without user input (pointer, key, scroll,
-touch, the tab becoming visible, or a page view) and lasts at most 4 hours.
-The SDK's own sends never keep it alive. The next activity, error or click
-starts a new session with a fresh page view; requests and long tasks seen in an
-expired session are dropped, so an idle polling tab never opens one.
-
-## Recording rules
-
-Rules are checked when the config loads or refreshes, after every error sent,
-Web Vital, click and `setUser`, with no delay. A match lasts for the rest of
-the session, across page loads in the tab (kept in sessionStorage as
-`sq_rum_rules:<session id>`); a later page resumes it once the server config
-arrives, never on the offline defaults. A custom rule with a condition this SDK does not
-know never matches. Detail events seen before the config arrives (up to 500)
-are kept and sent if a rule matches, otherwise dropped.
-
-## Session replay
-
-Hidden inputs (`input[type=hidden]`, such as CSRF tokens) are never recorded,
-whatever the privacy settings. A page whose snapshot is too large to send is not
-recorded at all, so it never counts as a replay session.
-
-## Frustration signals
-
-Each click carries at most one, by precedence: an `error_click` (an error sent
-within 1 s), a `rage_click` (the third click on the same control within 1 s;
-one per burst), a `dead_click` (a link or button that changed nothing within
-1 s: no DOM change, navigation, request or page hide). Clicks are named after
-the closest link, button or form control. Add `data-sq-no-frustration` to an
-element or ancestor, or list selectors under the application's frustration
-settings, to turn off rage and dead clicks there (games, carousels, steppers).
-
-## Global attributes
-
-`setGlobalAttribute(key, value)` adds a string to `custom_attributes` on every
-later error, action and other detail event; `removeGlobalAttribute(key)` stops
-it. A `context` passed to `addError` or `addAction` wins on the same key. Up to
-50 keys of at most 128 characters; values are cut at 1024. All of them
-together stay within 4 KB as JSON, since they ride on every detail event; a set
-past that budget is ignored. Anything else is ignored, never thrown.
+Runs for errors, views, actions, custom events, network rows and console lines, on a copy. Return
+`false` or `null` to drop (views cannot be dropped), an object to replace, or nothing to keep your
+in-place changes. Only fields the event already has change, and only to a value of the same type;
+`k`, `t`, `view_id`, `id`, `seq`, `final` and `error_key` never change. What you change is minimised
+and scrubbed again (URLs, stacks, text, nested fields included); what you leave alone is sent as
+the SDK built it, and an error's `error_key` follows your changes. It must return synchronously; if
+it throws, the event is sent unchanged.
 
 ## URL minimisation
 
-Every URL the SDK captures is minimised in the browser before it is sent:
+Every URL the SDK captures is minimised in the browser before it is sent: the fragment is removed
+(a hash route such as `#/path` is kept unless it holds `=` or `&`), the whole query string is
+removed, and credentials in the authority are removed. This covers page views, resources, fetch and
+XHR, URLs in error messages and stacks, the page URL in replay, and URL attributes in the replay
+DOM. Opt parameters back in by name with `allowedQueryParams`; a built-in deny list (`token`,
+`code`, `key`, `secret`, `password`, `email`, `session`, `sig`, `auth`, `apikey` and similar, also
+inside compound names) applies even to names you allow and cannot be switched off. The intake
+applies the same rules server-side.
 
-- the fragment is removed, except a hash route (`#/path` or `#!/path`), which
-  is kept and minimised like a path unless it holds `=` or `&` (OAuth tokens),
-- the whole query string is removed,
-- credentials in the authority (`https://user:pass@host/`) are removed,
-- the scheme, host, port and path are kept verbatim.
+## Session replay
 
-This covers page views, SPA navigations, every subresource, fetch and XHR
-recorded by the resource collector, the URL stamped on errors and actions, and
-the page URL rrweb embeds in a session-replay segment. It exists because query
-strings routinely carry password-reset tokens, magic-link tokens, session ids,
-email addresses and search terms, and aggregate measures are retained for
-months.
+- **Privacy levels** from the dashboard: Strict masks all text and blocks media; Balanced and
+  Relaxed mask inputs. Password, email and phone fields are always masked, hidden inputs are never
+  recorded, and block selectors always win. PII patterns (emails, card numbers, long digit runs) are
+  masked with `*` so the layout stays.
+- **Pauses**: while the tab is hidden, after 5 minutes without input (pointer moves count), and on
+  never-record URLs, rrweb stops and nothing is sent. It resumes with a full snapshot, and the gap
+  is marked in the replay. Recording never outlives its session.
+- **One tab at a time**: the tabs of a session share it, and the focused, visible tab records. A
+  tab that takes over starts with a full snapshot, so the session plays back in order (`status`
+  reason `other_tab` in the others). With `cookieDomain`, tabs on its subdomains take turns the
+  same way, through a cookie on that domain. Per-tab replay comes with 2.1.
+- **Never-record URLs** use the same pattern language as the error lists: a substring of the page
+  URL, or `/regex/`. Expressions see the first 4 KB of the text.
+- **Segments** close at 30 s, 500 events or about 750 KB, and when the tab hides or closes; a full
+  snapshot every 3 minutes keeps seeking fast. A page whose snapshot is over 4 MB is not recorded
+  (`status` reason `too_large`).
 
-If you need specific parameters for analysis, opt them back in by name:
+A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
+watched it sends about two segments a minute.
 
-```ts
-SiteQwalityRUM.init({
-  applicationId: 'YOUR_APPLICATION_ID',
-  clientToken: 'YOUR_CLIENT_TOKEN',
-  allowedQueryParams: ['plan', 'tab'],
-  deniedQueryParams: ['internal_ref'], // optional, on top of the built-in list
-});
-```
+## Web Vitals
 
-A built-in deny list (`token`, `access_token`, `id_token`, `refresh_token`,
-`code`, `key`, `secret`, `password`, `passwd`, `pwd`, `email`, `e-mail`,
-`session`, `sid`, `sig`, `signature`, `auth`, `apikey`, `api_key`) is applied
-even to names you allow, and matches inside compound names too, so
-`reset_token` and `user.email` are refused. There is no option that switches it
-off.
+LCP, INP and CLS with web-vitals' definitions and attribution sub-parts (LCP load delay, load
+time and render delay; INP input delay, processing and presentation, with the longest script of
+its animation frame), plus FCP and TTFB. They belong to the document's initial view. Attribution
+targets use the click selector (id, `data-testid`, `data-sq-*`, tag and up to two stable classes),
+so a target groups the same across deploys.
 
-The ingestor repeats the default behaviour server-side, so a cached older
-version of this script cannot bypass it.
+## Network capture
 
-Two things this does **not** reach: URLs embedded in the DOM snapshot inside a
-replay segment (rrweb's serialiser produces those and filtering them needs a
-fork), and `document.referrer`, which this SDK does not capture at all.
+Failed requests (status 0, 4xx, 5xx, aborts, timeouts) are recorded for every session; successful
+ones in Analyze sessions, with repeats of one request folded into counts and percentiles per 30 s.
+Repeated failures fold the same way, with `err_n`, so a page polling a broken endpoint costs one row
+per 30 s. Timing phases come from Resource Timing. Trace URLs and body URLs are URL prefixes, never
+patterns: `/api` is a path on the page's own origin (and below it, so not `/apix`), and
+`https://api.example.com/v1` that origin and path. A W3C `traceparent` header is added only to
+matching URLs, headers only from the app's allowlist (never credentials), and bodies only for
+matching URLs, redacted, read up to the size cap (event streams never), and given up after 10 s
+(marked `truncated`). With no rules, nothing is traced or captured.
 
-The CDN files (`dist/cdn/`) are deployed separately with `make deploy`; they
-are not part of the npm package.
+## Limits that protect you
 
-## Excluded resources
+- **Clock**: events and replay frames take `Date` only while it agrees with the browser's monotonic
+  clock (it may run ahead after sleep, never behind), so a page that patches `Date` into the past
+  or years ahead cannot skew times.
+- **Request budget**: whatever the cause (a bug, a retry storm, hidden tabs), the SDK makes at
+  most 5,000 requests and 100 MB per session (10,000 and 200 MB per page load) for events, config
+  and identity, and apart from those 2,500 requests and 250 MB per session (5,000 and 500 MB per
+  page load) for replay. A 4 h session at full activity makes about 1,500 and 600. Past a ceiling
+  it stops sending (replay alone, when it is replay's), says so once in the console and in
+  `getStatus()` (reason `request_budget` or `replay_budget`), and resumes only in a new session.
+- **Transport**: batches every 10 s or 200 events, errors within 1 s, gzip above 1 KB, everything
+  queued sent when the tab hides, and a keepalive tail on close. 401 and 403 stop sending; 429, 408
+  and 5xx back off, and a `Retry-After` (up to a day) holds every send, on hide and close too.
 
-Resource URLs listed under Excluded resources in the RUM application's
-dashboard settings are not recorded. Applied at ingest for all versions; from
-1.0.5 the SDK also skips sending them, picking up changes on its next config
-refresh (every 5 minutes).
+## Debugging
 
-## Click names
+`debug: true`, or `?sq_debug=1` once in the URL (remembered in `localStorage`), logs every config,
+rule decision, recording state and send. `getStatus()` returns the session and window ids, consent,
+opt-out, sampling, recording state with its reason, the config revision and counters of everything
+dropped.
 
-Clicks are named `tag.class[text]` from the element's text or `aria-label`.
-To set the name yourself, add `data-sq-action-name` to the element or an
-ancestor; it is used as is (trimmed, up to 100 characters, square brackets
-become parentheses):
+## Bundle size
 
-```html
-<button data-sq-action-name="Send message">Send to Jane</button>
-```
+| File | gzip | Budget |
+|---|---|---|
+| Core `sdk.min.js` | 25.9 KB | 26 KB (CI gate) |
+| Replay chunk `recorder-2.0.0.min.js` | 27.0 KB | 30 KB |
 
-With "Hide element text in click names" on in the RUM application's privacy
-settings, other clicks are named `tag.class` only. Applied at ingest for all
-versions; from 1.0.6 the SDK also stops sending the text, picking up changes on
-its next config refresh.
+The design estimated 18 KB for the core, leaving out stack parsing and grouping, resource timing and
+the URL minimiser; 26 KB is the accepted 2.0 budget, and CI fails a build past it. Pages that never
+replay download only the core.
+
+## Migrating from 1.x
+
+- Events go to `POST https://in.siteqwality.com/v2/batch`; config comes from the CDN. Update your
+  CSP (above). A first-party proxy needs the same paths.
+- `beforeSend` now runs for every kind with `(event, kind)`; error events carry `message`, `stack`
+  and `error_type` (1.x: `error_message`, `error_stack`, `error_source`). `apiBase` is gone.
+- New methods: `clearUser`, `setView`, `setTrackingConsent`, `optOut`, `optIn`, `isOptedOut`,
+  `startReplay`, `stopReplay`, `getSessionUrl`, `getStatus`. Update the snippet so its stub queues
+  them.
+- The session moves from `sessionStorage` (`sq_rum_session`) to the `_sq_s` cookie, shared by tabs.
+  A running 1.1 session and its rule decision carry over.
 
 ## Development
 
 ```bash
 npm install
 npm test              # vitest
-npm run build         # rollup: dist/esm + dist/cjs + dist/cdn
+npm run build         # rollup: dist/esm, dist/cjs, dist/cdn
 npm run build:types   # tsc: dist/types
-npm run test:bundle   # built CDN core: one global, classic and module, 30 KB gzip budget
-npm run test:browser  # Playwright: snippet, early errors, recorder, views, clicks
-npm run size          # bundle sizes
-make probe            # test:bundle against the live CDN file
+npm run test:bundle   # the built CDN core: one global, classic and module, size budget
+npm run test:browser  # Playwright: snippet, early errors, replay chunk, views, clicks
+npm run size          # gzip sizes and budgets (size:modules adds a per-module view)
+make probe            # test:bundle against the live rum/v2 file
 ```
+
+`fixtures/` holds a fixture site, a mock intake and a Playwright harness that checks everything the
+SDK sends; see its README.
 
 ## Changelog
 
-- 1.1.0: classic CDN script with one global; collection starts at `init()`;
-  browser noise filtered, burst limits, `ignoreErrors`, `beforeSend`,
-  `recorderUrl`; page views only on URL change (one per hash route),
-  `loading_type`, Navigation Timing load times; sessions follow user activity,
-  and pending error and action counts go out on hide; rage, dead and error
-  clicks; rules evaluated at once and kept per session; resource types limited
-  to the known set; hidden inputs never recorded in replay.
+- 2.0.0: batch v2 to `in.siteqwality.com` (gzip, keepalive tail, urgent errors); config from the
+  CDN, cached; cookie sessions shared by tabs with window and page load ids; Observe, Analyze and
+  Replay tiers with rules v2 and a 60 s detail ring; consent, GPC and opt-out; errors with cause
+  chains, breadcrumbs, Debug IDs and stable grouping keys; Web Vitals with attribution; network
+  detail with tracing; console capture; long animation frames; `beforeSend` for every kind; a clock
+  the page cannot patch; a hard request budget; replay that pauses while hidden or idle and ends
+  with its session; CDN path `rum/v2/`.
+- 1.1.0: classic CDN script with one global; collection starts at `init()`; browser noise filtered,
+  burst limits, `ignoreErrors`, `beforeSend`, `recorderUrl`; page views only on URL change;
+  sessions follow user activity; rage, dead and error clicks; rules evaluated at once and kept per
+  session; hidden inputs never recorded in replay.
 
 ## Publish checklist
 
-`prepublishOnly` runs clean, build, build:types, the unit and bundle tests
-and the package check, but walk this list before any `npm publish`:
+`prepublishOnly` runs clean, build, build:types, the unit and bundle tests and the package check;
+walk this list before any `npm publish`:
 
-1. Bump `version` per semver (`src/version.ts` too; a test keeps them equal)
-   and tag the release commit (`git tag vX.Y.Z`).
-2. `make check` green locally (unit, bundle and browser tests).
-3. `npm pack --dry-run` and confirm the tarball contains only `dist/esm`,
-   `dist/cjs`, `dist/types`, `README.md`, `LICENSE`, `package.json`.
-4. Confirm the ingest endpoints the SDK targets are live in prod:
-   `POST /v1/measure|events|errors` and `GET /v1/config` on
-   `rum.siteqwality.com`.
-5. `npm publish` (scoped package; `publishConfig.access: public` is already
-   set). Requires npm org membership for `@siteqwality`.
-6. Deploy the matching CDN files: `make deploy`, then `make probe`.
-   Rollback: copy `rum/v<previous>/sdk.min.js` over `rum/v1/sdk.min.js` and
-   invalidate.
+1. Bump `version` (and `src/version.ts`; a test keeps them equal) and tag the release commit.
+2. `make check` green (unit, bundle, size and browser tests), and the fixture harness:
+   `cd fixtures && SQ_SKIP_BUILD=1 SQ_SDK_VERSION=<version> npx playwright test`.
+3. `npm pack --dry-run`: only `dist/esm`, `dist/cjs`, `dist/types`, `README.md`, `LICENSE`,
+   `package.json`.
+4. Confirm prod serves what 2.x calls: `POST /v2/batch` and `/v2/identity` on `in.siteqwality.com`,
+   `POST /v1/segments` on `replay.siteqwality.com`, and config at
+   `https://cdn.siteqwality.com/rum/config/v2/<app>.json` for live applications.
+5. `npm publish` (scoped, public). Requires `@siteqwality` org membership.
+6. `make deploy` uploads `dist/cdn` to `rum/v<version>/` (immutable; refuses to overwrite) and
+   `rum/v<major>/`, prints the SRI hash and invalidates `/rum/v<major>/*`. Then `make probe`.
+   Rollback: copy the previous release's files over `rum/v2/` and invalidate.

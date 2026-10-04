@@ -26,7 +26,8 @@ describe('recorderUrlFor', () => {
     );
   });
 
-  it('falls back to the CDN v1 path without a script URL (module scripts)', () => {
+  it('falls back to the CDN v2 path without a script URL (module scripts)', () => {
+    expect(DEFAULT_RECORDER_BASE).toBe('https://cdn.siteqwality.com/rum/v2/');
     expect(recorderUrlFor(undefined, undefined)).toBe(`${DEFAULT_RECORDER_BASE}${file}`);
     expect(recorderUrlFor(undefined, '')).toBe(`${DEFAULT_RECORDER_BASE}${file}`);
   });

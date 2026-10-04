@@ -208,5 +208,82 @@
     "stack": "",
     "filename": "",
     "ignore": false
+  },
+  {
+    "name": "N4 script error on line 0",
+    "message": "Javascript error: Script error on line 0",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N4 script error. on line 0",
+    "message": "Javascript error: Script error. on line 0",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N5 googletag redefine, onerror wording",
+    "message": "Uncaught TypeError: Cannot redefine property: googletag",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N5 a longer property name is a real error",
+    "message": "TypeError: Cannot redefine property: googletagmanager",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "N6 Google Search App gmo",
+    "message": "ReferenceError: Can't find variable: gmo",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N6 a variable that only starts with gmo is a real error",
+    "message": "ReferenceError: Can't find variable: gmoney",
+    "stack": "",
+    "filename": "",
+    "ignore": false
+  },
+  {
+    "name": "N7 Instagram webview autofill handler",
+    "message": "ReferenceError: Can't find variable: _AutofillCallbackHandler",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N8 CEFSharp simulateEvent, Sentry wording",
+    "message": "Non-Error promise rejection captured with value: Object Not Found Matching Id:3, MethodName:simulateEvent, ParamCount:1",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N9 Facebook webview Java object is gone",
+    "message": "Error: Java object is gone",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N8 CEFSharp simulateEvent, bare rejection reason",
+    "message": "Object Not Found Matching Id:2, MethodName:simulateEvent, ParamCount:1",
+    "stack": "",
+    "filename": "",
+    "ignore": true
+  },
+  {
+    "name": "N9 a longer message is a real error",
+    "message": "Error: Java object is gone, retrying",
+    "stack": "",
+    "filename": "",
+    "ignore": false
   }
 ]

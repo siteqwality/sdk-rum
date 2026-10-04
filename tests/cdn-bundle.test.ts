@@ -15,7 +15,7 @@ import { parse, type Node } from 'acorn';
 const LIVE_URL = process.env.SDK_BUNDLE_URL;
 const ROOT = join(__dirname, '..');
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version: string };
-const GZIP_BUDGET_BYTES = 30 * 1024;
+const budgets = JSON.parse(readFileSync(join(ROOT, 'scripts/size-budgets.json'), 'utf8')) as { core: number; replay: number };
 
 let source = '';
 let bundlePath = '';
@@ -117,15 +117,23 @@ describe('CDN core contents', () => {
     expect(imports).toBe(1);
   });
 
-  it(`stays within ${GZIP_BUDGET_BYTES / 1024} KB gzipped`, () => {
+  it(`stays within ${(budgets.core / 1024).toFixed(1)} KB gzipped`, () => {
     const gzip = gzipSync(source, { level: 9 }).length;
     console.log(`sdk.min.js: ${source.length} B raw, ${gzip} B gzip`);
-    expect(gzip).toBeLessThanOrEqual(GZIP_BUDGET_BYTES);
+    expect(gzip).toBeLessThanOrEqual(budgets.core);
+  });
+
+  it('names the v2 CDN path and the v2 ingest endpoint, and no v1 intake route', () => {
+    expect(source).toContain('https://cdn.siteqwality.com/rum/v2/');
+    expect(source).toContain('https://in.siteqwality.com');
+    expect(source).toContain('/v2/batch');
+    expect(source).not.toContain('rum.siteqwality.com');
+    expect(source).not.toMatch(/\/v1\/(measure|events|errors|config)/);
   });
 });
 
-describe.skipIf(!!LIVE_URL)('CDN recorder', () => {
-  it(`is recorder-${pkg.version}.min.js, an ES module exporting record`, () => {
+describe.skipIf(!!LIVE_URL)('CDN replay chunk', () => {
+  it(`is recorder-${pkg.version}.min.js, an ES module exporting startReplay, within budget`, () => {
     const recorder = readFileSync(join(ROOT, `dist/cdn/recorder-${pkg.version}.min.js`), 'utf8');
     const ast = parse(recorder, { ecmaVersion: 'latest', sourceType: 'module' });
     const exported: string[] = [];
@@ -135,7 +143,9 @@ describe.skipIf(!!LIVE_URL)('CDN recorder', () => {
         exported.push(name.name ?? String(name.value));
       }
     });
-    expect(exported).toEqual(['record']);
-    console.log(`recorder-${pkg.version}.min.js: ${recorder.length} B raw, ${gzipSync(recorder, { level: 9 }).length} B gzip`);
+    expect(exported).toEqual(['startReplay']);
+    const gzip = gzipSync(recorder, { level: 9 }).length;
+    console.log(`recorder-${pkg.version}.min.js: ${recorder.length} B raw, ${gzip} B gzip`);
+    expect(gzip).toBeLessThanOrEqual(budgets.replay);
   });
 });

@@ -65,5 +65,14 @@ Mock control API (`http://127.0.0.1:4320/__mock`): `POST /reset`, `PUT /apps/<to
   request, at each privacy level. A canary also needs proof its channel ran (input events recorded,
   the error captured, the fetch recorded), so absence means something.
 - **Budgets** (`e2e/lib/budgets.js`): 2.0 targets from design 5.2, 5.5 and 8.2 apply to 2.x; 1.x runs
-  against regression limits measured on 1.0.7. Both numbers print beside each measurement.
+  against regression limits measured on 1.0.7. Both numbers print beside each measurement. Replay
+  pipeline targets apply from the 2.1 replay chunk; until then they use the 1.x limits.
+- **Clock** (`clock.e2e.js`): `/mpa/patched-date.html` patches `Date.now` and the `Date` constructor;
+  RUM events and replay segments must still carry sane, monotonic times.
+- **Long-lived tabs** (`long-lived.e2e.js`): `/mpa/ticking-clock.html` ticks a clock every second.
+  With the page clock faked, an hour hidden or idle must cost a few requests, then resume from a
+  full snapshot.
+- **Two tabs** (`multi-tab.e2e.js`, `subdomains.e2e.js`): two tabs share one session, on one
+  origin or on two subdomains through `cookieDomain` (`*.sq.test` maps to the fixture in
+  Chromium); replay records in one at a time and the session's segments never interleave.
 - Tests finish like a user: hide the tab (simulated, headless pages never hide), then close it.

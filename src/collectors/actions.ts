@@ -1,443 +1,312 @@
-import { cut } from '../text';
+// Actions (design 5.6): clicks, taps, input changes and submits with a name and a stable
+// selector; rage, dead and error clicks by Wave 1 F14, plus click counts and offsets.
+import { cut, read, perfNow as clock } from '../core/util';
+
+export type Frustration = 'rage_click' | 'dead_click' | 'error_click';
 
 export interface CollectedAction {
-  action_type: string;
-  action_target: string;
-  /** The name without element text, for clicks buffered before config. */
-  action_target_hidden?: string;
-  frustration?: 'rage_click' | 'dead_click' | 'error_click';
+  action_type: 'click' | 'tap' | 'input' | 'submit';
+  name: string;
+  /** The name without element text, for privacy settings that arrive later. */
+  hiddenName: string;
+  selector: string;
+  frustration?: Frustration;
+  click_count?: number;
+  offset_pct?: [number, number];
+  page_xy?: [number, number];
+  viewport_w: number;
 }
 
 export const ACTION_NAME_ATTRIBUTE = 'data-sq-action-name';
 export const NO_FRUSTRATION_ATTRIBUTE = 'data-sq-no-frustration';
-const MAX_ACTION_NAME_LENGTH = 100;
-
 /** How long a click waits for a reaction, an error or more clicks of a burst. */
 export const FRUSTRATION_WINDOW_MS = 1000;
-const RAGE_CLICKS = 3;
-// A verdict this late means the page was blocked (alert, confirm, heavy work): no dead click.
-const BLOCKED_LATENESS_MS = 250;
-// Longest wait from a press (pointerdown, mousedown, Enter) to its click.
-const PRESS_MAX_MS = 3000;
 
-/** The element a click is named and grouped by. */
-const TARGET_SELECTOR =
-  'a, button, [role="button"], [role="link"], input, select, textarea, label, summary, [data-sq-action-name]';
-
-/** Controls that are expected to react when clicked. */
-const DEAD_CLICK_SELECTOR =
-  'a[href], button:not([disabled]), [role="button"], [role="link"], input[type="button"], input[type="submit"], input[type="reset"], summary, [onclick]';
+const TARGET = 'a,button,[role="button"],[role="link"],input,select,textarea,label,summary,[data-sq-action-name]';
+const DEAD = 'a[href],button:not([disabled]),[role="button"],[role="link"],input[type="button"],input[type="submit"],input[type="reset"],summary,[onclick]';
+const FIELD = 'input,select,textarea';
 
 export interface ActionCollectorOptions<C> {
-  /** Called at the click, before its window opens; returns the click's context. */
+  /** The action's context, taken at the action; throws to skip it. */
   begin: () => C;
-  /** Called when the click's window closes (or the page hides), with its verdict. */
   emit: (action: CollectedAction, context: C) => void;
-  /** Read per click, so a config refresh applies without a reload. */
   hideText?: () => boolean;
-  /** Remote `frustration_ignore_selectors`, read per click. */
   ignoreSelectors?: () => readonly unknown[] | undefined;
-  /** True for the SDK's own requests, which never count as a reaction. */
-  isOwnRequest?: (url: string) => boolean;
 }
 
 export interface ActionCollector {
   /** A sent error: the latest pending click becomes an error click. */
   noteError(): void;
-  /** A history change: every pending click reacted. */
+  /** A history change or a request: every pending click and press reacted. */
   noteReaction(): void;
 }
 
 interface Burst {
   times: number[];
-  last: number;
   raged: boolean;
 }
 
-/** A press on a control, watched because menus often open on pointerdown. */
-interface Press {
+interface Watch {
   el: Element;
   at: number;
-  perfTime: number;
   reacted: boolean;
   timer: ReturnType<typeof setTimeout>;
 }
 
-interface Pending<C> {
+interface Pending<C> extends Watch {
   context: C;
   action: CollectedAction;
-  perfTime: number;
   burst: Burst | null;
   rage: boolean;
-  deadCandidate: boolean;
-  reacted: boolean;
+  dead: boolean;
   error: boolean;
-  timer: ReturnType<typeof setTimeout>;
+}
+
+const elementOf = (t: EventTarget | null): Element | null =>
+  !t || typeof (t as Node).nodeType !== 'number' ? null : (t as Node).nodeType === 1 ? (t as Element) : (t as Node).parentElement;
+
+const closest = (el: Element, s: string): Element | null => {
+  try {
+    return el.closest(s);
+  } catch {
+    return null;
+  }
+};
+
+/** The closest interactive ancestor (or the element itself), else the element. */
+export const resolveTarget = (el: Element): Element => closest(el, TARGET) ?? el;
+
+function deadCandidate(el: Element, e: MouseEvent): boolean {
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return false;
+  try {
+    const target = (el.getAttribute('target') ?? '').trim().toLowerCase();
+    return el.matches(DEAD) && !el.matches('a[download]') && (!el.matches('a[target]') || target === '' || target === '_self');
+  } catch {
+    return false;
+  }
+}
+
+/** A followed link leaves the document; a same-page fragment fires hashchange instead. */
+function navigates(el: Element): boolean {
+  try {
+    if (!el.matches('a[href]')) return false;
+    const u = new URL((el as HTMLAnchorElement).href, location.href);
+    const here = new URL(location.href);
+    return /^https?:$/.test(u.protocol) && !(u.origin + u.pathname + u.search === here.origin + here.pathname + here.search && u.hash);
+  } catch {
+    return false;
+  }
+}
+
+const clean = (s: string | null | undefined) => cut((s ?? '').replace(/\s+/g, ' ').trim(), 64).trim();
+
+/** data-sq-action-name on the element or an ancestor; brackets become parentheses. */
+export const explicitName = (el: Element): string =>
+  clean(closest(el, `[${ACTION_NAME_ATTRIBUTE}]`)?.getAttribute(ACTION_NAME_ATTRIBUTE)).replace(/\[/g, '(').replace(/\]/g, ')');
+
+/** The explicit name, then aria-label, then text: a field's label or name, never its value. */
+export function nameOf(el: Element): string {
+  const named = explicitName(el) || clean(el.getAttribute('aria-label'));
+  if (named) return named;
+  if (el.matches(FIELD) || el.tagName === 'FORM') {
+    return clean((el as HTMLInputElement).labels?.[0]?.textContent) || clean(el.getAttribute('name')) || clean(el.id);
+  }
+  return clean(el.textContent);
+}
+
+const STABLE = /^[A-Za-z][\w-]*$/;
+const GENERATED = /^(css|sc|jsx|svelte|emotion)-|\d{3}|^_/;
+const ok = (s: string) => STABLE.test(s) && !GENERATED.test(s);
+
+/** id, data-testid, data-sq-*, tag and up to two classes, at most 4 levels. */
+export function selectorOf(el: Element): string {
+  const parts: string[] = [];
+  for (let e: Element | null = el, depth = 0; e && depth < 4 && !/^(HTML|BODY)$/.test(e.tagName); e = e.parentElement, depth++) {
+    if (e.id && ok(e.id)) {
+      parts.unshift(`#${e.id}`);
+      break;
+    }
+    const attr = Array.from(e.attributes).find((a) => a.name === 'data-testid' || (a.name.startsWith('data-sq-') && a.name !== NO_FRUSTRATION_ATTRIBUTE));
+    const value = attr && cut(attr.value, 64).replace(/["\\]/g, '');
+    parts.unshift(
+      e.tagName.toLowerCase() +
+        (attr
+          ? `[${attr.name}${value ? `="${value}"` : ''}]`
+          : (e.getAttribute('class') || '').split(/\s+/).filter(ok).slice(0, 2).map((c) => `.${c}`).join('')),
+    );
+    if (attr?.name === 'data-testid') break;
+  }
+  return parts.join(' > ');
 }
 
 /**
- * Clicks, each emitted when its 1000 ms window closes with at most one signal:
- * error_click, then rage_click (one per burst), then dead_click.
+ * Clicks, each emitted when its 1 s window closes with at most one signal: error_click, then
+ * rage_click (the third click on a control within 1 s, one per burst), then dead_click.
  */
-export function startActionCollector<C>(options: ActionCollectorOptions<C>): ActionCollector {
+export function startActionCollector<C>(o: ActionCollectorOptions<C>): ActionCollector {
   const bursts = new WeakMap<Element, Burst>();
   let pending: Pending<C>[] = [];
-  let press: Press | null = null;
-  let watching = false;
-  let ignoreSource: readonly unknown[] | undefined;
-  let ignoreList: string[] = [];
-
-  const markAllReacted = () => {
-    for (const p of pending) p.reacted = true;
-    if (press) press.reacted = true;
-  };
-
-  const mutations =
-    typeof MutationObserver === 'function' ? new MutationObserver(markAllReacted) : null;
-  const resources = createResourceWatcher((entries) => {
-    for (const entry of entries) {
-      if (options.isOwnRequest?.(entry.name)) continue;
-      for (const p of pending) if (entry.startTime > p.perfTime) p.reacted = true;
-      if (press && entry.startTime > press.perfTime) press.reacted = true;
-    }
-  });
-
-  // Observers run only while a click or a press is pending.
-  const watch = () => {
-    if (watching) return;
-    watching = true;
+  let press: Watch | null = null;
+  let ignoreSrc: readonly unknown[] | undefined;
+  let ignore: string[] = [];
+  let lastPress: Element | null = null;
+  let lastPressAt = 0;
+  let tabbed = false;
+  const all = (): Watch[] => (press ? [...pending, press] : pending);
+  const react = () => all().forEach((w) => (w.reacted = true));
+  const mo = typeof MutationObserver === 'function' ? new MutationObserver(react) : null;
+  let observing = false;
+  // The DOM is watched only while a click or a press is pending.
+  const sync = () => {
+    const want = all().length > 0;
+    if (want === observing) return;
+    observing = want;
     try {
-      mutations?.observe(document.documentElement, {
-        subtree: true,
-        childList: true,
-        attributes: true,
-        characterData: true,
-      });
+      if (want) mo?.observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
+      else mo?.disconnect();
     } catch {
       // No document element yet.
     }
-    resources?.start();
   };
-
-  const unwatch = () => {
-    if (!watching || pending.length > 0 || press) return;
-    watching = false;
-    mutations?.disconnect();
-    resources?.stop();
+  const records = () => {
+    if (mo?.takeRecords().length) react();
   };
-
   const clearPress = () => {
-    if (!press) return;
-    clearTimeout(press.timer);
+    if (press) clearTimeout(press.timer);
     press = null;
-    unwatch();
+    sync();
   };
 
-  const onPress = (event: Event) => {
-    try {
-      if (event.type === 'keydown') {
-        const key = (event as KeyboardEvent).key;
-        if (key !== 'Enter' && key !== ' ') return;
-      }
-      const target = elementOf(event.target);
-      if (!target) return;
-      const resolved = resolveTarget(target);
-      const now = Date.now();
-      // pointerdown then mousedown on the same control is one press.
-      if (press && press.el === resolved && now - press.at <= FRUSTRATION_WINDOW_MS) return;
-      clearPress();
-      if (!isDeadCandidate(resolved, event as MouseEvent)) return;
-      press = { el: resolved, at: now, perfTime: perfNow(), reacted: false, timer: setTimeout(clearPress, PRESS_MAX_MS) };
-      watch();
-    } catch {
-      // Never throw into the host's input handling.
-    }
-  };
-  for (const type of ['pointerdown', 'mousedown', 'keydown']) {
-    document.addEventListener(type, onPress, { capture: true });
-  }
-
-  // Records not yet delivered still count toward the verdict.
-  const collectRecords = () => {
-    if (mutations && mutations.takeRecords().length > 0) markAllReacted();
-    resources?.drain();
+  const describe = (el: Element, type: CollectedAction['action_type']): CollectedAction => {
+    const selector = selectorOf(el);
+    const hiddenName = explicitName(el) || selector;
+    return { action_type: type, name: o.hideText?.() ? hiddenName : nameOf(el) || hiddenName, hiddenName, selector, viewport_w: Math.round(innerWidth || 0) };
   };
 
   const settle = (p: Pending<C>) => {
     clearTimeout(p.timer);
     pending = pending.filter((q) => q !== p);
-    p.action.frustration = verdict(p);
-    unwatch();
-    options.emit(p.action, p.context);
+    sync();
+    p.action.frustration = p.error ? 'error_click' : p.rage ? 'rage_click' : p.burst?.raged ? undefined : p.dead && !p.reacted ? 'dead_click' : undefined;
+    if (p.rage) p.action.click_count = p.burst!.times.length;
+    o.emit(p.action, p.context);
   };
-
   const settleAll = () => {
-    if (pending.length === 0) return;
-    try {
-      collectRecords();
-      markAllReacted();
-      for (const p of [...pending]) settle(p);
-    } catch {
-      // Monitoring must never break the host page.
-    }
+    records();
+    react();
+    [...pending].forEach(settle);
   };
 
-  const currentIgnoreList = (): string[] => {
-    const source = options.ignoreSelectors?.();
-    if (source !== ignoreSource) {
-      ignoreSource = source;
-      ignoreList = validSelectors(source);
-    }
-    return ignoreList;
+  // Errors (an inactive session throws to skip) never reach the host's handlers.
+  const listen = (target: EventTarget, types: string, fn: (e: never) => void, capture = true) => {
+    for (const type of types.split(' ')) target.addEventListener(type, (e) => read(() => fn(e as never)), { capture });
   };
 
-  document.addEventListener(
-    'click',
-    (event) => {
-      try {
-        const target = elementOf(event.target);
-        if (!target) return;
-        const resolved = resolveTarget(target);
-        const now = Date.now();
-        const ignored = isIgnored(target, currentIgnoreList());
-
-        let burst: Burst | null = null;
-        let rage = false;
-        if (!ignored) {
-          burst = bursts.get(resolved) ?? null;
-          if (!burst || now - burst.last > FRUSTRATION_WINDOW_MS) {
-            burst = { times: [], last: now, raged: false };
-            bursts.set(resolved, burst);
-          }
-          burst.times = burst.times.filter((t) => now - t <= FRUSTRATION_WINDOW_MS);
-          burst.times.push(now);
-          burst.last = now;
-          if (!burst.raged && burst.times.length >= RAGE_CLICKS) {
-            burst.raged = true;
-            rage = true;
-          }
-        }
-
-        // A reaction to the press that led to this click counts for the click.
-        collectRecords();
-        const pressed = press && press.el === resolved ? press : null;
-        const context = options.begin();
-        const p: Pending<C> = {
-          context,
-          action: {
-            action_type: 'click',
-            action_target: getSelector(resolved, options.hideText?.() === true),
-            action_target_hidden: getSelector(resolved, true),
-          },
-          perfTime: pressed?.perfTime ?? perfNow(),
-          burst,
-          rage,
-          deadCandidate: !ignored && isDeadCandidate(resolved, event),
-          reacted: pressed?.reacted ?? false,
-          error: false,
-          timer: setTimeout(() => {
-            try {
-              collectRecords();
-              if (Date.now() - now > FRUSTRATION_WINDOW_MS + BLOCKED_LATENESS_MS) p.reacted = true;
-              settle(p);
-            } catch {
-              // Monitoring must never break the host page.
-            }
-          }, FRUSTRATION_WINDOW_MS),
-        };
-        pending.push(p);
-        watch();
-        clearPress();
-
-        // A followed link or a submit starts a navigation; known after dispatch.
-        if (p.deadCandidate) {
-          setTimeout(() => {
-            if (!event.defaultPrevented && startsNavigation(resolved)) p.reacted = true;
-          }, 0);
-        }
-      } catch {
-        // Never throw into the host's click handling.
-      }
-    },
-    { capture: true },
-  );
-
-  const onReaction = () => markAllReacted();
-  for (const type of ['popstate', 'hashchange', 'beforeunload', 'blur']) {
-    window.addEventListener(type, onReaction);
-  }
-  document.addEventListener('submit', onReaction, { capture: true });
-
-  // A hidden page may never come back, so pending clicks go out now.
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') settleAll();
+  // Menus often open on pointerdown: a reaction to the press counts for its click.
+  listen(document, 'pointerdown mousedown keydown', (e: KeyboardEvent) => {
+    lastPress = elementOf(e.target);
+    lastPressAt = clock();
+    tabbed = e.key === 'Tab';
+    if ((e.type === 'keydown' && e.key !== 'Enter' && e.key !== ' ') || !lastPress) return;
+    const el = resolveTarget(lastPress);
+    if (press?.el === el && lastPressAt - press.at <= FRUSTRATION_WINDOW_MS) return;
+    clearPress();
+    if (!deadCandidate(el, e as unknown as MouseEvent)) return;
+    press = { el, at: lastPressAt, reacted: false, timer: setTimeout(clearPress, 3000) };
+    sync();
   });
-  window.addEventListener('pagehide', settleAll, { capture: true });
+
+  // Focus moving elsewhere is a reaction (a field opened, a dialog), unless the user moved it.
+  listen(document, 'focusin', (e: FocusEvent) => {
+    const t = elementOf(e.target);
+    const byUser = clock() - lastPressAt < 500 && (tabbed || (lastPress && (t?.contains(lastPress) || lastPress.contains(t))));
+    if (t && !byUser) all().forEach((w) => !w.el.contains(t) && (w.reacted = true));
+  });
+
+  listen(document, 'click', (e: PointerEvent) => {
+    const target = elementOf(e.target);
+    if (!target) return;
+    const el = resolveTarget(target);
+    const now = clock();
+    const src = o.ignoreSelectors?.();
+    if (src !== ignoreSrc) {
+      ignoreSrc = src;
+      const probe = document.createElement('div');
+      ignore = (Array.isArray(src) ? src : []).filter((s): s is string => {
+        try {
+          return typeof s === 'string' && !!s.trim() && (probe.matches(s), true);
+        } catch {
+          return false;
+        }
+      });
+    }
+    const ignored = !!closest(target, `[${NO_FRUSTRATION_ATTRIBUTE}]`) || ignore.some((s) => closest(target, s));
+    let burst: Burst | null = null;
+    let rage = false;
+    if (!ignored) {
+      burst = bursts.get(el) ?? null;
+      const recent = burst?.times.filter((t) => now - t <= FRUSTRATION_WINDOW_MS) ?? [];
+      if (!burst || !recent.length) bursts.set(el, (burst = { times: [], raged: false }));
+      burst.times = [...recent, now];
+      if (!burst.raged && burst.times.length >= 3) burst.raged = rage = true;
+    }
+    records();
+    const pressed = press?.el === el ? press : null;
+    const action = describe(el, e.pointerType === 'touch' ? 'tap' : 'click');
+    if (e.detail > 0) {
+      const r = el.getBoundingClientRect();
+      const pct = (v: number, start: number, size: number) => (size > 0 ? Math.max(0, Math.min(100, Math.round(((v - start) / size) * 100))) : 0);
+      action.offset_pct = [pct(e.clientX, r.left, r.width), pct(e.clientY, r.top, r.height)];
+      action.page_xy = [Math.max(0, Math.round(e.pageX)), Math.max(0, Math.round(e.pageY))];
+    }
+    const p: Pending<C> = {
+      context: o.begin(),
+      action,
+      el,
+      at: now,
+      burst,
+      rage,
+      dead: !ignored && deadCandidate(el, e),
+      reacted: pressed?.reacted ?? false,
+      error: false,
+      timer: setTimeout(() => {
+        try {
+          records();
+          // A verdict this late means the page was blocked (alert, confirm, heavy work).
+          if (clock() - now > FRUSTRATION_WINDOW_MS + 250) p.reacted = true;
+          settle(p);
+        } catch {
+          // Monitoring must never break the host page.
+        }
+      }, FRUSTRATION_WINDOW_MS),
+    };
+    pending.push(p);
+    clearPress();
+    sync();
+    if (p.dead) setTimeout(() => !e.defaultPrevented && navigates(el) && (p.reacted = true));
+  });
+
+  // Field changes and submits: names only, never values.
+  listen(document, 'change submit', (e: Event) => {
+    const el = elementOf(e.target);
+    if (!el) return;
+    if (e.type === 'submit') {
+      react();
+      if (el.tagName !== 'FORM') return;
+    } else if (!el.matches(FIELD) || el.matches('input[type="hidden" i]')) return;
+    o.emit(describe(el, e.type === 'submit' ? 'submit' : 'input'), o.begin());
+  });
+
+  // The window's own blur (another tab or app); a capture listener would see every field's blur.
+  listen(window, 'popstate hashchange beforeunload blur', react, false);
+  listen(document, 'visibilitychange', () => document.visibilityState === 'hidden' && settleAll());
+  listen(window, 'pagehide', settleAll);
 
   return {
     noteError() {
       const latest = pending[pending.length - 1];
       if (latest) latest.error = true;
     },
-    noteReaction: markAllReacted,
+    noteReaction: react,
   };
-}
-
-function verdict(p: Pending<unknown>): CollectedAction['frustration'] {
-  if (p.error) return 'error_click';
-  if (p.rage) return 'rage_click';
-  if (p.burst?.raged) return undefined;
-  if (p.deadCandidate && !p.reacted) return 'dead_click';
-  return undefined;
-}
-
-function elementOf(target: EventTarget | null): Element | null {
-  if (!target || typeof (target as Node).nodeType !== 'number') return null;
-  const node = target as Node;
-  if (node.nodeType === 1) return node as Element;
-  return node.parentElement;
-}
-
-/** The closest interactive ancestor (or the element itself), else the element. */
-export function resolveTarget(el: Element): Element {
-  try {
-    return el.closest(TARGET_SELECTOR) ?? el;
-  } catch {
-    return el;
-  }
-}
-
-function isIgnored(target: Element, selectors: readonly string[]): boolean {
-  try {
-    if (target.closest(`[${NO_FRUSTRATION_ATTRIBUTE}]`)) return true;
-  } catch {
-    return false;
-  }
-  return selectors.some((selector) => {
-    try {
-      return target.closest(selector) !== null;
-    } catch {
-      return false;
-    }
-  });
-}
-
-/** The strings that parse as selectors; anything else is skipped. */
-function validSelectors(source: readonly unknown[] | undefined): string[] {
-  if (!Array.isArray(source)) return [];
-  const probe = document.createElement('div');
-  return source.filter((s): s is string => {
-    if (typeof s !== 'string' || s.trim() === '') return false;
-    try {
-      probe.matches(s);
-      return true;
-    } catch {
-      return false;
-    }
-  });
-}
-
-function isDeadCandidate(el: Element, event: MouseEvent): boolean {
-  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return false;
-  try {
-    if (!el.matches(DEAD_CLICK_SELECTOR)) return false;
-    if (el.matches('a[download]')) return false;
-    if (el.matches('a[target]')) {
-      const target = (el.getAttribute('target') ?? '').trim().toLowerCase();
-      if (target !== '' && target !== '_self') return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** A link click that leaves the document (a same-page fragment fires hashchange instead). */
-function startsNavigation(el: Element): boolean {
-  if (!el.matches('a[href]')) return false;
-  try {
-    const url = new URL((el as HTMLAnchorElement).href, window.location.href);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-    const here = new URL(window.location.href);
-    const samePage =
-      url.origin === here.origin && url.pathname === here.pathname && url.search === here.search;
-    return !(samePage && url.hash !== '');
-  } catch {
-    return false;
-  }
-}
-
-function perfNow(): number {
-  return typeof performance !== 'undefined' && typeof performance.now === 'function'
-    ? performance.now()
-    : 0;
-}
-
-interface ResourceWatcher {
-  start(): void;
-  stop(): void;
-  drain(): void;
-}
-
-function createResourceWatcher(
-  onEntries: (entries: PerformanceEntry[]) => void,
-): ResourceWatcher | null {
-  if (typeof PerformanceObserver !== 'function') return null;
-  const supported = PerformanceObserver.supportedEntryTypes;
-  if (Array.isArray(supported) && !supported.includes('resource')) return null;
-  let observer: PerformanceObserver | null = null;
-  return {
-    start() {
-      if (observer) return;
-      try {
-        observer = new PerformanceObserver((list) => onEntries(list.getEntries()));
-        observer.observe({ type: 'resource' });
-      } catch {
-        observer = null;
-      }
-    },
-    stop() {
-      observer?.disconnect();
-      observer = null;
-    },
-    drain() {
-      if (observer) onEntries(observer.takeRecords());
-    },
-  };
-}
-
-/**
- * Names a click: an explicit data-sq-action-name, else `#id`, else
- * `tag.classes[text]`, with the `[text]` suffix left off when `hideText`.
- */
-export function getSelector(el: Element, hideText = false): string {
-  const explicit = explicitActionName(el);
-  if (explicit) return explicit;
-  if (el.id) return `#${el.id}`;
-  const tag = el.tagName?.toLowerCase() || 'unknown';
-  // getAttribute, as an SVG element's className is not a string.
-  const className = el.getAttribute?.('class')?.trim();
-  const classes = className
-    ? `.${className.split(/\s+/).slice(0, 2).join('.')}`
-    : '';
-  if (hideText) return `${tag}${classes}`;
-  const text =
-    cut(el.textContent?.trim() ?? '', 30) ||
-    el.getAttribute?.('aria-label') ||
-    '';
-  const suffix = text ? `[${text}]` : '';
-  return `${tag}${classes}${suffix}`;
-}
-
-// Brackets become parentheses so the ingest never reads them as a text suffix.
-function explicitActionName(el: Element): string {
-  const holder =
-    typeof el.closest === 'function'
-      ? el.closest(`[${ACTION_NAME_ATTRIBUTE}]`)
-      : null;
-  const raw = holder?.getAttribute(ACTION_NAME_ATTRIBUTE) ?? '';
-  return cut(raw.trim(), MAX_ACTION_NAME_LENGTH)
-    .trim()
-    .replace(/\[/g, '(')
-    .replace(/\]/g, ')');
 }

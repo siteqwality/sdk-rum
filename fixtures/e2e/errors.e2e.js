@@ -108,7 +108,7 @@ test('an error thrown before the SDK loads is captured by the snippet stub', asy
 });
 
 test('an errored-sessions rule replays what led up to the error', async ({ sq }) => {
-  knownGap(!SDK.v2, '1.x starts recording after the error; 2.0 flushes a buffer from page load (B3)');
+  knownGap(!SDK.replayV2, 'before 2.1 recording starts after the error; the 2.1 replay ring flushes a buffer from page load (B3)');
   const s = await sq.start({ spec: { capture: 'replay_on_error' } });
   const page = await s.open('/errors');
   await s.waitForConfig();
