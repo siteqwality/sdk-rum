@@ -1,6 +1,7 @@
 // The lazy replay chunk (design 5.2, 5.4, 5.5, 6.4): rrweb, the recorder diet, the replay ring
 // and segments v2. Every tab records its own window; pauses while hidden, idle or on a
 // never-record page; a request budget of its own.
+import { loadCanvas } from './canvas-load';
 import { record } from '@rrweb/record';
 import { ReplayRecorder, replayPrivacy, type ReplayState } from './recorder';
 import { ReplayTransport } from './transport';
@@ -13,6 +14,8 @@ import type { SdkConfig } from '../types';
 
 /** What the chunk reads of the core's session: its id and window at start, the rest live. */
 export interface ReplaySession {
+  /** True only without an explicit Domain cookie; captured before any persistence fallback. */
+  readonly hostOnly?: boolean;
   readonly id: string;
   readonly windowId: string;
   /** Renewed by a back-forward cache restore. */
@@ -75,6 +78,10 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   kind = o.store;
   // The session this recording belongs to; the core restarts the chunk for another.
   const sid = o.session.id;
+  // Origin-local storage and Web Locks cannot bound a shared cross-subdomain session.
+  // Even Domain=currentHost includes descendant hosts. DOM replay remains available.
+  const canvas = o.cfg.capture.canvas?.enabled === true && o.cfg.privacy.level !== 'strict';
+  if (canvas && !o.session.hostOnly) o.count('canvas_cross_origin_budget_unavailable');
   const win = o.session.windowId;
   const capped = () => o.store && storage.get(o.store, CAP_KEY) === sid;
   // 2.0.0 kept a lease and a segment counter shared by tabs; per-window streams need neither.
@@ -188,6 +195,14 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
     started = true;
     recorder.start({
       record,
+      canvas: canvas && o.session.hostOnly === true ? emit => {
+        let alive = true;
+        let stop: (() => void) | undefined;
+        void loadCanvas().then(start => {
+          if (alive) stop = start({ config: o.cfg.capture.canvas, privacy: o.cfg.privacy, session: sid, store: o.store, mirror: record.mirror, now: o.now, emit, count: o.count });
+        }).catch(() => { if (alive) o.count('canvas_load_failed'); });
+        return () => { alive = false; stop?.(); };
+      } : undefined,
       privacy: replayPrivacy(o.cfg.privacy, o.mask),
       url: o.url,
       text: o.text,

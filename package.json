@@ -1,6 +1,6 @@
 {
   "name": "@siteqwality/rum",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "SiteQwality Real User Monitoring SDK",
   "main": "dist/cjs/index.cjs",
   "module": "dist/esm/index.js",
@@ -68,6 +68,7 @@
     "acorn": "^8.18.0",
     "jsdom": "^27.0.1",
     "rollup": "^4.59.0",
+    "rrweb": "2.1.4",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },

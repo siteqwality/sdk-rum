@@ -16,7 +16,7 @@ import { parse, type Node } from 'acorn';
 const LIVE_URL = process.env.SDK_BUNDLE_URL;
 const ROOT = join(__dirname, '..');
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as { version: string };
-const budgets = JSON.parse(readFileSync(join(ROOT, 'scripts/size-budgets.json'), 'utf8')) as { core: number; replay: number; gzip: number };
+const budgets = JSON.parse(readFileSync(join(ROOT, 'scripts/size-budgets.json'), 'utf8')) as { core: number; replay: number; gzip: number; canvas: number };
 
 let source = '';
 let bundlePath = '';
@@ -149,6 +149,20 @@ describe.skipIf(!!LIVE_URL)('CDN replay chunk', () => {
     const gzip = gzipSync(recorder, { level: 9 }).length;
     console.log(`recorder-${pkg.version}.min.js: ${recorder.length} B raw, ${gzip} B gzip`);
     expect(gzip).toBeLessThanOrEqual(budgets.replay);
+  });
+
+  it('keeps canvas in its own opt-in module within 6 KiB', () => {
+    const canvas = readFileSync(join(ROOT, `dist/cdn/canvas-${pkg.version}.min.js`), 'utf8');
+    const recorder = readFileSync(join(ROOT, `dist/cdn/recorder-${pkg.version}.min.js`), 'utf8');
+    expect(gzipSync(canvas, { level: 9 }).length).toBeLessThanOrEqual(budgets.canvas);
+    expect(canvas).toContain('image/webp');
+    expect(canvas).toContain('sq-canvas-cap');
+    expect(recorder).not.toContain('image/webp');
+    expect(source).not.toContain('image/webp');
+    expect(recorder).toContain('canvas-${');
+    const npmReplay = readFileSync(join(ROOT, 'dist/esm/replay.js'), 'utf8');
+    expect(npmReplay).toContain("import('./canvas.js')");
+    expect(npmReplay).not.toContain('image/webp');
   });
 
   it('sends segments v2 and imports the gzip fallback beside itself, never bundled', () => {

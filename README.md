@@ -43,12 +43,14 @@ page errors raised between the script load and a late `init()` (say, after conse
 | Path | Contents | Cache |
 |---|---|---|
 | `rum/v2/sdk.min.js` | Latest 2.x | 1 day |
-| `rum/v2.1.0/sdk.min.js` | This release, immutable; pin it with Subresource Integrity | 1 year |
+| `rum/v2.2.0/sdk.min.js` | Candidate immutable path, not published; pin releases with Subresource Integrity | 1 year |
 | `recorder-<version>.min.js` | The replay chunk, beside the core it belongs to | as its folder |
+| `canvas-<version>.min.js` | Opt-in canvas capture, beside the replay chunk | as its folder |
 | `gzip-<version>.min.js` | gzip for browsers without `CompressionStream` (Safari before 16.4), beside the replay chunk | as its folder |
 
 `rum/v1/` stays on 1.x. The replay chunk is fetched from beside the core, and the gzip fallback
-from beside the replay chunk; set `recorderUrl` to self-host them (keep both files together).
+and canvas module from beside the replay chunk; set `recorderUrl` to self-host them (keep all
+three lazy files together).
 
 ## Content Security Policy
 
@@ -60,8 +62,8 @@ connect-src https://in.siteqwality.com https://in-replay.siteqwality.com https:/
 `in.siteqwality.com` takes events, `in-replay.siteqwality.com` replay segments (2.0 used
 `replay.siteqwality.com`), and the CDN serves the script, the replay chunk and the application's
 config (fetched with `fetch`, hence `connect-src`). To proxy through your own domain, set
-`ingestBase`, `replayBase` and `configBase`; a replay proxy forwards `POST /v2/segments` with its
-query string.
+`ingestBase`, `replayBase` and `configBase`; a replay proxy forwards the fixed `POST /v2/segments`
+URL with its `Authorization`, `Content-Type` and `x-sq-replay-index` headers.
 
 ## Options
 
@@ -71,7 +73,7 @@ query string.
 | `service`, `env`, `version` | none | Sent with every batch; `version` selects source maps |
 | `trackingConsent` | `'granted'`, or `'pending'` when the app requires consent | See Consent |
 | `persistence` | `'cookie'` | `'localStorage'` or `'memory'` (one page load, nothing stored) |
-| `cookieDomain` | the page's host | Share the session across subdomains, e.g. `'example.com'` |
+| `cookieDomain` | host-only cookie | Share the session across subdomains, e.g. `'example.com'`; any nonempty value disables canvas capture |
 | `hashRouting` | `false` | One page view per `#/route` |
 | `routeName(path)` | none | Route name for a path, e.g. `'/users/:id'` |
 | `allowedQueryParams`, `deniedQueryParams` | none | See URL minimisation |
@@ -138,6 +140,7 @@ through a first-party cookie; each tab has its own window id.
 | `_sq_cfg_<app>` | `localStorage` | Cached config |
 | `_sq_bgt`, `_sq_bgr` | as the session | Request budget counters (core, replay) |
 | `_sq_rcap` | as the session | Session id whose replay reached the backend cap; removed on consent withdrawal |
+| `_sq_cb` | as the session | Canvas byte counters and cap flags keyed by session; removed on consent withdrawal |
 | `_sq_optout` | `localStorage` | Opt-out |
 
 2.1 no longer uses 2.0's `_sq_rseq` and `_sq_rl` and removes them when replay starts.
@@ -233,7 +236,7 @@ applies the same rules server-side.
 - **Stylesheets** are inlined so the player needs nothing from your site; a checkout names a
   stylesheet over 1 KB that already reached SiteQwality (`sq-css:<hash>`, FNV-1a 64) instead of
   sending it again. URLs inside stylesheets and `style` attributes are minimised like any other.
-  Images, fonts and canvas are never inlined.
+  Images, fonts and canvas are never inlined into snapshots.
 - **Segments** are gzipped and close at 20 s or about 2.5 MB, at a page's first snapshot (sent at
   once, so a short page view still plays), and when the tab hides. After a pause, the snapshot's
   segment goes once it is past 60 KB, so a tab closed right after it came back loses nothing. A full snapshot every 3 minutes,
@@ -257,6 +260,40 @@ applies the same rules server-side.
 
 A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
 watched it sends at most three segments a minute.
+
+### Opt-in canvas (2.2 candidate)
+
+Canvas is disabled by default. Application config may opt in with
+`capture.canvas: { enabled: true, selectors: [], fps: 2, quality: 0.4 }`.
+An empty selector list selects all canvases in the recorded document, including mirrored shadow
+DOM. Block selectors and blocked ancestors always win. Strict privacy disables canvas even if
+enabled. Invalid selectors fail closed. The sampler follows replay consent, GPC, never-record
+URLs, visibility, idle and session boundaries. Canvas configuration changes restart capture from
+a fresh snapshot.
+
+The separate `canvas-2.2.0.min.js` chunk loads only for opted-in non-Strict recording without a
+nonempty explicit `cookieDomain`. It samples
+visible canvases at at most 2 fps, resizes to a maximum side of 1,280 pixels and encodes WebP at
+quality at most 0.4. Off-screen, hidden, zero-size, tainted and unsupported canvases emit no pixels.
+It reads 2D/WebGL output without patching drawing commands or clearing the application's context.
+
+Canvas stops after reserving at most 20,000,000 serialized frame-event bytes per session, before gzip,
+including frames held in the error ring. DOM replay continues. Shared-storage reservations use
+Web Locks across same-origin tabs and survive reloads; without locks or usable storage, that
+canvas capture fails closed. Memory persistence shares a counter within the page only. Different
+origins cannot share this client-side counter. Any nonempty explicit `cookieDomain` therefore
+disables canvas before its module loads and reports `canvas_cross_origin_budget_unavailable` in
+the drop counters. This includes a domain equal to the current hostname, rejected domain cookies,
+and memory persistence with that option. DOM replay and Observe/Analyze continue. An omitted or
+empty `cookieDomain` keeps the default host-only behavior. Supporting canvas for shared
+cross-subdomain sessions requires an authoritative server budget grant before capture, including
+bytes held in the error ring. The current client guard does not claim a global server-enforced cap.
+
+Frames use native rrweb type 3/source 9 bitmap commands; `sq-canvas-ref` links an element across
+checkouts and the cap emits custom tag `sq-canvas-cap`.
+See [the player contract](docs/plans/2026-10-04-canvas-opt-in.md). This candidate must remain
+unpublished until player and deployed compactor/API release gates are confirmed. Player PR135
+provides local playback, seeking and last-frame retention proof; production integration is separate.
 
 ## Web Vitals
 
@@ -304,9 +341,10 @@ dropped.
 
 | File | gzip | Budget |
 |---|---|---|
-| Core `sdk.min.js` | 25.9 KB | 26 KB (CI gate) |
-| Replay chunk `recorder-2.1.0.min.js` | 28.6 KB | 30 KB (CI gate) |
-| gzip fallback `gzip-2.1.0.min.js` | 3.3 KB | 9 KB (CI gate) |
+| Core `sdk.min.js` | 26.0 KB | 26 KB (CI gate) |
+| Replay chunk `recorder-2.2.0.min.js` | 29.4 KB | 30 KB (CI gate) |
+| Canvas chunk `canvas-2.2.0.min.js` | 2.0 KB | 6 KB (CI gate) |
+| gzip fallback `gzip-2.2.0.min.js` | 3.3 KB | 9 KB (CI gate) |
 
 The design estimated 18 KB for the core, leaving out stack parsing and grouping, resource timing and
 the URL minimiser; 26 KB is the accepted 2.0 budget, and CI fails a build past it. Pages that never
@@ -342,6 +380,8 @@ SDK sends; see its README.
 
 ## Changelog
 
+- 2.2.0 (unpublished candidate): opt-in canvas frames with bounded WebP encoding, privacy and
+  lifecycle checks, lazy loading, and a session byte cap. Requires the WP7.2 player integration.
 - 2.1.0: replay chunk v2. Segments v2 to `POST /v2/segments` on `in-replay.siteqwality.com` (gzip,
   window and page load ids, a sequence per page load); every tab records its own window (the 2.0
   one-tab lease is gone); a replay ring from page load, so error replays start 60 to 120 s before
@@ -371,8 +411,8 @@ walk this list before any `npm publish`:
 3. `npm pack --dry-run`: only `dist/esm`, `dist/cjs`, `dist/types`, `README.md`, `LICENSE`,
    `package.json`.
 4. Confirm prod serves what 2.x calls: `POST /v2/batch` and `/v2/identity` on `in.siteqwality.com`,
-   `POST /v2/segments` on `in-replay.siteqwality.com` (2.1; its CORS allows `authorization` and
-   `content-type`), and config at
+   `POST /v2/segments` on `in-replay.siteqwality.com` (2.1; its CORS allows `authorization`,
+   `content-type` and `x-sq-replay-index`), and config at
    `https://cdn.siteqwality.com/rum/config/v2/<app>.json` for live applications.
 5. `npm publish` (scoped, public). Requires `@siteqwality` org membership.
 6. `make deploy` uploads `dist/cdn` to `rum/v<version>/` (immutable; refuses to overwrite) and

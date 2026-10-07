@@ -8,6 +8,7 @@ import alias from '@rollup/plugin-alias';
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
 const cdnReplayLoader = fileURLToPath(new URL('./src/replay/load-record.cdn.ts', import.meta.url));
+const cdnCanvasLoader = fileURLToPath(new URL('./src/replay/canvas-load.cdn.ts', import.meta.url));
 const cdnGzipLoader = fileURLToPath(new URL('./src/replay/gzip-load.cdn.ts', import.meta.url));
 
 // npm: rrweb and fflate are dependencies; the replay chunk and the gzip fallback stay separate
@@ -19,7 +20,7 @@ const npm = (format, dir, ext) => ({
     format,
     entryFileNames: `index.${ext}`,
     chunkFileNames: `[name].${ext}`,
-    manualChunks: (id) => (/\/src\/replay\/gzip-fallback/.test(id) ? 'gzip' : /\/src\/replay\/(?!load-record)/.test(id) ? 'replay' : 'core'),
+    manualChunks: (id) => (/\/src\/replay\/canvas(?:-budget)?\.ts$/.test(id) ? 'canvas' : /\/src\/replay\/gzip-fallback/.test(id) ? 'gzip' : /\/src\/replay\/(?!load-record)/.test(id) ? 'replay' : 'core'),
     sourcemap: true,
   },
   external: ['@rrweb/record', 'fflate'],
@@ -54,7 +55,12 @@ export default [
   {
     input: 'src/replay/chunk.ts',
     output: { file: `dist/cdn/recorder-${version}.min.js`, format: 'es', sourcemap: true },
-    plugins: cdnPlugins([alias({ entries: [{ find: /^\.\/gzip-load$/, replacement: cdnGzipLoader }] })]),
+    plugins: cdnPlugins([alias({ entries: [{ find: /^\.\/gzip-load$/, replacement: cdnGzipLoader }, { find: /^\.\/canvas-load$/, replacement: cdnCanvasLoader }] })]),
+  },
+  {
+    input: 'src/replay/canvas.ts',
+    output: { file: `dist/cdn/canvas-${version}.min.js`, format: 'es', sourcemap: true },
+    plugins: cdnPlugins(),
   },
   // CDN gzip fallback (fflate), fetched only where CompressionStream is missing.
   {

@@ -124,6 +124,23 @@ function visibility(state: 'hidden' | 'visible') {
 
 // jsdom snapshots and real gzip are slow on shared CI runners.
 describe('startReplay', { timeout: 30_000 }, () => {
+  it('reports a canvas-only refusal for a shared-domain session and still sends DOM mutations', async () => {
+    start({ session: { hostOnly: false, id: SID, windowId: 'w-1', pageLoadId: pageLoad, decision }, cfg: normalizeConfig({ capture: { canvas: { enabled: true } } }, 'a') });
+    await mutate('DOM after canvas refusal');
+    visibility('hidden');
+    await until(() => JSON.stringify(sent).includes('DOM after canvas refusal'));
+    expect(JSON.stringify(sent)).toContain('DOM after canvas refusal');
+    expect(counts.filter(c => c === 'canvas_cross_origin_budget_unavailable')).toHaveLength(1);
+    expect(states).toEqual(['recording', 'hidden']);
+    expect(localStorage.getItem('_sq_cb')).toBeNull();
+  });
+
+  it.each([{}, { capture: { canvas: { enabled: true } }, privacy: { level: 'strict' } }])('does not report a domain refusal when canvas is already disabled', cfg => {
+    start({ session: { hostOnly: false, id: SID, windowId: 'w-1', pageLoadId: pageLoad, decision }, cfg: normalizeConfig(cfg, 'a') });
+    expect(states).toEqual(['recording']);
+    expect(counts).not.toContain('canvas_cross_origin_budget_unavailable');
+  });
+
   it('streams this window\'s page load as segments v2: q from 0, the rule, the version', async () => {
     start();
     await mutate('one');
@@ -208,7 +225,7 @@ describe('startReplay', { timeout: 30_000 }, () => {
     expect(JSON.stringify(tail.events)).toContain('last words');
   });
 
-  it('a tab closed right after it came back still delivers what it recorded since', async () => {
+  it('a tab closed after its resumed snapshot delivers its open unload tail', async () => {
     document.body.innerHTML = `<p id="p">hello</p>${Array.from({ length: 800 }, (_, i) => `<div class="row">row ${i} ${'x'.repeat(40)}</div>`).join('')}`;
     start();
     await run(100);
@@ -216,6 +233,9 @@ describe('startReplay', { timeout: 30_000 }, () => {
     await run(100);
     visibility('visible');
     await run(5_000);
+    // Five seconds on the fake clock need not let real gzip finish on a busy runner.
+    await until(() => sent.some((s) => Number(s.q.q) >= 2 && s.q.fs === '1'));
+    expect(sent.some((s) => Number(s.q.q) >= 2 && s.q.fs === '1'), 'the resumed snapshot is delivered while visible').toBe(true);
     await mutate('after coming back');
     // Closing a tab: hidden, then pagehide, in one task (gzip cannot finish in between).
     visibility('hidden');
@@ -223,7 +243,7 @@ describe('startReplay', { timeout: 30_000 }, () => {
     await run(200);
     await until(() => JSON.stringify(sent.flatMap((s) => s.events)).includes('after coming back'));
     const back = sent.filter((s) => Number(s.q.q) >= 2);
-    expect(back.some((s) => s.q.fs === '1'), 'the snapshot taken on coming back').toBe(true);
+    expect(back.some((s) => s.q.fs === '1'), `the snapshot taken on coming back: ${JSON.stringify({ sent: sent.map(s => ({ q: s.q.q, fs: s.q.fs, types: s.events.map(e => e.type) })), states, counts })}`).toBe(true);
     expect(JSON.stringify(back.flatMap((s) => s.events))).toContain('after coming back');
     expect(counts).not.toContain('replay_tail_dropped');
   });

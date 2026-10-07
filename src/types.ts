@@ -26,7 +26,7 @@ export interface InitOptions {
   trackingConsent?: Consent;
   /** Where the session lives. Default 'cookie' (shared by tabs). */
   persistence?: 'cookie' | 'localStorage' | 'memory';
-  /** Shares the session cookie across subdomains, e.g. 'example.com'. */
+  /** Shares the session cookie across subdomains, e.g. 'example.com'. Nonempty values disable canvas capture because its byte budget is origin-local. DOM replay continues. */
   cookieDomain?: string;
   /** One view per `#/route`. Default false. */
   hashRouting?: boolean;
@@ -116,6 +116,8 @@ export interface SdkConfig {
     capture_user_email: boolean;
   };
   capture: {
+    /** Deferred validation in the opt-in canvas chunk. Null means disabled. */
+    canvas: { enabled?: boolean; selectors?: string[]; fps?: number; quality?: number } | null;
     resource_exclusions: string[];
     network: { header_allowlist: string[]; body_urls: string[]; trace_urls: string[]; max_body_bytes: number };
     console: string[];
