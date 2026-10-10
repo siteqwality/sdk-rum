@@ -1,7 +1,6 @@
-// Two tabs on two subdomains share one session through cookieDomain. From 2.1 each records its
-// own window, as same-origin tabs do; nothing about replay is shared through the cookie.
-import { test, expect, knownGap } from './lib/session.js';
-import { SDK } from './lib/env.js';
+// Two tabs on two subdomains share one session through cookieDomain. Each records its own
+// window, as same-origin tabs do; nothing about replay is shared through the cookie.
+import { test, expect } from './lib/session.js';
 import { PORTS } from '../server/origins.js';
 import { streams, expectPlayable, originsOf } from './lib/streams.js';
 
@@ -44,7 +43,6 @@ test('a canvas opt-in cannot multiply its allowance across a shared-domain sessi
 });
 
 test('tabs on two subdomains of one session each record their own window', async ({ sq }) => {
-  knownGap(!SDK.replayV2, 'before 2.1 one tab records a shared session at a time, through a lease cookie');
   test.skip(test.info().project.name !== 'chromium', 'only Chromium maps *.sq.test to the fixture');
   test.setTimeout(60_000);
   const s = await sq.start({ spec: { capture: 'replay' }, fixture: { init: { cookieDomain: 'sq.test' } } });

@@ -1,13 +1,9 @@
-// One view over what the SDK sent, whatever its wire format: 1.x (/v1/measure, /v1/events,
-// /v1/errors, /v1/segments) or 2.0 (/v2/batch, /v2/segments, design doc 6.3 and 6.4).
+// One view over what the SDK sent: /v2/batch and /v2/segments (design doc 6.3 and 6.4).
 
 export const RRWEB = { FULL_SNAPSHOT: 2, INCREMENTAL: 3, META: 4, CUSTOM: 5 };
 export const RRWEB_SOURCE = { MUTATION: 0, MOUSE_MOVE: 1, INPUT: 5, CANVAS_MUTATION: 9 };
 
-const SDK_KINDS = new Set([
-  'config_v1', 'measure_v1', 'events_v1', 'errors_v1', 'segment_v1',
-  'config_v2', 'batch_v2', 'segment_v2', 'identity_v2', 'unauthorized', 'oversized', 'unknown',
-]);
+const SDK_KINDS = new Set(['config_v2', 'batch_v2', 'segment_v2', 'identity_v2', 'unauthorized', 'oversized', 'unknown']);
 
 export class Captures {
   constructor(records) {
@@ -36,11 +32,7 @@ export class Captures {
     return this.requests.filter((r) => !r.fault && (r.status < 200 || r.status >= 300));
   }
 
-  items(kind) {
-    return this.records.filter((r) => r.kind === kind && Array.isArray(r.json)).flatMap((r) => r.json);
-  }
-
-  // 2.0 batch events of kind k, each with the batch ctx attached.
+  // Batch events of kind k, each with the batch ctx attached.
   batch(k) {
     return this.records
       .filter((r) => r.kind === 'batch_v2' && r.json?.events)
@@ -48,49 +40,33 @@ export class Captures {
   }
 
   get views() {
-    return [
-      ...this.items('measure_v1').filter((m) => m.type === 'view').map((m) => ({ url: m.url, sessionId: m.session_id, viewId: m.view_id, t: m.timestamp })),
-      ...this.batch('view_start').map((e) => ({ url: e.url, route: e.route, sessionId: e.ctx.session_id, viewId: e.view_id, t: e.t })),
-    ];
+    return this.batch('view_start').map((e) => ({ url: e.url, route: e.route, sessionId: e.ctx.session_id, viewId: e.view_id, t: e.t }));
   }
 
   get vitals() {
-    const pick = (m) => ({ lcp: m.lcp_ms, fcp: m.fcp_ms, cls: m.cls, inp: m.inp_ms, ttfb: m.ttfb_ms });
-    return [
-      ...this.items('measure_v1').filter((m) => m.type === 'vital').map(pick),
-      ...this.batch('view_end').map(pick),
-    ];
+    return this.batch('view_end').map((m) => ({ lcp: m.lcp_ms, fcp: m.fcp_ms, cls: m.cls, inp: m.inp_ms, ttfb: m.ttfb_ms }));
   }
 
   get errors() {
-    return [
-      ...this.items('errors_v1').map((e) => ({
-        message: e.error_message, stack: e.error_stack, handling: e.error_source, sessionId: e.session_id, url: e.url, repeat: 1, raw: e,
-      })),
-      ...this.batch('error').map((e) => ({
-        message: e.message, stack: e.stack, handling: e.handling, type: e.error_type, sessionId: e.ctx.session_id, url: e.url ?? null,
-        repeat: e.repeat ?? 1, cause: e.cause, raw: e,
-      })),
-    ];
+    return this.batch('error').map((e) => ({
+      message: e.message, stack: e.stack, handling: e.handling, type: e.error_type, sessionId: e.ctx.session_id, url: e.url ?? null,
+      repeat: e.repeat ?? 1, cause: e.cause, raw: e,
+    }));
   }
 
   get actions() {
     return [
-      ...this.items('events_v1').filter((e) => e.type === 'action').map((e) => ({ type: e.action_type, name: e.action_target, frustration: e.frustration })),
       ...this.batch('action').map((e) => ({ type: e.action_type, name: e.name, selector: e.selector, frustration: e.frustration })),
       ...this.batch('custom').map((e) => ({ type: 'custom', name: e.name })),
     ];
   }
 
-  // Subresources plus fetch and XHR. 1.x reports both through resource timing.
+  // Subresources from resource timing; fetch and XHR are network rows.
   get resources() {
-    return [
-      ...this.items('events_v1').filter((e) => e.type === 'resource').map((e) => ({ url: e.resource_url, initiator: e.resource_type, durationMs: e.duration_ms })),
-      ...this.batch('resource').map((e) => ({ url: e.url, initiator: e.initiator, durationMs: e.duration_ms, n: e.n })),
-    ];
+    return this.batch('resource').map((e) => ({ url: e.url, initiator: e.initiator, durationMs: e.duration_ms, n: e.n }));
   }
 
-  // fetch and XHR calls with status, where the SDK records them (2.0 network events).
+  // fetch and XHR calls with status.
   get network() {
     return this.batch('network').map((e) => ({
       url: e.url, method: e.method, status: e.status, errorKind: e.error_kind, initiator: e.initiator, n: e.n ?? 1, traceId: e.trace_id,
@@ -102,13 +78,11 @@ export class Captures {
   }
 
   get longTasks() {
-    return [...this.items('events_v1').filter((e) => e.type === 'long_task'), ...this.batch('long_frame')];
+    return this.batch('long_frame');
   }
 
   get sessionIds() {
     return new Set([
-      ...this.items('measure_v1').map((m) => m.session_id),
-      ...this.items('errors_v1').map((m) => m.session_id),
       ...this.records.filter((r) => r.kind === 'batch_v2').map((r) => r.json?.ctx?.session_id),
       ...this.segments.map((s) => s.sessionId),
     ].filter(Boolean));
@@ -116,7 +90,7 @@ export class Captures {
 
   get segments() {
     return this.records
-      .filter((r) => (r.kind === 'segment_v1' || r.kind === 'segment_v2') && r.segment)
+      .filter((r) => r.kind === 'segment_v2' && r.segment)
       .map((r) => ({
         ...r.segment,
         at: r.at,
@@ -125,7 +99,7 @@ export class Captures {
         bodyBytes: r.bodyBytes,
         gzipBytes: r.gzipBytes,
         encoding: r.encoding,
-        events: r.kind === 'segment_v1' ? r.json.events : r.json,
+        events: r.json,
       }));
   }
 

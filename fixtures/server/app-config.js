@@ -1,5 +1,5 @@
-// The config the mock serves, as 1.x (GET /v1/config) and 2.0 (design 6.2) shapes, from one spec:
-// { capture: none|analyze|replay|replay_on_error, level: strict|balanced|relaxed, v1?, v2? overrides }.
+// The config v2 the mock serves (design 6.2), from one spec:
+// { capture: none|analyze|replay|replay_on_error, level: strict|balanced|relaxed, v2? overrides }.
 
 export const DEFAULT_SPEC = { capture: 'none', level: 'balanced' };
 
@@ -10,25 +10,6 @@ export function merge(base, extra) {
   const out = { ...base };
   for (const [k, v] of Object.entries(extra)) out[k] = isObject(v) && isObject(base[k]) ? merge(base[k], v) : v;
   return out;
-}
-
-export function v1Config(applicationId, spec) {
-  const filters = [];
-  if (spec.capture === 'replay') filters.push({ filter_type: 'custom', conditions: {}, capture_replay: true });
-  if (spec.capture === 'replay_on_error') filters.push({ filter_type: 'error', conditions: {}, capture_replay: true });
-  if (spec.capture === 'analyze') filters.push({ filter_type: 'custom', conditions: {}, capture_replay: false });
-  const strict = spec.level === 'strict';
-  return merge(
-    {
-      application_id: applicationId,
-      filters,
-      settings: {
-        privacy: { mask_inputs: true, mask_text: strict, hide_action_text: strict },
-        resource_exclusions: [],
-      },
-    },
-    spec.v1,
-  );
 }
 
 export function v2Config(applicationId, spec) {

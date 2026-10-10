@@ -14,7 +14,7 @@ export default defineConfig({
   fullyParallel: false,
   timeout: 180_000,
   expect: { timeout: 10_000 },
-  reporter: [['list'], ['./e2e/lib/gap-reporter.js'], ['html', { open: 'never' }], ['json', { outputFile: 'test-results/results.json' }]],
+  reporter: [['list'], ['html', { open: 'never' }], ['json', { outputFile: 'test-results/results.json' }]],
   use: {
     trace: 'retain-on-failure',
     // Every host but the fixture's fails to resolve, so nothing can reach production. *.sq.test
