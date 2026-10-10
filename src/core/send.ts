@@ -1,5 +1,5 @@
-// One POST to the intake and what became of it. Retry rules are those of 1.x: 429, 408, 5xx
-// and network errors retry with backoff; 401 and 403 stop; any other 4xx drops the body.
+// One POST to the intake and what became of it: 429, 408, 5xx and network errors retry with
+// backoff; 401 and 403 stop; any other 4xx drops the body.
 
 import { now } from './util';
 import { BUDGET } from './budget';

@@ -22,20 +22,20 @@ afterEach(() => {
 describe('sendJson outcome', () => {
   it.each([200, 202, 204])('reports %i as ok', async (status) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(status)));
-    await expect(sendJson('https://rum.example.com/v1/events', 't', '[]')).resolves.toEqual({
+    await expect(sendJson('https://in.example.com/v2/batch', 't', '[]')).resolves.toEqual({
       kind: 'ok',
     });
   });
 
   it.each([429, 408, 500, 502, 503, 504])('reports %i as retryable', async (status) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(status)));
-    const outcome = await sendJson('https://rum.example.com/v1/events', 't', '[]');
+    const outcome = await sendJson('https://in.example.com/v2/batch', 't', '[]');
     expect(outcome.kind).toBe('retryable');
   });
 
   it.each([400, 401, 403, 404, 413])('reports %i as permanent', async (status) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(status)));
-    await expect(sendJson('https://rum.example.com/v1/events', 't', '[]')).resolves.toEqual({
+    await expect(sendJson('https://in.example.com/v2/batch', 't', '[]')).resolves.toEqual({
       kind: 'permanent',
       status,
     });
@@ -45,7 +45,7 @@ describe('sendJson outcome', () => {
     // Includes an API Gateway error response without CORS headers, which the
     // browser surfaces as a TypeError rather than as its status.
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
-    await expect(sendJson('https://rum.example.com/v1/events', 't', '[]')).resolves.toEqual({
+    await expect(sendJson('https://in.example.com/v2/batch', 't', '[]')).resolves.toEqual({
       kind: 'retryable',
     });
   });
@@ -54,7 +54,7 @@ describe('sendJson outcome', () => {
     vi.stubGlobal('fetch', () => {
       throw new TypeError('fetch is not a function');
     });
-    await expect(sendJson('https://rum.example.com/v1/events', 't', '[]')).resolves.toEqual({
+    await expect(sendJson('https://in.example.com/v2/batch', 't', '[]')).resolves.toEqual({
       kind: 'retryable',
     });
   });
@@ -64,7 +64,7 @@ describe('sendJson outcome', () => {
       'fetch',
       vi.fn().mockResolvedValue(response(429, { 'Retry-After': '7' })),
     );
-    await expect(sendJson('https://rum.example.com/v1/events', 't', '[]')).resolves.toEqual({
+    await expect(sendJson('https://in.example.com/v2/batch', 't', '[]')).resolves.toEqual({
       kind: 'retryable',
       retryAfterMs: 7000,
     });

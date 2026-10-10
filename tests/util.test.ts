@@ -1,4 +1,4 @@
-// cut and the v4 ids, restored from 1.x.
+// cut and the v4 ids.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { cut } from '../src/core/util';
 import { uuid, fnv1a32 } from '../src/core/hash';
