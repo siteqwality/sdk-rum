@@ -43,7 +43,7 @@ page errors raised between the script load and a late `init()` (say, after conse
 | Path | Contents | Cache |
 |---|---|---|
 | `rum/v2/sdk.min.js` | Latest 2.x | 1 day |
-| `rum/v2.2.0/sdk.min.js` | Candidate immutable path, not published; pin releases with Subresource Integrity | 1 year |
+| `rum/v2.2.0/sdk.min.js` | Published immutable SDK 2.2.0; pin releases with Subresource Integrity | 1 year |
 | `recorder-<version>.min.js` | The replay chunk, beside the core it belongs to | as its folder |
 | `canvas-<version>.min.js` | Opt-in canvas capture, beside the replay chunk | as its folder |
 | `gzip-<version>.min.js` | gzip for browsers without `CompressionStream` (Safari before 16.4), beside the replay chunk | as its folder |
@@ -247,7 +247,7 @@ applies the same rules server-side.
   use one URLSearchParams-encoded `x-sq-replay-index` header (at most 2,048 bytes), so sends reuse the CORS
   preflight cache. The client token stays in `Authorization`; it is never put in the URL.
   Proxies must allow `authorization`, `content-type`, and `x-sq-replay-index` and return
-  `Access-Control-Max-Age` on OPTIONS. Deploy that backend support before SDK 2.1.
+  `Access-Control-Max-Age` on OPTIONS. The hosted replay v2 intake supports these headers.
 - **Replay refusal**: `403 {"reason":"not_enabled"}` falls back to Observe/Analyze-only operation
   with recording stopped and reason `not_enabled` for this page load. It never retries against v1.
   Other 401/403 responses, including empty, unknown or malformed 403 bodies, stop replay with
@@ -261,7 +261,7 @@ applies the same rules server-side.
 A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
 watched it sends at most three segments a minute.
 
-### Opt-in canvas (2.2 candidate)
+### Opt-in canvas (2.2)
 
 Canvas is disabled by default. Application config may opt in with
 `capture.canvas: { enabled: true, selectors: [], fps: 2, quality: 0.4 }`.
@@ -291,9 +291,10 @@ bytes held in the error ring. The current client guard does not claim a global s
 
 Frames use native rrweb type 3/source 9 bitmap commands; `sq-canvas-ref` links an element across
 checkouts and the cap emits custom tag `sq-canvas-cap`.
-See [the player contract](docs/plans/2026-10-04-canvas-opt-in.md). This candidate must remain
-unpublished until player and deployed compactor/API release gates are confirmed. Player PR135
-provides local playback, seeking and last-frame retention proof; production integration is separate.
+SDK 2.2.0 is published on npm and the CDN. The hosted intake, compactor and player support
+canvas playback, seeking and last-frame retention after the cap. Replay v2 is enabled for all
+applications; canvas still requires explicit opt-in and the privacy conditions above.
+See [the player contract](docs/plans/2026-10-04-canvas-opt-in.md).
 
 ## Web Vitals
 
@@ -380,7 +381,7 @@ SDK sends; see its README.
 
 ## Changelog
 
-- 2.2.0 (unpublished candidate): opt-in canvas frames with bounded WebP encoding, privacy and
+- 2.2.0: opt-in canvas frames with bounded WebP encoding, privacy and
   lifecycle checks, lazy loading, and a session byte cap. Requires the WP7.2 player integration.
 - 2.1.0: replay chunk v2. Segments v2 to `POST /v2/segments` on `in-replay.siteqwality.com` (gzip,
   window and page load ids, a sequence per page load); every tab records its own window (the 2.0
