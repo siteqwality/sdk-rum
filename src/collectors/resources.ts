@@ -140,7 +140,7 @@ export type UrlMatcher = (url: string | UrlPrefix) => boolean;
  * normalised by the URL parser, so case and default ports do not matter) and a
  * path equal to the base's path or below it at a segment boundary. A base with
  * a path, such as a same-origin proxy at `https://example.com/rum`, matches
- * `/rum` and `/rum/v1/events` but not `/rumble`. A relative base resolves
+ * `/rum` and `/rum/v2/batch` but not `/rumble`. A relative base resolves
  * against the page, as `fetch` resolves it. A base that does not parse is
  * ignored.
  */

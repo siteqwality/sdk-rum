@@ -1,6 +1,6 @@
 // Run before every publish: load the built package the way consumers do, both
-// ways, and fail if either entry point exports nothing. 1.0.0 shipped a
-// CommonJS build that Node loaded as an ES module, so require() returned {}.
+// ways, and fail if either entry point exports nothing. An early release shipped
+// a CommonJS build that Node loaded as an ES module, so require() returned {}.
 const assert = require('node:assert');
 const path = require('node:path');
 

@@ -4,13 +4,13 @@ import { test, expect } from './lib/session.js';
 import { SDK } from './lib/env.js';
 import { site } from './lib/mock.js';
 import { Ledger } from './lib/ledger.js';
-import { CANARIES, PROOF, GAP_REASONS, expectation, findCanary } from './lib/canaries.js';
+import { CANARIES, PROOF, expectation, findCanary } from './lib/canaries.js';
 import { ORIGINS } from '../server/origins.js';
 
 const v = (id) => CANARIES[id].value;
 
-// capture 'replay' streams from page load; 'replay_on_error' (2.1) buffers in memory until the
-// page's first error, then sends the ring.
+// capture 'replay' streams from page load; 'replay_on_error' buffers in memory until the page's
+// first error, then sends the ring.
 async function plantedSession(sq, level, capture = 'replay') {
   const s = await sq.start({ spec: { capture, level } });
   await site.requests({ clear: true });
@@ -54,14 +54,13 @@ async function plantedSession(sq, level, capture = 'replay') {
 for (const [level, capture] of ['strict', 'balanced', 'relaxed'].flatMap((l) => [[l, 'replay'], [l, 'replay_on_error']])) {
   const buffered = capture === 'replay_on_error';
   test(`canaries at the ${level} level${buffered ? ', buffered until an error' : ''}`, async ({ sq }, testInfo) => {
-    test.skip(buffered && !SDK.replayV2, 'the replay ring arrives with 2.1');
     const { s, captures, app } = await plantedSession(sq, level, capture);
     s.expectHealthy(captures);
 
     const ledger = new Ledger(`Privacy canaries, ${level}${buffered ? ', buffered' : ''}, SDK ${SDK.version}`);
     for (const [id, { value, guard, where }] of Object.entries(CANARIES)) {
       const hits = findCanary(captures, value);
-      const want = expectation(guard, SDK, level);
+      const want = expectation(guard, level);
       const proof = PROOF[id](captures, app, level);
       const seen = hits.length ? `found in ${hits.map((h) => h.kind).join(', ')}: ...${hits[0].context}...` : 'not found';
       if (proof !== true) {
@@ -69,7 +68,7 @@ for (const [level, capture] of ['strict', 'balanced', 'relaxed'].flatMap((l) => 
       } else if (want === 'allowed') {
         ledger.check(id, true, { info: true, detail: `${seen} (allowed at ${level})` });
       } else {
-        ledger.check(id, hits.length === 0, { gap: want === 'gap', detail: seen, why: want === 'gap' ? GAP_REASONS[guard] : where });
+        ledger.check(id, hits.length === 0, { detail: seen, why: where });
       }
     }
     ledger.print(testInfo);

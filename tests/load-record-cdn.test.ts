@@ -15,8 +15,8 @@ describe('recorderUrlFor', () => {
   const file = `recorder-${VERSION}.min.js`;
 
   it('sits beside the core script', () => {
-    expect(recorderUrlFor(undefined, 'https://cdn.siteqwality.com/rum/v1/sdk.min.js')).toBe(
-      `https://cdn.siteqwality.com/rum/v1/${file}`,
+    expect(recorderUrlFor(undefined, 'https://cdn.siteqwality.com/rum/v2/sdk.min.js')).toBe(
+      `https://cdn.siteqwality.com/rum/v2/${file}`,
     );
     expect(recorderUrlFor(undefined, `https://cdn.siteqwality.com/rum/v${VERSION}/sdk.min.js?x=1`)).toBe(
       `https://cdn.siteqwality.com/rum/v${VERSION}/${file}`,
@@ -33,7 +33,7 @@ describe('recorderUrlFor', () => {
   });
 
   it('uses recorderUrl when set, resolved against the page', () => {
-    expect(recorderUrlFor('https://static.customer.example/rec.js', 'https://cdn.siteqwality.com/rum/v1/sdk.min.js')).toBe(
+    expect(recorderUrlFor('https://static.customer.example/rec.js', 'https://cdn.siteqwality.com/rum/v2/sdk.min.js')).toBe(
       'https://static.customer.example/rec.js',
     );
     expect(recorderUrlFor('/vendor/rec.js')).toBe('http://localhost:3000/vendor/rec.js');

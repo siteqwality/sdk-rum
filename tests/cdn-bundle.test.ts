@@ -124,13 +124,11 @@ describe('CDN core contents', () => {
     expect(gzip).toBeLessThanOrEqual(budgets.core);
   });
 
-  it('names the v2 CDN path and the v2 ingest endpoint, and no v1 intake route', () => {
+  it('names the v2 CDN path and the v2 ingest and replay hosts', () => {
     expect(source).toContain('https://cdn.siteqwality.com/rum/v2/');
     expect(source).toContain('https://in.siteqwality.com');
     expect(source).toContain('https://in-replay.siteqwality.com');
     expect(source).toContain('/v2/batch');
-    expect(source).not.toContain('rum.siteqwality.com');
-    expect(source).not.toMatch(/\/v1\/(measure|events|errors|config)/);
   });
 });
 
@@ -168,7 +166,6 @@ describe.skipIf(!!LIVE_URL)('CDN replay chunk', () => {
   it('sends segments v2 and imports the gzip fallback beside itself, never bundled', () => {
     const recorder = readFileSync(join(ROOT, `dist/cdn/recorder-${pkg.version}.min.js`), 'utf8');
     expect(recorder).toContain('/v2/segments');
-    expect(recorder).not.toContain('/v1/segments');
     expect(recorder).toMatch(/import\(new URL\(`gzip-\$\{\w+\}\.min\.js`,import\.meta\.url\)/);
     expect(recorder).toContain(`"${pkg.version}"`);
     expect(recorder).not.toContain('fflate');

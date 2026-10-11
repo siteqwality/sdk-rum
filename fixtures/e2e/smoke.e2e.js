@@ -1,6 +1,5 @@
 // The SDK installs from the snippet, counts views and sessions, and leaves the host page alone.
-import { test, expect, knownGap } from './lib/session.js';
-import { SDK } from './lib/env.js';
+import { test, expect } from './lib/session.js';
 import { ORIGINS } from '../server/origins.js';
 
 const pathOf = (url) => new URL(url).pathname;
@@ -43,13 +42,11 @@ test('a full page load keeps the session and carries replay over', async ({ sq }
 
   expect(c.sessionIds.size, 'both page loads share one session').toBe(1);
   expect(c.views.map((v) => pathOf(v.url))).toEqual(expect.arrayContaining(['/', '/mpa/second.html']));
-  // 2.1 numbers segments per page load (design 6.4); 1.x and 2.0 per session.
-  const keys = c.segments.map((x) => (SDK.replayV2 ? `${x.sessionId}|${x.windowId}|${x.pageLoadId}|${x.index}` : String(x.index)));
+  // Segments number per page load (design 6.4).
+  const keys = c.segments.map((x) => `${x.sessionId}|${x.windowId}|${x.pageLoadId}|${x.index}`);
   expect(new Set(keys).size, 'segment keys never repeat').toBe(keys.length);
-  if (SDK.replayV2) {
-    expect(new Set(c.segments.map((x) => x.pageLoadId)).size, 'two page loads').toBe(2);
-    expect(new Set(c.segments.map((x) => x.windowId)).size, 'one window').toBe(1);
-  }
+  expect(new Set(c.segments.map((x) => x.pageLoadId)).size, 'two page loads').toBe(2);
+  expect(new Set(c.segments.map((x) => x.windowId)).size, 'one window').toBe(1);
   expect(c.segments.filter((x) => x.fullSnapshots > 0).length, 'each page load starts with a full snapshot').toBeGreaterThanOrEqual(2);
 });
 
@@ -86,7 +83,6 @@ test('the host page keeps working and gains exactly one global', async ({ sq }) 
 });
 
 test('the classic dashboard snippet records replay', async ({ sq }) => {
-  knownGap(!SDK.wave1, '1.0.x: a classic cross-origin script resolves import("./rrweb-*.js") against about:blank');
   const s = await sq.start({ spec: { capture: 'replay' }, fixture: { loader: 'classic' } });
   await s.open('/');
   await s.waitForReplay({ timeout: 8000 });
@@ -94,7 +90,6 @@ test('the classic dashboard snippet records replay', async ({ sq }) => {
 });
 
 test('the snippet coexists with host page globals', async ({ sq }) => {
-  knownGap(!SDK.wave1, '1.0.x: the CDN bundle declares top-level names, so it fails beside a host `var t`');
   const s = await sq.start({ spec: { capture: 'none' }, fixture: { loader: 'classic' } });
   const page = await s.open('/mpa/host-globals.html');
   expect(await page.evaluate(() => window.hostGlobals())).toEqual({
@@ -113,10 +108,10 @@ test('the harness blocks and reports traffic to any other host', async ({ sq }) 
   const s = await sq.start({ spec: { capture: 'none' } });
   const page = await s.open('/');
   const outcome = await page.evaluate(() =>
-    fetch('https://rum.siteqwality.com/v1/config').then(() => 'reached', (err) => err.name),
+    fetch('https://in.siteqwality.com/v2/batch').then(() => 'reached', (err) => err.name),
   );
   expect(outcome, 'production is unreachable from the fixture').toBe('TypeError');
-  expect(s.egress).toEqual(['https://rum.siteqwality.com/v1/config']);
+  expect(s.egress).toEqual(['https://in.siteqwality.com/v2/batch']);
   s.egress.length = 0;
   s.expectHealthy(await s.finish());
 });

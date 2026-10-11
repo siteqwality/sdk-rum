@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto';
 import { test as base, expect } from '@playwright/test';
 import { ORIGINS } from '../../server/origins.js';
-import { LOADER, SDK_PATH, STRICT } from './env.js';
+import { LOADER, SDK_PATH } from './env.js';
 import { mock, poll } from './mock.js';
 import { Captures } from './captures.js';
 
@@ -68,7 +68,7 @@ export class Session {
   }
 
   async waitForConfig() {
-    return poll(async () => (await this.summary()).some((r) => r.kind === 'config_v1' || r.kind === 'config_v2'), {
+    return poll(async () => (await this.summary()).some((r) => r.kind === 'config_v2'), {
       what: 'the SDK to fetch its config',
     });
   }
@@ -156,11 +156,5 @@ export const test = base.extend({
     for (const s of sessions) await s.dispose();
   },
 });
-
-// Marks a test as a known shortfall of this SDK version: it must fail, and passing flags the fix.
-export function knownGap(condition, reason) {
-  base.fail(condition && !STRICT, reason);
-  if (condition) base.info().annotations.push({ type: 'known gap', description: reason });
-}
 
 export { expect };

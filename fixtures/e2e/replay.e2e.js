@@ -1,5 +1,5 @@
 // Replay under stress: mutation floods, 1 MB of CSS, an oversized page, canvas.
-import { test, expect, knownGap } from './lib/session.js';
+import { test, expect } from './lib/session.js';
 import { SDK } from './lib/env.js';
 import { Ledger, kb } from './lib/ledger.js';
 import { RRWEB, RRWEB_SOURCE } from './lib/captures.js';
@@ -17,7 +17,7 @@ test('a mutation flood is bounded and recording survives it', async ({ sq }, tes
   const to = Date.now();
   await page.getByTestId('nav-forms').click();
   await page.getByTestId('in-text').fill('typed after the flood');
-  // 2.1 records an input's value when it changes (rrweb input: 'last', design 5.5).
+  // The recorder takes an input's value when it changes (rrweb input: 'last', design 5.5).
   await page.getByTestId('in-text').press('Tab');
   const c = await s.finish();
   s.expectHealthy(c);
@@ -31,7 +31,7 @@ test('a mutation flood is bounded and recording survives it', async ({ sq }, tes
   ledger.check('flood ran', flood.mutations > 10000, { info: true, detail: `${flood.mutations} mutations in ${flood.frames} frames, worst frame ${flood.worstFrameMs} ms` });
   budget(ledger, 'flood.raw_bytes', bytes, { detail: `${kb(bytes)} of mutations in ${((to - from) / 1000).toFixed(1)} s, ${c.segments.length} segments` });
   ledger.check('recording survives the flood', typedAfter, { detail: typedAfter ? 'input recorded after the flood' : 'nothing recorded after the flood' });
-  ledger.check('throttle marker', throttled, { gap: !SDK.replayV2, detail: throttled ? 'sq-throttle present' : 'no sq-throttle event', why: 'the 2.1 replay chunk throttles mutations and marks the gap (5.5)' });
+  ledger.check('throttle marker', throttled, { detail: throttled ? 'sq-throttle present' : 'no sq-throttle event' });
   ledger.print(testInfo);
   expect(ledger.failures).toEqual([]);
 });
@@ -50,9 +50,7 @@ test('1 MB of CSS is inlined once and compressed on the wire', async ({ sq }, te
   const ledger = new Ledger(`Heavy CSS, SDK ${SDK.version}`);
   ledger.check('stylesheet inlined in the snapshot', first > 1_000_000, { detail: `first full snapshot ${kb(first)}` });
   ledger.check('segment compressed on the wire', seg?.encoding === 'gzip', {
-    gap: !SDK.replayV2,
     detail: `${kb(seg?.wireBytes ?? 0)} on the wire, ${kb(seg?.gzipBytes ?? 0)} gzipped`,
-    why: 'the 2.1 replay chunk gzips segments (B1)',
   });
   budget(ledger, 'heavy.snapshot_wire_bytes', seg?.wireBytes ?? 0, { detail: `snapshot segment on the wire` });
   ledger.print(testInfo);
@@ -60,7 +58,6 @@ test('1 MB of CSS is inlined once and compressed on the wire', async ({ sq }, te
 });
 
 test('later checkouts carry CSS by reference', async ({ sq }, testInfo) => {
-  knownGap(!SDK.replayV2, 'before 2.1 every checkout re-sends every stylesheet; the 2.1 replay chunk sends sq-css:<hash> references (5.5)');
   test.setTimeout(120_000);
   const s = await sq.start({ spec: { capture: 'replay' } });
   // The page clock runs past the 3 minute streaming checkout without waiting for it.
@@ -97,17 +94,15 @@ test('an oversized page stops replay cleanly and keeps everything else', async (
   const biggest = Math.max(0, ...c.segments.map((x) => x.wireBytes));
   const unplayable = c.segments.filter((x) => x.fullSnapshots === 0);
   ledger.check('nothing sent for the page', c.segments.length === 0, {
-    gap: !SDK.wave1,
     detail: `${c.segments.length} segments, ${unplayable.length} without a snapshot (event types ${unplayable.flatMap((x) => x.events.map((e) => e.type)).join(',') || 'none'})`,
-    why: '1.0.x sends the Meta event alone, which meters a replay session with nothing to play',
   });
-  // /v2/segments takes 2 MB (2.1); 2.0.0 still sends /v1/segments, which takes 4 MB.
-  const cap = SDK.replayV2 ? 2 * 1024 * 1024 : 4_000_000;
+  // The intake takes segments up to 2 MB on the wire.
+  const cap = 2 * 1024 * 1024;
   ledger.check('no segment over the intake cap', biggest <= cap, { detail: `largest ${kb(biggest)}, cap ${kb(cap)}` });
   ledger.check('views still sent', c.views.length > 0, { detail: `${c.views.length} views` });
   const stopped = s.consoleMessages.some((m) => /too large/i.test(m.text));
   const status = c.records.some((r) => r.kind === 'batch_v2' && JSON.stringify(r.json?.events ?? []).includes('too_large'));
-  ledger.check('reason reported', status, { gap: !SDK.v2, detail: stopped ? 'console warning only' : 'no reason', why: "2.0 sends status reason 'too_large' (5.5)" });
+  ledger.check('reason reported', status, { detail: stopped ? 'console warning only' : 'no reason', why: "status reason 'too_large' (5.5)" });
   ledger.print(testInfo);
   expect(ledger.failures).toEqual([]);
 });

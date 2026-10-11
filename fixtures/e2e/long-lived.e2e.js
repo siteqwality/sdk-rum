@@ -1,7 +1,7 @@
 // A tab left open on a page that ticks a clock every second (thesecretsproject, 2026-10-03, about
 // 190 replay requests per tab per hour). A simulated hour hidden, or visible with no input, must
 // cost a bounded number of requests; the tab resumes with a full snapshot.
-import { test, expect, knownGap } from './lib/session.js';
+import { test, expect } from './lib/session.js';
 import { SDK } from './lib/env.js';
 import { Ledger } from './lib/ledger.js';
 
@@ -30,7 +30,6 @@ async function simulate(page, minutes) {
 const requestsSince = async (s, seq) => (await s.summary()).filter((r) => r.seq > seq && r.kind !== 'preflight');
 
 test('a hidden tab with a ticking clock goes quiet for the hour, then resumes from a snapshot', async ({ sq }, testInfo) => {
-  knownGap(!SDK.v2, '1.x keeps recording and sending segments while hidden');
   test.setTimeout(120_000);
   const { s, page } = await openClock(sq);
   await s.setVisibility('hidden');
@@ -59,7 +58,6 @@ test('a hidden tab with a ticking clock goes quiet for the hour, then resumes fr
 });
 
 test('a visible tab left idle for an hour pauses replay and goes quiet', async ({ sq }, testInfo) => {
-  knownGap(!SDK.v2, '1.x records an idle tab for as long as it stays open');
   test.setTimeout(120_000);
   const { s, page } = await openClock(sq);
   const from = await s.lastSeq();
@@ -71,12 +69,10 @@ test('a visible tab left idle for an hour pauses replay and goes quiet', async (
   await simulate(page, 40);
   await sleep(1000);
   const late = await requestsSince(s, expired);
-  // About 5 min of recording before the idle pause (20 s segments from 2.1, design 5.5: a
-  // snapshot, 15 more and the pause), then interim view updates until the session expires at
-  // 15 min; 1.0.x sent about 190 replay requests an hour here.
+  // About 5 min of recording before the idle pause (20 s segments, design 5.5: a snapshot, 15
+  // more and the pause), then interim view updates until the session expires at 15 min.
   const ledger = new Ledger(`Idle hour with a ticking clock, SDK ${SDK.version}`);
-  const segLimit = SDK.replayV2 ? 18 : 16;
-  ledger.check('segments in the first 20 minutes', segments.length <= segLimit, { detail: `${segments.length} (limit ${segLimit})` });
+  ledger.check('segments in the first 20 minutes', segments.length <= 18, { detail: `${segments.length} (limit 18)` });
   ledger.check('requests in the first 20 minutes', during.length <= 24, { detail: `${during.length} (limit 24)` });
   ledger.check('requests in the last 40 minutes', late.length === 0, { detail: `${late.length} (limit 0): ${late.map((r) => r.path).join(', ') || 'none'}` });
   ledger.print(testInfo);

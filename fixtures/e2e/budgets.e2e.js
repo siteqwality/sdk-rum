@@ -24,7 +24,7 @@ test('SDK weight and an Observe-only page view', async ({ sq }, testInfo) => {
   budget(ledger, 'observe.requests', c.requests.length, { detail: c.requests.map((r) => `${r.method} ${r.path}`).join(', ') });
   budget(ledger, 'observe.gzip_bytes', c.bytes(posts).gzip, { detail: `${kb(c.bytes(posts).wire)} as sent` });
   const configPreflight = c.preflights.some((r) => /config/.test(r.path));
-  ledger.check('config fetch without a preflight', !configPreflight, { gap: !SDK.v2, detail: `${c.preflights.length} preflights in all`, why: '1.x sends the token in a header to /v1/config (J8)' });
+  ledger.check('config fetch without a preflight', !configPreflight, { detail: `${c.preflights.length} preflights in all` });
   ledger.print(testInfo);
   expect(ledger.failures).toEqual([]);
 });
@@ -98,7 +98,7 @@ test('a hidden tab stays quiet while the page keeps polling', async ({ sq }, tes
   const ledger = new Ledger(`Hidden tab, SDK ${SDK.version}`);
   const during = c.requests.filter((r) => r.at >= from && r.at <= to);
   budget(ledger, 'hidden.requests', during.length, { detail: `${((to - from) / 1000).toFixed(0)} s hidden, polling every 500 ms: ${during.map((r) => r.path).join(', ') || 'nothing'}` });
-  const polls = c.resources.filter((r) => r.url?.includes('/api/poll')).length + c.network.filter((r) => r.url?.includes('/api/poll')).reduce((a, r) => a + r.n, 0);
+  const polls = c.network.filter((r) => r.url?.includes('/api/poll')).reduce((a, r) => a + r.n, 0);
   ledger.check('polls still recorded', polls > 10, { detail: `${polls} polls recorded` });
   ledger.print(testInfo);
   expect(ledger.failures).toEqual([]);

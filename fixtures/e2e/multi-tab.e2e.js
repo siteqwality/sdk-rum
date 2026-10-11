@@ -1,14 +1,12 @@
-// Two tabs share one session (the cookie). From 2.1 each tab records its own window (design 5.3,
-// 6.4): segments carry the window and page load ids, number from 0 per page load, and each
-// stream plays alone, so the player orders windows instead of one tab recording at a time.
-import { test, expect, knownGap } from './lib/session.js';
-import { SDK } from './lib/env.js';
+// Two tabs share one session (the cookie). Each tab records its own window (design 5.3, 6.4):
+// segments carry the window and page load ids, number from 0 per page load, and each stream
+// plays alone, so the player orders windows instead of one tab recording at a time.
+import { test, expect } from './lib/session.js';
 import { streams, expectPlayable, pathsOf } from './lib/streams.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test('two tabs of one session each record their own window, both at once', async ({ sq }) => {
-  knownGap(!SDK.replayV2, 'before 2.1 one tab records a shared session at a time (the lease)');
   test.setTimeout(60_000);
   const s = await sq.start({ spec: { capture: 'replay' } });
   const a = await s.open('/');
@@ -43,7 +41,6 @@ test('two tabs of one session each record their own window, both at once', async
 });
 
 test('a reload records a new page load in the same window', async ({ sq }) => {
-  knownGap(!SDK.replayV2, 'before 2.1 segments are numbered per session, without page load ids');
   const s = await sq.start({ spec: { capture: 'replay' } });
   const page = await s.open('/mpa/second.html');
   const first = await s.waitForReplay();

@@ -7,20 +7,18 @@ set -euo pipefail
 # Requires the siteqwality AWS profile and a build (npm run build). Uploads every file in
 # dist/cdn/ (the core, replay chunk, canvas module and gzip fallback) to:
 #   rum/v<version>/  pinned and immutable (customers may pin it, with Subresource Integrity)
-#   rum/v<major>/    the latest release of that major line (rum/v2/ for 2.x)
-# Another major line's prefix is never written, so a 2.x deploy leaves rum/v1/ on 1.x.
+#   rum/v2/          the latest 2.x release
 # rum/config/ belongs to the api's config publisher and is never touched here.
 
 SDK_BUCKET="sq-prod-us-east-1-rum-sdk"
 DIST_DIR="dist/cdn"
 CDN_DISTRIBUTION_ID="${1:-}"
 VERSION="$(node -p "require('./package.json').version")"
-MAJOR="${VERSION%%.*}"
 PINNED_PREFIX="rum/v${VERSION}"
-MAJOR_PREFIX="rum/v${MAJOR}"
+MAJOR_PREFIX="rum/v2"
 
-if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Error: refusing to deploy pre-release version ${VERSION}."
+if [[ ! "$VERSION" =~ ^2\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Error: refusing to deploy ${VERSION}: only 2.x releases (no pre-releases) go to ${MAJOR_PREFIX}/."
   exit 1
 fi
 
@@ -61,7 +59,7 @@ upload() {
 upload "$PINNED_PREFIX" "public, max-age=31536000, immutable"
 upload "$MAJOR_PREFIX" "public, max-age=86400"
 
-echo "Upload complete: ${PINNED_PREFIX}/ (pinned) and ${MAJOR_PREFIX}/ (latest ${MAJOR}.x)."
+echo "Upload complete: ${PINNED_PREFIX}/ (pinned) and ${MAJOR_PREFIX}/ (latest 2.x)."
 echo "Subresource Integrity for ${PINNED_PREFIX}/sdk.min.js:"
 echo "  sha384-$(openssl dgst -sha384 -binary "$DIST_DIR/sdk.min.js" | openssl base64 -A)"
 

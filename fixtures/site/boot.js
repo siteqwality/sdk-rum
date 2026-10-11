@@ -5,12 +5,12 @@
   var cfg = {
     sdk: 'on',
     loader: 'classic',
-    sdkPath: '/rum/v1/sdk.min.js',
+    sdkPath: '/rum/v2/sdk.min.js',
     applicationId: '00000000-0000-4000-8000-00000000f1f1',
     clientToken: 'fixture-manual',
     service: 'fixture',
     env: 'test',
-    version: 'fixture-1.0.0',
+    version: 'fixture-release',
     init: {},
   };
   var preset = window.__SQ_FIXTURE__ || {};
@@ -29,7 +29,7 @@
   fixture.config = cfg;
   fixture.origins = origins;
   fixture.sdk = { state: cfg.sdk === 'off' ? 'off' : 'loading' };
-  // Calls an SDK method only if this SDK version has it, so 2.0-only calls never throw on 1.x.
+  // Calls an SDK method once the SDK is there, reporting whether it threw.
   fixture.call = function (method) {
     var rum = window.SiteQwalityRUM;
     if (!rum || typeof rum[method] !== 'function') return { called: false };

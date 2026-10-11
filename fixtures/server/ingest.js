@@ -1,72 +1,17 @@
 // Mock RUM intake: records every request the SDK makes and answers like production.
-// 1.x routes mirror rum-ingestor and replay-ingestor on master; 2.0 routes follow design doc 6.2 to 6.4.
+// Routes follow design doc 6.2 to 6.4.
 import zlib from 'node:zlib';
 import { readBody, send } from './http.js';
-import { DEFAULT_SPEC, v1Config, v2Config } from './app-config.js';
+import { DEFAULT_SPEC, v2Config } from './app-config.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const TYPES = {
-  uuid: (v) => typeof v === 'string' && UUID.test(v),
-  num: (v) => typeof v === 'number' && Number.isFinite(v),
-  str: (v) => typeof v === 'string',
-  u32: (v) => Number.isInteger(v) && v >= 0 && v <= 0xffffffff,
-  u64: (v) => Number.isInteger(v) && v >= 0,
-  strMap: (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && Object.values(v).every((x) => typeof x === 'string'),
-};
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-// Field types of the serde structs in rum-ingestor/src/handlers/mod.rs (master).
-// Option<T> accepts null; a #[serde(default)] map does not.
-const V1_SHAPES = {
-  measure: {
-    required: { session_id: 'uuid', view_id: 'uuid', timestamp: 'num', type: 'str', url: 'str' },
-    optional: {
-      lcp_ms: 'num', fcp_ms: 'num', cls: 'num', inp_ms: 'num', ttfb_ms: 'num', load_time_ms: 'num',
-      dom_ready_ms: 'num', error_count: 'u32', action_count: 'u32', resource_count: 'u32',
-      user_agent: 'str', country: 'str', device_type: 'str', browser: 'str', os: 'str',
-      user_id: 'str', user_email: 'str',
-    },
-  },
-  events: {
-    required: { session_id: 'uuid', view_id: 'uuid', event_id: 'uuid', timestamp: 'num', type: 'str', url: 'str' },
-    optional: {
-      resource_type: 'str', resource_url: 'str', duration_ms: 'num', transfer_size: 'u64',
-      error_message: 'str', error_source: 'str', error_stack: 'str', action_type: 'str',
-      action_target: 'str', frustration: 'str', long_task_duration_ms: 'num', user_id: 'str', user_email: 'str',
-    },
-    maps: { custom_attributes: 'strMap' },
-  },
-  errors: {
-    required: {
-      session_id: 'uuid', view_id: 'uuid', event_id: 'uuid', timestamp: 'num', url: 'str',
-      error_message: 'str', error_source: 'str', error_stack: 'str',
-    },
-    optional: { version: 'str', user_id: 'str', user_email: 'str' },
-    maps: { custom_attributes: 'strMap' },
-  },
-};
-
-// Event kinds of the 2.0 batch (design doc 6.3).
+// Event kinds of the batch (design doc 6.3).
 const V2_KINDS = new Set([
   'view_start', 'view_end', 'error', 'custom', 'action', 'network', 'resource', 'console', 'long_frame', 'status',
 ]);
-
-function checkShape(item, shape, where) {
-  const problems = [];
-  if (item === null || typeof item !== 'object' || Array.isArray(item)) return [`${where}: not an object`];
-  for (const [k, t] of Object.entries(shape.required)) {
-    if (!TYPES[t](item[k])) problems.push(`${where}.${k}: expected ${t}, got ${JSON.stringify(item[k])?.slice(0, 60)}`);
-  }
-  for (const [k, t] of Object.entries(shape.optional || {})) {
-    if (item[k] !== undefined && item[k] !== null && !TYPES[t](item[k])) {
-      problems.push(`${where}.${k}: expected ${t} or null, got ${JSON.stringify(item[k])?.slice(0, 60)}`);
-    }
-  }
-  for (const [k, t] of Object.entries(shape.maps || {})) {
-    if (item[k] !== undefined && !TYPES[t](item[k])) problems.push(`${where}.${k}: expected ${t}`);
-  }
-  return problems;
-}
 
 const RRWEB_FULL_SNAPSHOT = 2;
 const RRWEB_META = 4;
@@ -91,7 +36,6 @@ const CORS = {
 export class MockIngest {
   constructor() {
     this.reset();
-    this.apps = new Map();
     this.appsById = new Map();
   }
 
@@ -109,10 +53,8 @@ export class MockIngest {
       token,
       applicationId,
       spec: full,
-      v1: v1Config(applicationId, full),
       v2: v2Config(applicationId, full),
     };
-    this.apps.set(token, app);
     this.appsById.set(applicationId, app);
     return app;
   }
@@ -195,29 +137,6 @@ export class MockIngest {
     }
 
     switch (route) {
-      case 'GET ingest /v1/config': {
-        rec.kind = 'config_v1';
-        const app = this.apps.get(token);
-        return reply(200, { data: app ? app.v1 : v1Config('00000000-0000-4000-8000-000000000000', DEFAULT_SPEC) });
-      }
-      case 'POST ingest /v1/measure':
-      case 'POST ingest /v1/events':
-      case 'POST ingest /v1/errors': {
-        const stream = url.pathname.slice(4);
-        rec.kind = `${stream}_v1`;
-        if (rec.json === undefined) return reply(400);
-        if (!Array.isArray(rec.json)) {
-          rec.problems.push('body is not a JSON array');
-          return reply(422);
-        }
-        rec.items = rec.json.length;
-        rec.json.forEach((item, i) => rec.problems.push(...checkShape(item, V1_SHAPES[stream], `${stream}[${i}]`)));
-        return reply(rec.problems.length ? 422 : 202);
-      }
-      case 'POST replay /v1/segments': {
-        rec.kind = 'segment_v1';
-        return reply(this.checkSegmentV1(rec));
-      }
       case 'POST ingest /v2/batch': {
         rec.kind = 'batch_v2';
         return reply(this.checkBatchV2(rec, raw));
@@ -262,22 +181,6 @@ export class MockIngest {
     }
   }
 
-  checkSegmentV1(rec) {
-    const { session_id: sid, segment_index: idx } = rec.query;
-    if (!UUID.test(sid || '')) rec.problems.push('index session_id is not a UUID');
-    if (!/^\d+$/.test(idx || '') || Number(idx) > 0xffffffff) rec.problems.push('index segment_index is not a u32');
-    const body = rec.json;
-    if (!body || !Array.isArray(body.events)) {
-      rec.problems.push('body has no events array');
-      return 400;
-    }
-    if (body.session_id !== sid) rec.problems.push('body session_id differs from the query');
-    if (String(body.segment_index) !== idx) rec.problems.push('body segment_index differs from the query');
-    if (body.events.length === 0) rec.problems.push('segment has no events');
-    rec.segment = { sessionId: sid, index: Number(idx), ...rrwebStats(body.events) };
-    return rec.problems.length ? 400 : 202;
-  }
-
   checkBatchV2(rec, raw) {
     if (raw.length > 1024 * 1024 || rec.bodyBytes > 8 * 1024 * 1024) return 413;
     const b = rec.json;
@@ -289,7 +192,7 @@ export class MockIngest {
     rec.items = b.events.length;
     b.events.forEach((e, i) => {
       if (!V2_KINDS.has(e?.k)) rec.problems.push(`events[${i}].k: unknown kind ${JSON.stringify(e?.k)}`);
-      if (!TYPES.num(e?.t)) rec.problems.push(`events[${i}].t: expected epoch ms`);
+      if (!isNum(e?.t)) rec.problems.push(`events[${i}].t: expected epoch ms`);
     });
     return 202;
   }

@@ -52,9 +52,6 @@ export interface InitOptions {
   debug?: boolean;
 }
 
-/** @deprecated Use `InitOptions`. */
-export type RumConfig = InitOptions;
-
 export interface UserContext {
   id?: string;
   email?: string;
