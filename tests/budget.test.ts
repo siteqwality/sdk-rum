@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createBudget, CORE_LIMITS, REPLAY_LIMITS, budgetError } from '../src/core/budget';
 import { SiteQwalityRUM } from '../src/sdk';
-import { boot, clearStorage, config, rule, settle, setVisibility, stubNetwork, throwInPage } from './helpers/sdk';
+import { boot, clearStorage, config, flush, rule, settle, setVisibility, stubNetwork, throwInPage } from './helpers/sdk';
 
 const [PAGE_REQ, PAGE_BYTES, SESS_REQ, SESS_BYTES] = CORE_LIMITS;
 const [, , REPLAY_SESS_REQ] = REPLAY_LIMITS;
@@ -109,8 +109,7 @@ describe('the SDK under a runaway loop', () => {
   it('normal traffic never comes near the budget', async () => {
     const net = await boot();
     for (let i = 0; i < 200; i++) SiteQwalityRUM.addAction(`a${i}`);
-    setVisibility('hidden');
-    await settle(10);
+    await flush();
     expect(SiteQwalityRUM.getStatus()!.dropped.request_budget).toBeUndefined();
     expect(net.events('custom')).toHaveLength(200);
   });

@@ -2,6 +2,7 @@
 import { vi } from 'vitest';
 import { SiteQwalityRUM } from '../../src/sdk';
 import type { InitOptions, SqEvent } from '../../src/types';
+import { CountingCompressionStream } from '../setup';
 
 export const APP = '9a9a009c-0000-4000-8000-000000000001';
 
@@ -118,8 +119,11 @@ export function setVisibility(state: 'hidden' | 'visible'): void {
 export async function flush(): Promise<void> {
   setVisibility('hidden');
   await settle();
-  // gzip runs on streams; wait for the sends to land (at most 2 s).
-  for (let i = 0; i < 100 && current && current.pending > 0; i++) await new Promise((r) => setTimeout(r, 20));
+  // A send gzips before it fetches: wait until neither runs for two turns (at most 2 s).
+  for (let i = 0, idle = 0; i < 100 && idle < 2; i++) {
+    idle = (current?.pending ?? 0) + CountingCompressionStream.active > 0 ? 0 : idle + 1;
+    await new Promise((r) => setTimeout(r, idle ? 0 : 20));
+  }
   await settle(3);
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
 }

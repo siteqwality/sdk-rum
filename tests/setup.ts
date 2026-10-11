@@ -51,9 +51,24 @@ export class FakePerformanceObserver {
   }
 }
 
-Object.assign(globalThis, { BroadcastChannel: FakeBroadcastChannel, PerformanceObserver: FakePerformanceObserver });
+/** The native CompressionStream, counting streams still compressing: a send gzips before it fetches. */
+const NativeCompressionStream = globalThis.CompressionStream;
+export class CountingCompressionStream {
+  static active = 0;
+  readonly writable: WritableStream<BufferSource>;
+  readonly readable: ReadableStream<Uint8Array>;
+  constructor(format: CompressionFormat) {
+    const c = new NativeCompressionStream(format);
+    CountingCompressionStream.active++;
+    this.writable = c.writable;
+    this.readable = c.readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({ flush: () => void CountingCompressionStream.active-- }));
+  }
+}
+
+Object.assign(globalThis, { BroadcastChannel: FakeBroadcastChannel, PerformanceObserver: FakePerformanceObserver, CompressionStream: CountingCompressionStream });
 
 afterEach(() => {
   FakeBroadcastChannel.all = [];
   FakePerformanceObserver.reset();
+  CountingCompressionStream.active = 0;
 });
