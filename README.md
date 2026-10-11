@@ -1,6 +1,6 @@
 # @siteqwality/rum
 
-SiteQwality Real User Monitoring for the browser: page views, Core Web Vitals with attribution,
+Site Qwality Real User Monitoring for the browser: page views, Core Web Vitals with attribution,
 errors grouped across deploys, user actions with frustration signals, network and console detail,
 and session replay. One small core on every page; the replay recorder loads only for sessions that
 can be replayed.
@@ -78,7 +78,7 @@ and `x-sq-replay-index` headers.
 | `allowedQueryParams`, `deniedQueryParams` | none | See URL minimisation |
 | `ignoreErrors`, `denyUrls` | none | See Errors |
 | `beforeSend(event, kind)` | none | See beforeSend |
-| `ingestBase`, `replayBase`, `configBase` | SiteQwality hosts | First-party proxies |
+| `ingestBase`, `replayBase`, `configBase` | Site Qwality hosts | First-party proxies |
 | `recorderUrl` | beside the core | CDN build: where the replay chunk is loaded from |
 | `debug` | `false` | Logs config, rule decisions, recording state and sends to the console |
 
@@ -231,7 +231,7 @@ applies the same rules server-side.
   dropped, the gap is marked (`sq-throttle`) and a fresh snapshot follows when the page calms (or
   after 30 s if it does not), at most every 30 s. Recording never stops for volume.
 - **Stylesheets** are inlined so the player needs nothing from your site; a checkout names a
-  stylesheet over 1 KB that already reached SiteQwality (`sq-css:<hash>`, FNV-1a 64) instead of
+  stylesheet over 1 KB that already reached Site Qwality (`sq-css:<hash>`, FNV-1a 64) instead of
   sending it again. URLs inside stylesheets and `style` attributes are minimised like any other.
   Images, fonts and canvas are never inlined into snapshots.
 - **Segments** are gzipped and close at 20 s or about 2.5 MB, at a page's first snapshot (sent at
