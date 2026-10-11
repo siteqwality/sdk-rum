@@ -84,8 +84,6 @@ export function startReplay(o: ReplayStartOptions): ReplayHandle {
   if (canvas && !o.session.hostOnly) o.count('canvas_cross_origin_budget_unavailable');
   const win = o.session.windowId;
   const capped = () => o.store && storage.get(o.store, CAP_KEY) === sid;
-  // 2.0.0 kept a lease and a segment counter shared by tabs; per-window streams need neither.
-  for (const k of ['_sq_rl', '_sq_rseq']) storage.del('localStorage', k);
   const ac = new AbortController();
   const idleMs = Math.min(Math.max(o.cfg.limits.idle_pause_ms || IDLE_DEFAULT_MS, IDLE_MIN_MS), IDLE_MAX_MS);
   let core = o.paused ?? '';

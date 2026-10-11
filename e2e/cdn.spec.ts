@@ -253,29 +253,6 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     }
   });
 
-  test('the 1.0.x snippet still works', async ({ page, intake }) => {
-    const url = intake.page(
-      'old-snippet',
-      `<!doctype html><html><head><script>
-        (function(w,d,s){w.SiteQwalityRUM=w.SiteQwalityRUM||{_q:[]};
-        ['init','setUser','addError','addAction'].forEach(function(m){
-          w.SiteQwalityRUM[m]=function(){w.SiteQwalityRUM._q.push([m,arguments])}
-        });var e=d.createElement(s);e.async=1;
-        e.src='${intake.origin}/sdk/sdk.min.js';
-        d.getElementsByTagName(s)[0].parentNode.insertBefore(e,d.getElementsByTagName(s)[0]);
-        })(window,document,'script');
-        SiteQwalityRUM.init({ applicationId: 'app-1', clientToken: 'ct_test',
-          ingestBase: location.origin + '/rum', replayBase: location.origin + '/replay', configBase: location.origin + '/cdn' });
-        SiteQwalityRUM.addError(new Error('queued by an old snippet'));
-      </script></head><body></body></html>`,
-    );
-    await page.goto(url);
-    await sdkLoaded(page);
-    await hide(page);
-    await expect.poll(() => intake.events('error').length).toBe(1);
-    expect(intake.events('error')[0]).toMatchObject({ message: 'queued by an old snippet', handling: 'handled' });
-  });
-
   test('a second copy of the script is a no-op', async ({ page, intake }) => {
     await page.goto(intake.page('twice', `<!doctype html><html><head>${snippet(intake)}</head><body></body></html>`));
     await sdkLoaded(page);

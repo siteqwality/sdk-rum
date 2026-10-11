@@ -1,7 +1,7 @@
 // Sessions (design 5.3): a UUIDv7 id in the first-party cookie `_sq_s`, shared by tabs, as
 // `id|started|lastActivity|decisions`; localStorage, then memory, when cookies fail.
 import { uuid, uuid7 } from './hash';
-import { now, storage, isObj, isNum, on } from './util';
+import { now, storage, isNum, on } from './util';
 
 export const INACTIVITY_MS = 15 * 60_000;
 export const MAX_SESSION_MS = 4 * 60 * 60_000;
@@ -64,22 +64,6 @@ function cookieText(): string {
 function readCookie(): string | null {
   const m = new RegExp(`(?:^|;\\s*)${KEY}=([^;]*)`).exec(cookieText());
   return m ? m[1] : null;
-}
-
-/** A 1.1 session in this tab (sessionStorage), adopted so an upgrade never splits it. */
-function legacy(): Rec | null {
-  try {
-    const s = JSON.parse(storage.get('sessionStorage', 'sq_rum_session') || 'null');
-    if (!isObj(s) || typeof s.id !== 'string' || !ID.test(s.id) || !isNum(s.started) || !isNum(s.lastActivity)) return null;
-    const rules = JSON.parse(storage.get('sessionStorage', `sq_rum_rules:${s.id}`) || 'null');
-    const recorded = Number(storage.get('sessionStorage', `sq_rum_replay_next:${s.id}`)) > 0;
-    const dec = isObj(rules) && rules.v === 1
-      ? { analyze: rules.detail === true, replay: rules.replay === true }
-      : { analyze: recorded, replay: recorded };
-    return { id: s.id.toLowerCase(), started: s.started, last: s.lastActivity, dec };
-  } catch {
-    return null;
-  }
 }
 
 export interface SessionOptions {
@@ -152,13 +136,7 @@ export function createSession(opts: SessionOptions) {
   const stored = read();
   const t0 = now();
   if (stored && !isExpired(stored, t0)) rec = stored;
-  else {
-    const old = legacy();
-    if (old && !isExpired(old, t0)) {
-      rec = old;
-      write();
-    } else create(t0);
-  }
+  else create(t0);
 
   // Window id per tab; a duplicated tab copies sessionStorage, so the later page load renames.
   // Stored only once the session may be (never while consent is pending).
@@ -279,9 +257,9 @@ export function createSession(opts: SessionOptions) {
     },
     /** Removes every key the SDK stores but the opt-out (consent withdrawn). */
     clear() {
-      for (const k of [KEY, '_sq_rl', '_sq_rseq']) writeCookie('', 0, k);
+      writeCookie('', 0);
       for (const kind of ['localStorage', 'sessionStorage'] as const) {
-        for (const k of ['_sq_s', '_sq_aid', '_sq_w', '_sq_bgt', '_sq_bgr', '_sq_act', '_sq_rseq', '_sq_rl', '_sq_rcap', '_sq_cb', 'sq_rum_session', `sq_rum_rules:${rec.id}`, `sq_rum_replay_next:${rec.id}`]) storage.del(kind, k);
+        for (const k of ['_sq_s', '_sq_aid', '_sq_w', '_sq_bgt', '_sq_bgr', '_sq_act', '_sq_rcap', '_sq_cb']) storage.del(kind, k);
       }
     },
   };

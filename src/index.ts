@@ -2,7 +2,6 @@ export { SiteQwalityRUM } from './sdk';
 export type {
   Consent,
   InitOptions,
-  RumConfig,
   SdkStatus,
   SqEvent,
   SqEventKind,

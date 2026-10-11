@@ -5,62 +5,59 @@ import type { SqEvent } from '../src/types';
 import { FakePerformanceObserver } from './setup';
 import { createUrlSanitizer } from '../src/core/url';
 
-const DEFAULT_BASES = ['https://rum.siteqwality.com', 'https://replay.siteqwality.com'];
+const DEFAULT_BASES = ['https://in.siteqwality.com', 'https://in-replay.siteqwality.com', 'https://cdn.siteqwality.com'];
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe('createOwnRequestMatcher', () => {
-  it('matches everything under the default ingest and replay bases', () => {
+  it('matches everything under the default ingest, replay and config bases', () => {
     const isOwn = createOwnRequestMatcher(DEFAULT_BASES);
-    expect(isOwn('https://rum.siteqwality.com/v1/events')).toBe(true);
-    expect(isOwn('https://rum.siteqwality.com/v1/measure')).toBe(true);
-    expect(isOwn('https://rum.siteqwality.com/v1/config')).toBe(true);
-    expect(
-      isOwn('https://replay.siteqwality.com/v1/segments?session_id=s&segment_index=3'),
-    ).toBe(true);
+    expect(isOwn('https://in.siteqwality.com/v2/batch')).toBe(true);
+    expect(isOwn('https://in.siteqwality.com/v2/identity?h=ab')).toBe(true);
+    expect(isOwn('https://in-replay.siteqwality.com/v2/segments')).toBe(true);
+    expect(isOwn('https://cdn.siteqwality.com/rum/config/v2/app.json')).toBe(true);
   });
 
   it('normalises the origin: host case and default port', () => {
     const isOwn = createOwnRequestMatcher(DEFAULT_BASES);
-    expect(isOwn('https://RUM.SiteQwality.com:443/v1/events')).toBe(true);
+    expect(isOwn('https://IN.SiteQwality.com:443/v2/batch')).toBe(true);
   });
 
   it('does not match another scheme, host or port', () => {
     const isOwn = createOwnRequestMatcher(DEFAULT_BASES);
-    expect(isOwn('http://rum.siteqwality.com/v1/events')).toBe(false);
-    expect(isOwn('https://rum.siteqwality.com:8443/v1/events')).toBe(false);
-    expect(isOwn('https://siteqwality.com/v1/events')).toBe(false);
-    expect(isOwn('https://rum.siteqwality.com.evil.example/v1/events')).toBe(false);
-    expect(isOwn('https://api.example.com/v1/events')).toBe(false);
+    expect(isOwn('http://in.siteqwality.com/v2/batch')).toBe(false);
+    expect(isOwn('https://in.siteqwality.com:8443/v2/batch')).toBe(false);
+    expect(isOwn('https://siteqwality.com/v2/batch')).toBe(false);
+    expect(isOwn('https://in.siteqwality.com.evil.example/v2/batch')).toBe(false);
+    expect(isOwn('https://api.example.com/v2/batch')).toBe(false);
   });
 
   it('matches a custom base with a path at a segment boundary only', () => {
     const isOwn = createOwnRequestMatcher(['https://example.com/rum']);
     expect(isOwn('https://example.com/rum')).toBe(true);
-    expect(isOwn('https://example.com/rum/v1/events')).toBe(true);
+    expect(isOwn('https://example.com/rum/v2/batch')).toBe(true);
     expect(isOwn('https://example.com/rumble')).toBe(false);
     expect(isOwn('https://example.com/api/orders')).toBe(false);
   });
 
   it('ignores a trailing slash on the base', () => {
     const isOwn = createOwnRequestMatcher(['https://example.com/rum/']);
-    // init.ts builds `${ingestBase}/v1/events`, so this is the URL actually sent.
-    expect(isOwn('https://example.com/rum//v1/events')).toBe(true);
-    expect(isOwn('https://example.com/rum/v1/events')).toBe(true);
+    expect(isOwn('https://example.com/rum//v2/batch')).toBe(true);
+    expect(isOwn('https://example.com/rum/v2/batch')).toBe(true);
   });
 
   it('resolves a relative base against the page, as fetch does', () => {
     const isOwn = createOwnRequestMatcher(['/rum-proxy']);
-    expect(isOwn(`${location.origin}/rum-proxy/v1/events`)).toBe(true);
+    expect(isOwn(`${location.origin}/rum-proxy/v2/batch`)).toBe(true);
     expect(isOwn(`${location.origin}/other`)).toBe(false);
   });
 
   it('ignores a base that does not parse, and never matches opaque URLs', () => {
     const isOwn = createOwnRequestMatcher(['http://', 'data:text/plain,x']);
     expect(isOwn('data:text/plain,x')).toBe(false);
-    expect(isOwn('https://api.example.com/v1/events')).toBe(false);
+    expect(isOwn('https://api.example.com/v2/batch')).toBe(false);
   });
 });
 

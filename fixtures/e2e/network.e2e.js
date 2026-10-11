@@ -1,12 +1,12 @@
 // fetch and XHR: the page sees exactly what it would without the SDK, and the SDK records
-// what its version promises (1.x: resource timing rows; 2.0: network rows with status, 5.6).
-import { test, expect, knownGap } from './lib/session.js';
+// network rows with status (5.6).
+import { test, expect } from './lib/session.js';
 import { SDK } from './lib/env.js';
 import { site } from './lib/mock.js';
 import { Ledger } from './lib/ledger.js';
 import { ORIGINS } from '../server/origins.js';
 
-// What a 2.0 network row must say for each call: [path, status, error_kind].
+// What a network row must say for each call: [path, status, error_kind].
 const ROWS = {
   fetch_ok: ['/api/ok', 200], fetch_404: ['/api/notfound', 404], fetch_500: ['/api/fail', 500],
   fetch_drop: ['/api/drop', 0, 'network'], fetch_abort: ['/api/slow', 0, 'abort'], fetch_timeout: ['/api/slow', 0, 'timeout'],
@@ -47,21 +47,15 @@ test('app requests behave the same with the SDK, which adds no headers by defaul
     const path = { fetch_ok: '/api/ok', fetch_500: '/api/fail', xhr_ok: '/api/ok' }[id];
     ledger.check(`recorded ${id}`, recorded.some((r) => pathOf(r.url) === path), { detail: path });
   }
-  if (SDK.v2) {
-    for (const [id, [path, status, kind]] of Object.entries(ROWS)) {
-      const row = c.network.find((n) => pathOf(n.url) === path && n.status === status && (!kind || n.errorKind === kind));
-      ledger.check(`network row ${id}`, Boolean(row), { detail: `${path} status ${status}${kind ? ` ${kind}` : ''}` });
-    }
-  } else {
-    const failed = ['/api/drop', '/api/slow', '/api/nocors'].filter((p) => c.resources.some((r) => pathOf(r.url) === p));
-    ledger.check('failed requests', true, { info: true, detail: `1.x resource rows for: ${failed.join(', ') || 'none'} (no status in 1.x)` });
+  for (const [id, [path, status, kind]] of Object.entries(ROWS)) {
+    const row = c.network.find((n) => pathOf(n.url) === path && n.status === status && (!kind || n.errorKind === kind));
+    ledger.check(`network row ${id}`, Boolean(row), { detail: `${path} status ${status}${kind ? ` ${kind}` : ''}` });
   }
   ledger.print(testInfo);
   expect(ledger.failures).toEqual([]);
 });
 
 test('failed requests are recorded for every session, without a rule', async ({ sq }) => {
-  knownGap(!SDK.v2, '1.x records requests only for sessions a rule matched; 2.0 sends failures at Observe (5.4)');
   const s = await sq.start({ spec: { capture: 'none' } });
   const page = await s.open('/network');
   await s.waitForConfig();
@@ -69,14 +63,13 @@ test('failed requests are recorded for every session, without a rule', async ({ 
   await page.waitForTimeout(800);
   const c = await s.finish();
   s.expectHealthy(c);
-  const rows = [...c.network, ...c.resources];
+  const rows = c.network;
   expect(rows.some((r) => pathOf(r.url) === '/api/fail'), 'the 500 is recorded').toBe(true);
   expect(rows.some((r) => pathOf(r.url) === '/api/drop'), 'the network failure is recorded').toBe(true);
   expect(rows.some((r) => pathOf(r.url) === '/api/ok'), 'a success is Analyze only').toBe(false);
 });
 
 test('polling aggregates into a few rows', async ({ sq }, testInfo) => {
-  knownGap(!SDK.v2, '1.x sends one row per request; 2.0 aggregates successful repeats per 30 s (5.6)');
   const s = await sq.start({ spec: { capture: 'analyze' } });
   const page = await s.open('/network');
   await s.waitForConfig();
@@ -85,8 +78,8 @@ test('polling aggregates into a few rows', async ({ sq }, testInfo) => {
   await page.evaluate(() => window.fixture.network.stopPolling());
   const c = await s.finish();
   s.expectHealthy(c);
-  const rows = [...c.network, ...c.resources].filter((r) => pathOf(r.url) === '/api/poll');
-  const calls = rows.reduce((a, r) => a + (r.n ?? 1), 0);
+  const rows = c.network.filter((r) => pathOf(r.url) === '/api/poll');
+  const calls = rows.reduce((a, r) => a + r.n, 0);
   testInfo.annotations.push({ type: 'poll rows', description: `${rows.length} rows for ${calls} calls` });
   expect(calls, 'every poll is counted').toBeGreaterThanOrEqual(15);
   expect(rows.length, 'rows for about 24 polls in 6 s').toBeLessThanOrEqual(2);

@@ -1,10 +1,8 @@
 // A page that patches Date (constructor and Date.now) must not skew event times: every RUM event
 // and replay event is stamped from a clock the page cannot patch, sane and in order.
-import { test, expect, knownGap } from './lib/session.js';
-import { SDK } from './lib/env.js';
+import { test, expect } from './lib/session.js';
 
 test('a page that patches Date gets sane, monotonic event and replay times', async ({ sq }) => {
-  knownGap(!SDK.v2, '1.x stamps events with the page Date; 2.0 uses a clock the page cannot patch');
   const s = await sq.start({ spec: { capture: 'replay' } });
   const started = Date.now();
   const page = await s.open('/mpa/patched-date.html');

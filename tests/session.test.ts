@@ -125,16 +125,6 @@ describe('createSession', () => {
     expect(a.decision).toEqual({ analyze: true, replay: true, rule_id: 'r_replay' });
   });
 
-  it('adopts a 1.1 session and its rule decision on upgrade', () => {
-    const id = '6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
-    sessionStorage.setItem('sq_rum_session', JSON.stringify({ id, started: Date.now() - 1000, lastActivity: Date.now() }));
-    sessionStorage.setItem(`sq_rum_rules:${id}`, JSON.stringify({ v: 1, detail: true, replay: true, actions: 3 }));
-    const s = createSession({ mode: 'persist' });
-    expect(s.id).toBe(id);
-    expect(s.decision).toMatchObject({ analyze: true, replay: true });
-    expect(cookie()).toContain(id);
-  });
-
   it('moves stores keeping the id, and clear() removes every key', () => {
     const s = createSession({ mode: 'memory' });
     expect(cookie()).toBeUndefined();

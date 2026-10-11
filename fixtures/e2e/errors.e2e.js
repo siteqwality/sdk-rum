@@ -1,24 +1,23 @@
-// Every error kind the fixture can raise, and what each SDK version must do with it.
-import { test, expect, knownGap } from './lib/session.js';
+// Every error kind the fixture can raise, and what the SDK must do with it.
+import { test, expect } from './lib/session.js';
 import { SDK } from './lib/env.js';
 import { Ledger } from './lib/ledger.js';
 
-// match: text that identifies the error. noise: a Wave 1 D9 rule that must drop it from 1.1 on.
-// gapUntil: the first version that meets the target ('wave1' or 'v2').
+// match: text that identifies the error. noise: the browser-noise rule (D9) that must drop it.
 const KINDS = {
   sync: { match: 'fx:sync' },
   type_error: { match: 'fxTypeError' },
   async_timeout: { match: 'fx:async-timeout' },
   promise_error: { match: 'fx:promise-error' },
   promise_string: { match: 'fx:promise-string' },
-  promise_object: { match: 'fx:promise-object', gapUntil: 'v2', why: '1.x sends "[object Object]"; 2.0 serialises the reason (5.7)' },
+  promise_object: { match: 'fx:promise-object' },
   async_fn: { match: 'fx:async-fn' },
   throw_string: { match: 'fx:throw-string' },
   range_error: { match: 'Maximum call stack' },
   cause: { match: 'fx:cause outer' },
   external: { match: 'fx:external' },
   handled: { match: 'fx:handled via addError' },
-  handled_nonerror: { match: 'fx:handled-nonerror', gapUntil: 'wave1', why: '1.0.x sends an empty message for addError(non-Error) (F7)' },
+  handled_nonerror: { match: 'fx:handled-nonerror' },
   script_error: { match: 'Script error', noise: 'N2' },
   ext_chrome: { match: 'fx:ext-chrome', noise: 'N3' },
   ext_moz: { match: 'fx:ext-moz', noise: 'N3' },
@@ -33,9 +32,7 @@ const REPORT_ONLY = {
   console_error: 'fx:console-error',
 };
 
-const reached = (until) => (until === 'v2' ? SDK.v2 : until === 'wave1' ? SDK.wave1 : true);
-
-test('every error kind, captured or dropped as the SDK version promises', async ({ sq }, testInfo) => {
+test('every error kind, captured or dropped as the SDK promises', async ({ sq }, testInfo) => {
   const s = await sq.start({ spec: { capture: 'none' } });
   const page = await s.open('/errors');
   await s.waitForConfig();
@@ -55,16 +52,10 @@ test('every error kind, captured or dropped as the SDK version promises', async 
   for (const [id, k] of Object.entries(KINDS)) {
     const got = all.filter((e) => text(e).includes(k.match));
     if (k.noise) {
-      ledger.check(id, got.length === 0, {
-        gap: !SDK.wave1,
-        detail: `${got.length} sent`,
-        why: `noise rule ${k.noise}, dropped from 1.1 (D9)`,
-      });
+      ledger.check(id, got.length === 0, { detail: `${got.length} sent`, why: `noise rule ${k.noise} (D9)` });
     } else {
       ledger.check(id, got.length === 1, {
-        gap: !reached(k.gapUntil),
         detail: `${got.length} sent${got[0] ? `: ${JSON.stringify(got[0].message).slice(0, 70)}` : ''}`,
-        why: reached(k.gapUntil) ? '' : k.why,
       });
     }
   }
@@ -75,7 +66,6 @@ test('every error kind, captured or dropped as the SDK version promises', async 
 
   const burst = all.filter((e) => e.message?.includes('fx:burst'));
   ledger.check('burst', burst.length <= 10, {
-    gap: !SDK.wave1,
     detail: `30 raised, ${burst.length} events, ${burst.reduce((a, e) => a + e.repeat, 0)} counted`,
     why: 'burst limit: 10, then 1 per 10 s (F6)',
   });
@@ -88,7 +78,6 @@ test('every error kind, captured or dropped as the SDK version promises', async 
   });
   const cause = all.find((e) => e.message?.includes('fx:cause outer'));
   ledger.check('cause chain', JSON.stringify(cause?.cause ?? '').includes('fx:cause-inner'), {
-    info: !SDK.v2,
     detail: cause?.cause ? 'cause sent' : 'no cause field',
   });
   const sessions = new Set(all.map((e) => e.sessionId)).size;
@@ -98,7 +87,6 @@ test('every error kind, captured or dropped as the SDK version promises', async 
 });
 
 test('an error thrown before the SDK loads is captured by the snippet stub', async ({ sq }) => {
-  knownGap(!SDK.wave1, '1.0.x ignores errors the snippet stub queued (F7)');
   const s = await sq.start({ spec: { capture: 'none' } });
   await s.open('/mpa/early-error.html');
   await s.waitForConfig();
@@ -108,7 +96,6 @@ test('an error thrown before the SDK loads is captured by the snippet stub', asy
 });
 
 test('an errored-sessions rule replays what led up to the error', async ({ sq }) => {
-  knownGap(!SDK.replayV2, 'before 2.1 recording starts after the error; the 2.1 replay ring flushes a buffer from page load (B3)');
   const s = await sq.start({ spec: { capture: 'replay_on_error' } });
   const page = await s.open('/errors');
   await s.waitForConfig();
@@ -128,7 +115,6 @@ test('an errored-sessions rule replays what led up to the error', async ({ sq })
 
 // Phase 2 exit (design 9): an error replay on the fixture starts at least 60 s before the error.
 test('an error replay starts at least 60 s before the error, from the ring', async ({ sq }, testInfo) => {
-  knownGap(!SDK.replayV2, 'before 2.1 there is no replay ring: recording starts at the error (B3)');
   test.setTimeout(120_000);
   const s = await sq.start({ spec: { capture: 'replay_on_error' } });
   // The page clock runs the 60 s buffer checkouts without waiting for them.

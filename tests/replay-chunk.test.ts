@@ -326,14 +326,6 @@ describe('startReplay', { timeout: 30_000 }, () => {
     expect(check).toHaveBeenCalledTimes(checks);
   });
 
-  it('forgets the 2.0.0 lease and shared counter', () => {
-    localStorage.setItem('_sq_rl', `${SID}|w|1`);
-    localStorage.setItem('_sq_rseq', `${SID}:4`);
-    start();
-    expect(localStorage.getItem('_sq_rl')).toBeNull();
-    expect(localStorage.getItem('_sq_rseq')).toBeNull();
-  });
-
   it('keeps a backend session cap across recorder restarts and allows a new session', async () => {
     const f = vi.fn(async () => new Response('{"reason":"session_cap"}', { status: 429, headers: { 'Retry-After': '3600' } }));
     start({ fetch: f as typeof fetch });
