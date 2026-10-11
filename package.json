@@ -1,7 +1,7 @@
 {
   "name": "@siteqwality/rum",
   "version": "2.2.0",
-  "description": "SiteQwality Real User Monitoring SDK",
+  "description": "Site Qwality Real User Monitoring SDK",
   "main": "dist/cjs/index.cjs",
   "module": "dist/esm/index.js",
   "types": "dist/types/index.d.ts",
@@ -50,7 +50,7 @@
   "bugs": {
     "url": "https://github.com/siteqwality/sdk-rum/issues"
   },
-  "author": "SiteQwality",
+  "author": "Site Qwality",
   "type": "module",
   "license": "MIT",
   "publishConfig": {
