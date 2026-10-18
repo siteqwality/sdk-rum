@@ -72,6 +72,15 @@ describe('fetch', () => {
     expect(new Headers(init.headers).get('x-app')).toBe('1');
   });
 
+  it('passes an unparseable URL through to the native fetch', async () => {
+    const net = analyze();
+    const rows = await run(net, async () => {
+      expect((await fetch('http://[')).status).toBe(200);
+    });
+    expect(net.app.at(-1)!.url).toBe('http://[');
+    expect(rows).toEqual([]);
+  });
+
   it('never records its own requests', async () => {
     const net = analyze();
     const rows = await run(net, async () => {
@@ -331,6 +340,33 @@ describe('rules and breadcrumbs', () => {
 
 
 describe('trace sampling', () => {
+  it('preserves an empty user traceparent without linking it', async () => {
+    const net = analyze({ capture: { network: { trace_urls: ['/api'] } } });
+    const rows = await run(net, () => fetch('/api/ok', { headers: { traceparent: '', tracestate: 'vendor=value' } }));
+    const headers = new Headers(net.app.at(-1)!.init?.headers);
+    expect(headers.get('traceparent')).toBe('');
+    expect(headers.get('tracestate')).toBe('vendor=value');
+    expect(rows[0].trace_id).toBeUndefined();
+  });
+  it('keeps the request working without tracing when secure randomness is unavailable', async () => {
+    const net = analyze({ capture: { network: { trace_urls: ['/api'] } } });
+    const rows = await run(net, () => {
+      vi.stubGlobal('crypto', undefined);
+      return fetch('/api/ok');
+    });
+    expect(new Headers(net.app.at(-1)!.init?.headers).has('traceparent')).toBe(false);
+    expect(rows[0].status).toBe(200);
+    expect(rows[0].trace_id).toBeUndefined();
+  });
+  it.each([
+    `00-${'0'.repeat(32)}-${'b'.repeat(16)}-01`,
+    `00-${'a'.repeat(32)}-${'0'.repeat(16)}-01`,
+  ])('preserves a zero-identity parent without linking it: %s', async (parent) => {
+    const net = analyze({ capture: { network: { trace_urls: ['/api'] } } });
+    const rows = await run(net, () => fetch('/api/ok', { headers: { traceparent: parent } }));
+    expect(new Headers(net.app.at(-1)!.init?.headers).get('traceparent')).toBe(parent);
+    expect(rows[0].trace_id).toBeUndefined();
+  });
   it.each([0, 1])('propagates sampling rate %s without changing CORS mode', async (rate) => {
     const net = analyze({ capture: { network: { trace_urls: ['/api'], trace_sample_rate: rate } } });
     await run(net, () => fetch('/api/ok', { mode: 'cors' }));

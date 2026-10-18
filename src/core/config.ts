@@ -84,9 +84,9 @@ export function normalizeConfig(raw: unknown, appId: string): SdkConfig {
   if (typeof p.mask_text !== 'boolean') out.privacy.mask_text = level === 'strict';
   if (typeof p.hide_action_text !== 'boolean') out.privacy.hide_action_text = level === 'strict';
   out.observe.sample_rate = Math.min(1, Math.max(0, out.observe.sample_rate));
-  const rate = out.capture.network.trace_sample_rate;
-  if (!Number.isFinite(rate) || rate < 0 || rate > 1) out.capture.network.trace_sample_rate = 1;
-  out.capture.network.max_body_bytes = Math.min(65_536, Math.max(0, out.capture.network.max_body_bytes));
+  const network = out.capture.network;
+  if (network.trace_sample_rate < 0 || network.trace_sample_rate > 1) network.trace_sample_rate = 1;
+  network.max_body_bytes = Math.min(65_536, Math.max(0, network.max_body_bytes));
   return out;
 }
 

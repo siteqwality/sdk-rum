@@ -2,7 +2,7 @@
 // from resource timing. Failures are Observe, successes Analyze; repeats of either fold per 30 s.
 import type { SqEvent } from '../types';
 import { OBSERVE, ANALYZE, type Hub } from '../hub';
-import { uuid, toHex } from '../core/hash';
+import { uuid, toHex, sampledIn } from '../core/hash';
 import { redactBody, allowedHeaders } from '../core/sanitize';
 import { timing, createExclusionMatcher } from './resources';
 import { now, perfNow, round, byteLength, pct, read } from '../core/util';
@@ -23,9 +23,8 @@ interface Req {
   reqHeaders?: Headers;
   reqBody?: string;
   reqBytes?: number;
-  trace?: [string, string];
-  sampled?: boolean;
-  traceAllowed?: boolean;
+  trace?: [string, string, string?];
+  tp?: boolean;
   body: boolean;
   /** The response body read gave up at BODY_WAIT_MS. */
   partial?: boolean;
@@ -43,14 +42,6 @@ export interface NetworkOptions {
 
 export type Network = ReturnType<typeof startNetwork>;
 
-
-function absolute(url: string): string {
-  try {
-    return new URL(url, location.href).href;
-  } catch {
-    return url;
-  }
-}
 
 function bodySize(body: unknown): number | undefined {
   if (typeof body === 'string') return byteLength(body);
@@ -175,7 +166,8 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
 
   function begin(method: unknown, url: unknown, initiator: Req['initiator'], headers?: Headers): Req | null {
     if (typeof url !== 'string' || !url) return null;
-    const abs = absolute(url);
+    const target = new URL(url, location.href);
+    const abs = target.href;
     if (h.isOwn(abs)) return null;
     const net = matchers();
     const clean = h.url(abs);
@@ -189,17 +181,15 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
       reqHeaders: headers,
       body: net.max_body_bytes > 0 && bodyMatch(clean),
       done: o.netStart(),
+      tp: traceMatch(abs) && !target.username && !target.password,
     };
-    const target = new URL(abs);
-    req.traceAllowed = traceMatch(abs) && !target.username && !target.password;
-    if (req.traceAllowed && typeof globalThis.crypto?.getRandomValues === 'function') {
+    if (req.tp) {
       try {
-        const trace = crypto.getRandomValues(new Uint8Array(16));
-        const span = crypto.getRandomValues(new Uint8Array(8));
-        if (trace.some(Boolean) && span.some(Boolean)) {
-          req.trace = [toHex(trace), toHex(span)];
-          const draw = crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296;
-          req.sampled = draw < net.trace_sample_rate;
+        const trace = toHex(crypto.getRandomValues(new Uint8Array(16)));
+        const span = toHex(crypto.getRandomValues(new Uint8Array(8)));
+        if (/[1-9a-f]/.test(trace) && /[1-9a-f]/.test(span)) {
+          // W3C trace-flags: 01 sampled, 00 not.
+          req.trace = [trace, span, '0' + +sampledIn(trace, net.trace_sample_rate)];
         }
       } catch {
         // Leave tracing off when secure randomness is unavailable.
@@ -271,13 +261,12 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     req.reqBytes = bodySize(body);
     if (req.body && typeof body === 'string') req.reqBody = body;
     const existing = headers.get('traceparent');
-    if (existing) {
-      const m = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/.exec(existing);
-      req.trace = req.traceAllowed && m && /[1-9a-f]/.test(m[1]) && /[1-9a-f]/.test(m[2]) ? [m[1], m[2]] : undefined;
+    if (existing !== null) {
+      const m = /^00-((?!0{32})[0-9a-f]{32})-((?!0{16})[0-9a-f]{16})-[0-9a-f]{2}$/.exec(existing);
+      req.trace = req.tp && m ? [m[1], m[2]] : undefined;
       return;
     }
-    if (req.trace) trace(`00-${req.trace[0]}-${req.trace[1]}-${req.sampled ? '01' : '00'}`);
-    else req.trace = undefined;
+    if (req.trace) trace(`00-${req.trace.join('-')}`);
   }
 
   function readBody(req: Req, get: () => Promise<string | undefined> | string | undefined): Promise<string | undefined> {
