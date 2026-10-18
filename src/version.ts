@@ -1,2 +1,2 @@
 /** The SDK release; names the CDN recorder file. Kept equal to package.json by a test. */
-export const VERSION = '2.2.1';
+export const VERSION = '2.3.0';

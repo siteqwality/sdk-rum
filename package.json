@@ -1,6 +1,6 @@
 {
   "name": "@siteqwality/rum",
-  "version": "2.2.1",
+  "version": "2.3.0",
   "description": "Site Qwality Real User Monitoring SDK",
   "main": "dist/cjs/index.cjs",
   "module": "dist/esm/index.js",

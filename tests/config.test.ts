@@ -104,3 +104,11 @@ describe('the config cache', () => {
     expect(loadCachedConfig(APP)).toBeNull();
   });
 });
+
+
+it.each([undefined, NaN, Infinity, -0.1, 1.1, '0'])('defaults invalid trace sampling %s', (rate) => {
+  expect(normalizeConfig({ capture: { network: { trace_sample_rate: rate } } }, APP).capture.network.trace_sample_rate).toBe(1);
+});
+it.each([0, 0.25, 1])('preserves trace sampling %s', (rate) => {
+  expect(normalizeConfig({ capture: { network: { trace_sample_rate: rate } } }, APP).capture.network.trace_sample_rate).toBe(rate);
+});

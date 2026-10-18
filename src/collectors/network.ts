@@ -2,7 +2,7 @@
 // from resource timing. Failures are Observe, successes Analyze; repeats of either fold per 30 s.
 import type { SqEvent } from '../types';
 import { OBSERVE, ANALYZE, type Hub } from '../hub';
-import { uuid, randomBytes, toHex } from '../core/hash';
+import { uuid, toHex } from '../core/hash';
 import { redactBody, allowedHeaders } from '../core/sanitize';
 import { timing, createExclusionMatcher } from './resources';
 import { now, perfNow, round, byteLength, pct, read } from '../core/util';
@@ -24,6 +24,8 @@ interface Req {
   reqBody?: string;
   reqBytes?: number;
   trace?: [string, string];
+  sampled?: boolean;
+  traceAllowed?: boolean;
   body: boolean;
   /** The response body read gave up at BODY_WAIT_MS. */
   partial?: boolean;
@@ -188,7 +190,21 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
       body: net.max_body_bytes > 0 && bodyMatch(clean),
       done: o.netStart(),
     };
-    if (traceMatch(clean)) req.trace = [toHex(randomBytes(16)), toHex(randomBytes(8))];
+    const target = new URL(abs);
+    req.traceAllowed = traceMatch(abs) && !target.username && !target.password;
+    if (req.traceAllowed && typeof globalThis.crypto?.getRandomValues === 'function') {
+      try {
+        const trace = crypto.getRandomValues(new Uint8Array(16));
+        const span = crypto.getRandomValues(new Uint8Array(8));
+        if (trace.some(Boolean) && span.some(Boolean)) {
+          req.trace = [toHex(trace), toHex(span)];
+          const draw = crypto.getRandomValues(new Uint32Array(1))[0] / 4294967296;
+          req.sampled = draw < net.trace_sample_rate;
+        }
+      } catch {
+        // Leave tracing off when secure randomness is unavailable.
+      }
+    }
     return req;
   }
 
@@ -254,7 +270,13 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
   function prep(req: Req, body: unknown, headers: Headers, trace: (value: string) => void): void {
     req.reqBytes = bodySize(body);
     if (req.body && typeof body === 'string') req.reqBody = body;
-    if (req.trace && !headers.has('traceparent')) trace(`00-${req.trace[0]}-${req.trace[1]}-01`);
+    const existing = headers.get('traceparent');
+    if (existing) {
+      const m = /^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/.exec(existing);
+      req.trace = req.traceAllowed && m && /[1-9a-f]/.test(m[1]) && /[1-9a-f]/.test(m[2]) ? [m[1], m[2]] : undefined;
+      return;
+    }
+    if (req.trace) trace(`00-${req.trace[0]}-${req.trace[1]}-${req.sampled ? '01' : '00'}`);
     else req.trace = undefined;
   }
 
@@ -305,6 +327,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
         const source = init?.headers ?? (isReq ? (input as Request).headers : undefined);
         const headers = new Headers(source);
         req = begin(init?.method ?? (isReq ? (input as Request).method : 'GET'), url, 'fetch', headers);
+        if (req && (init?.mode ?? (isReq ? (input as Request).mode : undefined)) === 'no-cors') req.trace = undefined;
         if (req)
           prep(req, init?.body, headers, (v) => {
             headers.set('traceparent', v);

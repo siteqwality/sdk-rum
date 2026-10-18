@@ -313,6 +313,23 @@ matching URLs, headers only from the app's allowlist (never credentials), and bo
 matching URLs, redacted, read up to the size cap (event streams never), and given up after 10 s
 (marked `truncated`). With no rules, nothing is traced or captured.
 
+`capture.network.trace_sample_rate` in config v2 is a finite number from 0 to 1,
+with default 1.0. It controls the W3C sampled flag: 0 propagates `00`, 1 propagates
+`01`. Invalid values use the default. Existing trace headers are preserved.
+Tracing requires secure browser randomness and is skipped for `no-cors` fetches.
+For cross-origin trace URLs the API must permit the tracing headers in preflight:
+
+```sh
+curl -i -X OPTIONS https://api.example.com/v1/orders \
+  -H 'Origin: https://app.example.com' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: traceparent,tracestate'
+```
+
+The response needs `Access-Control-Allow-Origin` for your app and
+`Access-Control-Allow-Headers: traceparent, tracestate`. List only API origins
+you control. Configure redirects to remain within those origins.
+
 ## Limits that protect you
 
 - **Clock**: events and replay frames take `Date` only while it agrees with the browser's monotonic

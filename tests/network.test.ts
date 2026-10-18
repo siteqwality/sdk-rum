@@ -328,3 +328,28 @@ describe('rules and breadcrumbs', () => {
     expect(crumbs.some((c) => c.k === 'network' && c.msg === 'GET http://localhost:3000/api/fail 500')).toBe(true);
   });
 });
+
+
+describe('trace sampling', () => {
+  it.each([0, 1])('propagates sampling rate %s without changing CORS mode', async (rate) => {
+    const net = analyze({ capture: { network: { trace_urls: ['/api'], trace_sample_rate: rate } } });
+    await run(net, () => fetch('/api/ok', { mode: 'cors' }));
+    const init = net.app.at(-1)!.init!;
+    expect(new Headers(init.headers).get('traceparent')).toMatch(new RegExp(`^00-[0-9a-f]{32}-[0-9a-f]{16}-${rate ? '01' : '00'}$`));
+    expect(init.mode).toBe('cors');
+  });
+  it('does not add tracing headers to no-cors fetches', async () => {
+    const net = analyze({ capture: { network: { trace_urls: ['/api'] } } });
+    await run(net, () => fetch('/api/ok', { mode: 'no-cors' }));
+    expect(new Headers(net.app.at(-1)!.init?.headers).has('traceparent')).toBe(false);
+  });
+});
+
+it('links a valid user traceparent without overriding its sampling or tracestate', async () => {
+  const net = analyze({ capture: { network: { trace_urls: ['/api'], trace_sample_rate: 1 } } });
+  const parent = `00-${'a'.repeat(32)}-${'b'.repeat(16)}-00`;
+  const rows = await run(net, () => fetch('/api/ok', { headers: { traceparent: parent, tracestate: 'vendor=value' } }));
+  expect(new Headers(net.app.at(-1)!.init!.headers).get('traceparent')).toBe(parent);
+  expect(new Headers(net.app.at(-1)!.init!.headers).get('tracestate')).toBe('vendor=value');
+  expect(rows[0].trace_id).toBe('a'.repeat(32));
+});

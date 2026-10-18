@@ -34,7 +34,7 @@ const defaults = (): Omit<SdkConfig, 'application_id' | 'rules'> => ({
   capture: {
     canvas: null,
     resource_exclusions: [],
-    network: { header_allowlist: ['content-type', 'x-request-id'], body_urls: [], trace_urls: [], max_body_bytes: 10_240 },
+    network: { header_allowlist: ['content-type', 'x-request-id'], body_urls: [], trace_urls: [], trace_sample_rate: 1, max_body_bytes: 10_240 },
     console: ['error', 'warn'],
     errors: { ignore: [], deny_urls: [], suppressed_keys: [], console_errors_as_issues: false },
     frustration_ignore_selectors: [],
@@ -84,6 +84,8 @@ export function normalizeConfig(raw: unknown, appId: string): SdkConfig {
   if (typeof p.mask_text !== 'boolean') out.privacy.mask_text = level === 'strict';
   if (typeof p.hide_action_text !== 'boolean') out.privacy.hide_action_text = level === 'strict';
   out.observe.sample_rate = Math.min(1, Math.max(0, out.observe.sample_rate));
+  const rate = out.capture.network.trace_sample_rate;
+  if (!Number.isFinite(rate) || rate < 0 || rate > 1) out.capture.network.trace_sample_rate = 1;
   out.capture.network.max_body_bytes = Math.min(65_536, Math.max(0, out.capture.network.max_body_bytes));
   return out;
 }
