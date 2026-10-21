@@ -388,6 +388,9 @@ SDK sends; see its README.
 
 ## Changelog
 
+- 2.3.1: American English spelling in internal names and comments; no behavior change.
+- 2.3.0: configurable trace sampling for network capture (`capture.network.trace_sample_rate`,
+  0 to 1), kept inside the CDN bundle budget.
 - 2.2.1: no longer adopts sessions or storage keys left by retired SDK versions; the deprecated
   `RumConfig` type alias is removed (use `InitOptions`).
 - 2.2.0: opt-in canvas frames with bounded WebP encoding, privacy and
