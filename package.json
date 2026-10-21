@@ -29,7 +29,7 @@
     "size": "node scripts/size.mjs",
     "lint": "eslint src/",
     "clean": "rm -rf dist",
-    "prepublishOnly": "npm run clean && npm run build && npm run build:types && npm run test && npm run test:bundle && node scripts/check-package.cjs",
+    "prepublishOnly": "node scripts/check-dep-age.mjs && npm run clean && npm run build && npm run build:types && npm run test && npm run test:bundle && node scripts/check-package.cjs",
     "size:modules": "node scripts/size.mjs --modules"
   },
   "keywords": [

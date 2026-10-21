@@ -1,4 +1,8 @@
-.PHONY: build check deploy probe
+.PHONY: build check deploy probe dep-age
+
+# Supply chain gate: every locked package was published 7+ days ago.
+dep-age:
+	node scripts/check-dep-age.mjs
 
 build:
 	npm run clean && npm run build
@@ -7,7 +11,7 @@ build:
 check: build
 	npm test && npm run test:bundle && npm run size && npm run test:browser
 
-deploy: check
+deploy: dep-age check
 	AWS_PROFILE=siteqwality ./deploy.sh E23MTP7VCRLRPV
 
 # The same bundle checks against the live file, after a deploy.
