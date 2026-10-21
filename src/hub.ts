@@ -23,7 +23,7 @@ export interface Hub {
   readonly opts: InitOptions;
   cfg(): SdkConfig;
   url: UrlSanitizer;
-  /** Minimises the URLs inside free text. */
+  /** Minimizes the URLs inside free text. */
   text: TextUrlSanitizer;
   /** PII patterns of the privacy level, as tokens. */
   scrub: Scrub;
@@ -35,7 +35,7 @@ export interface Hub {
   isOwn(url: string): boolean;
   /** Whether the SDK may write storage (consent granted, persistence allows it). */
   store(): boolean;
-  /** The current page URL, minimised. */
+  /** The current page URL, minimized. */
   pageUrl(): string;
   viewId(): string;
 }

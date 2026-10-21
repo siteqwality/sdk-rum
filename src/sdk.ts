@@ -13,7 +13,7 @@ import { send } from './core/send';
 import { textPatterns } from './core/patterns';
 import { createRules, type RuleInput } from './core/rules';
 import { sampledIn, uuid, toHex } from './core/hash';
-import { parseStack, topFrame, normalisePath, errorKey } from './core/stack';
+import { parseStack, topFrame, normalizePath, errorKey } from './core/stack';
 import { now, epochOf, cut, isHidden, storage, strings, on, read, nonEmpty, byteLength } from './core/util';
 import { startViews, pageUrl, type Views } from './collectors/views';
 import { startVitals } from './collectors/vitals';
@@ -44,7 +44,7 @@ function isMobile(): boolean {
 }
 
 const keyOf = (e: SqEvent) =>
-  errorKey(String(e.error_type), String(e.message), normalisePath(topFrame(parseStack(String(e.stack)))?.file ?? ''));
+  errorKey(String(e.error_type), String(e.message), normalizePath(topFrame(parseStack(String(e.stack)))?.file ?? ''));
 
 export type Instance = ReturnType<typeof createInstance>;
 
@@ -197,7 +197,7 @@ export function createInstance(opts: InitOptions) {
     return c;
   }
 
-  /** A value beforeSend changed: URLs minimised, stacks cleaned, other text scrubbed, deeply. */
+  /** A value beforeSend changed: URLs minimized, stacks cleaned, other text scrubbed, deeply. */
   function clean(key: string, v: unknown): unknown {
     if (typeof v === 'string') {
       const s = cut(v, 16_384);
@@ -210,7 +210,7 @@ export function createInstance(opts: InitOptions) {
     return v;
   }
 
-  /** beforeSend for every kind (6.1): ids and times never change; changes are re-sanitised. */
+  /** beforeSend for every kind (6.1): ids and times never change; changes are re-sanitized. */
   function hook(e: SqEvent, kind: SqEventKind): SqEvent | null {
     const fn = opts.beforeSend;
     if (typeof fn !== 'function') return e;
@@ -233,7 +233,7 @@ export function createInstance(opts: InitOptions) {
     const chosen = (r && typeof r === 'object' ? r : draft) as Record<string, unknown>;
     const out = { ...e };
     // Known fields only, of the same type; a removed field keeps its original value, and only
-    // what the hook changed is minimised and scrubbed again.
+    // what the hook changed is minimized and scrubbed again.
     for (const key of Object.keys(e)) {
       const v = read(() => chosen[key]);
       const was = e[key];

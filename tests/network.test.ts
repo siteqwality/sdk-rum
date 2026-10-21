@@ -32,7 +32,7 @@ describe('fetch', () => {
     expect(typeof rows[0].duration_ms).toBe('number');
   });
 
-  it('records successes once Analyze is on, minimised, with request size', async () => {
+  it('records successes once Analyze is on, minimized, with request size', async () => {
     const rows = await run(analyze(), () => fetch('/api/search?q=x&api_key=secret', { method: 'post', body: '{"a":1}' }));
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ method: 'POST', url: 'http://localhost:3000/api/search', status: 200, req_bytes: 7 });

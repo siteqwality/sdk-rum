@@ -28,7 +28,7 @@ export interface Segment {
   fs: boolean;
   /** Stylesheets carried inline; the intake holds them once this segment is acknowledged. */
   css: string[];
-  /** What it holds in memory: `bytes` plus the stylesheet texts kept for acknowledgement. */
+  /** What it holds in memory: `bytes` plus the stylesheet texts kept for acknowledgment. */
   mem: number;
 }
 

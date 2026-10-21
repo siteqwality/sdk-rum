@@ -88,7 +88,7 @@ export interface RecordingRule {
   require_interaction: boolean;
 }
 
-/** Config v2 after normalisation: every field present. */
+/** Config v2 after normalization: every field present. */
 export interface SdkConfig {
   v: 2;
   application_id: string;

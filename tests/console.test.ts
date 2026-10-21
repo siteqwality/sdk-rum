@@ -61,7 +61,7 @@ describe('capture', () => {
     expect(SiteQwalityRUM.getStatus()?.dropped.console_rate_limited).toBe(30);
   });
 
-  it('scrubs, minimises and cuts entries to 2 KB, with the stack of an Error', async () => {
+  it('scrubs, minimizes and cuts entries to 2 KB, with the stack of an Error', async () => {
     const net = await boot({}, analyze());
     console.error('lookup failed for a@b.io at https://x.test/p?token=1', new Error('e'));
     console.warn('x'.repeat(5000));

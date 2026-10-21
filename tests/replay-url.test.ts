@@ -15,7 +15,7 @@ describe('sanitizeReplayEvent', () => {
     expect(IncrementalSource.Mutation).toBe(0);
   });
 
-  it('minimises the href rrweb embeds in a Meta event', () => {
+  it('minimizes the href rrweb embeds in a Meta event', () => {
     const event = {
       type: EventType.Meta,
       timestamp: 1,

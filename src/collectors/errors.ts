@@ -3,7 +3,7 @@
 import type { SqEvent } from '../types';
 import { OBSERVE, type Hub } from '../hub';
 import { uuid } from '../core/hash';
-import { parseStack, topFrame, normalisePath, splitErrorMessage, errorKey, hasLocation } from '../core/stack';
+import { parseStack, topFrame, normalizePath, splitErrorMessage, errorKey, hasLocation } from '../core/stack';
 import { cut, now, read, str, isHidden, strings, on, byteLength } from '../core/util';
 import { textPatterns } from '../core/patterns';
 
@@ -13,7 +13,7 @@ export interface Cause {
   stack: string;
 }
 
-/** An error as raised; never sent before the pipeline minimises it. */
+/** An error as raised; never sent before the pipeline minimizes it. */
 export interface RawError {
   type: string;
   message: string;
@@ -253,7 +253,7 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
       const noise = noiseRule(raw.raw || raw.message, raw.stack, raw.filename, raw.message);
       if (noise) return h.count(`noise_${noise}`);
       const type = cut(raw.type, 128);
-      // Dashboard lists see what the intake sees: the message as sent, minimised and scrubbed.
+      // Dashboard lists see what the intake sees: the message as sent, minimized and scrubbed.
       const message = h.scrub(h.text(cut(raw.message, MAX_MESSAGE)));
       const msg = normalizeMessage(message);
       // As core-rs is_ignored: the message, or type and message.
@@ -266,7 +266,7 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
       if (isHidden() && o.orphan()) return;
 
       const stack = cleanStack(h, raw.stack);
-      const key = errorKey(type, message, normalisePath(topFrame(parseStack(stack))?.file ?? ''));
+      const key = errorKey(type, message, normalizePath(topFrame(parseStack(stack))?.file ?? ''));
       if (cfg.suppressed_keys.includes(key)) return h.count('suppressed_error');
       if (sent >= MAX_ERRORS_PER_PAGE) return h.count('rate_limited_error');
 

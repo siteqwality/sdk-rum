@@ -40,7 +40,7 @@ test('app requests behave the same with the SDK, which adds no headers by defaul
   // Recording its own sends fed the 2026-10-03 hidden-tab loop. The CDN script load is the page's own.
   const own = recorded.filter((r) => [ORIGINS.ingest, ORIGINS.replay].some((h) => r.url?.startsWith(h)));
   ledger.check('own sends never recorded', own.length === 0, { detail: own.map((r) => r.url).join(', ') || `none of ${recorded.length} rows` });
-  ledger.check('recorded URLs minimised', recorded.every((r) => !String(r.url).includes('?')), {
+  ledger.check('recorded URLs minimized', recorded.every((r) => !String(r.url).includes('?')), {
     detail: recorded.filter((r) => String(r.url).includes('?')).map((r) => r.url).join(', ') || 'no query strings',
   });
   for (const id of ['fetch_ok', 'fetch_500', 'xhr_ok']) {

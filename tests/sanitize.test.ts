@@ -26,7 +26,7 @@ describe('PII patterns (7.1)', () => {
     expect(mask('mail a@b.io, ref 123456789')).toBe('mail ******, ref *********');
   });
 
-  it('honours the configured patterns only', () => {
+  it('honors the configured patterns only', () => {
     expect(createScrubber([])('a@b.io 123456789')).toBe('a@b.io 123456789');
     expect(createScrubber(['digits9'])('a@b.io 123456789')).toBe('a@b.io <digits>');
   });

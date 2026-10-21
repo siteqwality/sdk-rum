@@ -1,5 +1,5 @@
 // What replay may record (design 7.1): rrweb privacy options from the app's level and selectors,
-// URL minimisation and PII scrubbing of DOM attributes, and no content from inside iframes.
+// URL minimization and PII scrubbing of DOM attributes, and no content from inside iframes.
 import type { UrlSanitizer } from '../core/url';
 import type { SdkConfig } from '../types';
 import type { record as rrwebRecord } from '@rrweb/record';
@@ -35,13 +35,13 @@ interface MaybeIncrementalEvent {
 }
 
 /**
- * Sanitise the page URL rrweb embeds in its Meta event.
+ * Sanitize the page URL rrweb embeds in its Meta event.
  *
  * rrweb emits a Meta event on start and on every SPA navigation, carrying the
  * full `location.href` including its query string and fragment. Left alone it
  * reintroduces, inside the replay segment, exactly the data the view collector
  * strips. Rewriting the event after `emit` reaches it needs no rrweb fork.
- * DOM attribute URLs are minimised separately, by `cleanAttributes`.
+ * DOM attribute URLs are minimized separately, by `cleanAttributes`.
  */
 export function sanitizeReplayEvent(
   event: unknown,
@@ -202,8 +202,8 @@ const CSS_URL = /(url\(\s*)(?:(["'])(.*?)\2|([^'")\s]*))(\s*\))|(@import\s+)(["'
 const cssCache = new Map<string, string>();
 
 /**
- * URLs in CSS minimised, nothing else touched: fragment references (`url(#clip)`) and data URIs
- * are kept, and each value is rewritten in place, so a declaration never loses its neighbours.
+ * URLs in CSS minimized, nothing else touched: fragment references (`url(#clip)`) and data URIs
+ * are kept, and each value is rewritten in place, so a declaration never loses its neighbors.
  */
 export function cleanCss(css: string, url: UrlSanitizer): string {
   if (!/url\(|@import/i.test(css)) return css;
@@ -221,7 +221,7 @@ export function cleanCss(css: string, url: UrlSanitizer): string {
   return out;
 }
 
-/** URL attributes minimised and the rest PII-scrubbed, in snapshots and mutations, in place. */
+/** URL attributes minimized and the rest PII-scrubbed, in snapshots and mutations, in place. */
 export function cleanAttributes(
   attrs: Record<string, unknown> | undefined,
   url: UrlSanitizer,
@@ -232,7 +232,7 @@ export function cleanAttributes(
   for (const name of Object.keys(attrs)) {
     const v = attrs[name];
     if (name.startsWith('rr_')) continue;
-    // Stylesheets: URLs minimised, nothing scrubbed (digit runs live in fonts and selectors).
+    // Stylesheets: URLs minimized, nothing scrubbed (digit runs live in fonts and selectors).
     if (name === '_cssText') {
       if (typeof v === 'string') attrs[name] = text(cleanCss(v, url));
       continue;

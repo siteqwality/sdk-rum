@@ -75,7 +75,7 @@ and `x-sq-replay-index` headers.
 | `cookieDomain` | host-only cookie | Share the session across subdomains, e.g. `'example.com'`; any nonempty value disables canvas capture |
 | `hashRouting` | `false` | One page view per `#/route` |
 | `routeName(path)` | none | Route name for a path, e.g. `'/users/:id'` |
-| `allowedQueryParams`, `deniedQueryParams` | none | See URL minimisation |
+| `allowedQueryParams`, `deniedQueryParams` | none | See URL minimization |
 | `ignoreErrors`, `denyUrls` | none | See Errors |
 | `beforeSend(event, kind)` | none | See beforeSend |
 | `ingestBase`, `replayBase`, `configBase` | Site Qwality hosts | First-party proxies |
@@ -150,7 +150,7 @@ removes every key but the opt-out.
 - `'pending'` collects in memory only: nothing is sent or stored, replay does not start. Granting
   sends what was held, in the session another tab already has or a new one; `'not-granted'` drops
   it. Consent set with `setTrackingConsent` is never overridden by the application's config.
-- With Global Privacy Control on and the app honouring it (the default), a session is Observe only:
+- With Global Privacy Control on and the app honoring it (the default), a session is Observe only:
   no Analyze detail, no replay, no user identity or anonymous id, and the session lives in
   `sessionStorage`. Cookieless apps get the same storage.
 - `optOut()` stops everything in this browser until `optIn()`.
@@ -167,13 +167,13 @@ one with a `repeat` count; a burst of one error sends 10, then 1 per 10 s; a pag
 
 The application's ignore and deny lists use the intake's pattern language: a case-sensitive
 substring, or a regular expression written `/…/` (`/…/i` ignores case). Ignore patterns match the
-message as sent (URLs minimised, PII scrubbed), or the type and message (`TypeError: x is null`). The SDK applies a deny pattern only when
+message as sent (URLs minimized, PII scrubbed), or the type and message (`TypeError: x is null`). The SDK applies a deny pattern only when
 the top frame is surely the page's own code; the intake decides the rest. With "console errors as
 issues" on, `console.error` calls become errors with `handling: "console"`.
 
 Each error carries the page `url`, its stack, up to three `cause` levels, the last 30 breadcrumbs (clicks,
 navigations, failed requests, console), the Debug IDs of bundles built with our plugins, and an
-`error_key`: a hash of the type, the message with digits removed and the top frame's normalised
+`error_key`: a hash of the type, the message with digits removed and the top frame's normalized
 path, so an error groups the same across deploys and browsers.
 
 ## beforeSend
@@ -192,14 +192,14 @@ SiteQwalityRUM.init({
 Runs for errors, views, actions, custom events, network rows and console lines, on a copy. Return
 `false` or `null` to drop (views cannot be dropped), an object to replace, or nothing to keep your
 in-place changes. Only fields the event already has change, and only to a value of the same type;
-`k`, `t`, `view_id`, `id`, `seq`, `final` and `error_key` never change. What you change is minimised
+`k`, `t`, `view_id`, `id`, `seq`, `final` and `error_key` never change. What you change is minimized
 and scrubbed again (URLs, stacks, text, nested fields included); what you leave alone is sent as
 the SDK built it, and an error's `error_key` follows your changes. It must return synchronously; if
 it throws, the event is sent unchanged.
 
-## URL minimisation
+## URL minimization
 
-Every URL the SDK captures is minimised in the browser before it is sent: the fragment is removed
+Every URL the SDK captures is minimized in the browser before it is sent: the fragment is removed
 (a hash route such as `#/path` is kept unless it holds `=` or `&`), the whole query string is
 removed, and credentials in the authority are removed. This covers page views, resources, fetch and
 XHR, URLs in error messages and stacks, the page URL in replay, and URL attributes in the replay
@@ -232,7 +232,7 @@ applies the same rules server-side.
   after 30 s if it does not), at most every 30 s. Recording never stops for volume.
 - **Stylesheets** are inlined so the player needs nothing from your site; a checkout names a
   stylesheet over 1 KB that already reached Site Qwality (`sq-css:<hash>`, FNV-1a 64) instead of
-  sending it again. URLs inside stylesheets and `style` attributes are minimised like any other.
+  sending it again. URLs inside stylesheets and `style` attributes are minimized like any other.
   Images, fonts and canvas are never inlined into snapshots.
 - **Segments** are gzipped and close at 20 s or about 2.5 MB, at a page's first snapshot (sent at
   once, so a short page view still plays), and when the tab hides. After a pause, the snapshot's
@@ -253,7 +253,7 @@ applies the same rules server-side.
   `session_cap`, discards queued data and the unload tail, and does not retry for that session.
   Tabs sharing storage learn the cap before sending and on their next 15-second check; reloads
   retain it. A new session may record again. Other 429s, including an older backend's bare 429,
-  retain backoff and honour `Retry-After` for all segments and the unload tail.
+  retain backoff and honor `Retry-After` for all segments and the unload tail.
 
 A tab left open on a page that ticks a clock every second sends nothing while hidden or idle; while
 watched it sends at most three segments a minute.
@@ -362,7 +362,7 @@ dropped.
 | gzip fallback `gzip-2.2.1.min.js` | 3.3 KB | 9 KB (CI gate) |
 
 The design estimated 18 KB for the core, leaving out stack parsing and grouping, resource timing and
-the URL minimiser; 26 KB is the accepted 2.0 budget, and CI fails a build past it. Pages that never
+the URL minimizer; 26 KB is the accepted 2.0 budget, and CI fails a build past it. Pages that never
 replay download only the core; only browsers without `CompressionStream` download the gzip fallback.
 
 ## SDK 1.x

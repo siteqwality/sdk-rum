@@ -20,7 +20,7 @@ describe('createOwnRequestMatcher', () => {
     expect(isOwn('https://cdn.siteqwality.com/rum/config/v2/app.json')).toBe(true);
   });
 
-  it('normalises the origin: host case and default port', () => {
+  it('normalizes the origin: host case and default port', () => {
     const isOwn = createOwnRequestMatcher(DEFAULT_BASES);
     expect(isOwn('https://IN.SiteQwality.com:443/v2/batch')).toBe(true);
   });
@@ -200,7 +200,7 @@ describe('startResources', () => {
     view = 'v1';
   });
 
-  it('sends each resource of the initial view with minimised URL, timing and sizes', () => {
+  it('sends each resource of the initial view with minimized URL, timing and sizes', () => {
     start();
     FakePerformanceObserver.emit('resource', [entry(`${location.origin}/img/a.png?sig=x`, { renderBlockingStatus: 'blocking', responseStatus: 200 })]);
     expect(events[0]).toMatchObject({

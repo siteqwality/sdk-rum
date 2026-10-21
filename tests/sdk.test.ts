@@ -166,14 +166,14 @@ describe('errors', () => {
     expect(SiteQwalityRUM.getStatus()?.dropped).toMatchObject({ noise_n1: 1, noise_n2: 1 });
   });
 
-  it('scrubs PII from messages at the Balanced default and minimises URLs', async () => {
+  it('scrubs PII from messages at the Balanced default and minimizes URLs', async () => {
     const net = await boot();
     SiteQwalityRUM.addError(new Error('no account for jane@example.com at https://x.test/reset?token=abc'));
     await flush();
     expect(net.events('error')[0].message).toBe('no account for <email> at https://x.test/reset');
   });
 
-  it('serialises non-Error rejections and addError values', async () => {
+  it('serializes non-Error rejections and addError values', async () => {
     const net = await boot();
     const reject = new Event('unhandledrejection') as PromiseRejectionEvent;
     Object.defineProperty(reject, 'reason', { value: { code: 'E1', n: 42 } });
@@ -382,7 +382,7 @@ describe('user and attributes', () => {
 });
 
 describe('beforeSend', () => {
-  it('runs for every kind, may drop or edit, never changes ids, and re-sanitises', async () => {
+  it('runs for every kind, may drop or edit, never changes ids, and re-sanitizes', async () => {
     const seen: string[] = [];
     const net = await boot({
       beforeSend: (e, kind) => {
@@ -427,7 +427,7 @@ describe('beforeSend', () => {
     expect(b.error_key).toBe(a.error_key);
   });
 
-  it('what a hook changes is minimised and scrubbed, nested fields included', async () => {
+  it('what a hook changes is minimized and scrubbed, nested fields included', async () => {
     const net = await boot({
       beforeSend: (e, kind) => {
         if (kind === 'error') (e.context as Record<string, string>).note = 'mail jane@acme.test about https://x.test/a?token=1';

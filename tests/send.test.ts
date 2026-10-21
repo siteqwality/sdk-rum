@@ -128,7 +128,7 @@ describe('Backoff', () => {
     expect(Math.round(backoff.next())).toBe(BACKOFF_BASE_MS);
   });
 
-  it('waits at least Retry-After, honoured up to a day', () => {
+  it('waits at least Retry-After, honored up to a day', () => {
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
     expect(new Backoff().next(30_000)).toBe(30_000);
     expect(new Backoff().next(0)).toBe(BACKOFF_BASE_MS / 2);

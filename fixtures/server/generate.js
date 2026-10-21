@@ -33,7 +33,7 @@ export function heavyCss(bytes = 1024 * 1024) {
   return parts.join('');
 }
 
-// A page whose DOM serialises to roughly `mb` megabytes, to exercise the snapshot cap.
+// A page whose DOM serializes to roughly `mb` megabytes, to exercise the snapshot cap.
 export function hugePage(mb, boot) {
   const rand = prng(0xb16);
   const rows = [];

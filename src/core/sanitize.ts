@@ -1,5 +1,5 @@
 // PII pattern scrubbing (7.1), body redaction and the header denylist (6.10). URL
-// minimisation lives in privacy/url.ts.
+// minimization lives in privacy/url.ts.
 import { cut } from './util';
 
 export type Scrub = (text: string) => string;

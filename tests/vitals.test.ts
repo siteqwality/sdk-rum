@@ -110,7 +110,7 @@ describe('vitals', () => {
 });
 
 describe('long frames', () => {
-  it('sends LoAF with the 5 longest scripts, minimised', () => {
+  it('sends LoAF with the 5 longest scripts, minimized', () => {
     startFrames(hub());
     emit('long-animation-frame', [
       {

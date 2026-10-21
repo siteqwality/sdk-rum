@@ -1,5 +1,5 @@
 // Web Vitals with attribution (design 5.6), ported from web-vitals 5 to fit the core budget:
-// the same metric definitions, finalisation rules and attribution sub-parts.
+// the same metric definitions, finalization rules and attribution sub-parts.
 import type { Hub } from '../hub';
 import { round, read, on, observe, navEntry as nav } from '../core/util';
 import { recentFrames } from './frames';

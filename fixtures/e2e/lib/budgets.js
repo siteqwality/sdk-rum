@@ -5,7 +5,7 @@ const KB = 1024;
 
 export const TARGETS = {
   // key: [limit, unit]. Comments give the source.
-  // 5.2 estimated 18 KB, leaving out stack parsing, resource timing and the URL minimiser; 26 KB
+  // 5.2 estimated 18 KB, leaving out stack parsing, resource timing and the URL minimizer; 26 KB
   // accepted for 2.0 (2026-10-04).
   'core.gzip_bytes': [26 * KB, 'bytes'],
   'recorder.gzip_bytes': [30 * KB, 'bytes'], // 5.2

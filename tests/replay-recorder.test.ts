@@ -135,7 +135,7 @@ describe('ReplayRecorder, streaming', () => {
     expect(JSON.stringify(segments)).not.toContain('old-pixels');
   });
 
-  it('stamps events from the SDK clock, minimises the Meta URL and sends the first snapshot at once', () => {
+  it('stamps events from the SDK clock, minimizes the Meta URL and sends the first snapshot at once', () => {
     start();
     expect(segments).toHaveLength(1);
     expect(types(segments[0])).toEqual([4, 2]);

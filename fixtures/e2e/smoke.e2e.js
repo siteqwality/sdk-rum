@@ -4,7 +4,7 @@ import { ORIGINS } from '../server/origins.js';
 
 const pathOf = (url) => new URL(url).pathname;
 
-test('a view per page and SPA route, one session, URLs minimised', async ({ sq }) => {
+test('a view per page and SPA route, one session, URLs minimized', async ({ sq }) => {
   const s = await sq.start({ spec: { capture: 'none' } });
   const page = await s.open('/?utm_source=fixture#top');
   await s.waitForConfig();

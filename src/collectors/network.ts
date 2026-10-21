@@ -1,4 +1,4 @@
-// fetch and XHR (design 5.6, B11): method, minimised URL, status, error kind and timing phases
+// fetch and XHR (design 5.6, B11): method, minimized URL, status, error kind and timing phases
 // from resource timing. Failures are Observe, successes Analyze; repeats of either fold per 30 s.
 import type { SqEvent } from '../types';
 import { OBSERVE, ANALYZE, type Hub } from '../hub';
@@ -281,7 +281,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
   // Event streams never end, so they are never read.
   const textual = (type: string | null | undefined) => !!type && /json|xml|form-urlencoded|text\/(?!event-stream)/i.test(type);
 
-  /** At most `max_body_bytes` (and a little) of a fetch response, then the copy is cancelled. */
+  /** At most `max_body_bytes` (and a little) of a fetch response, then the copy is canceled. */
   async function head(res: Response, req: Req): Promise<string | undefined> {
     const reader = textual(res.headers.get('content-type')) ? res.clone().body?.getReader() : undefined;
     if (!reader) return undefined;

@@ -13,7 +13,7 @@ import {
   type RawError,
 } from '../src/collectors/errors';
 import { normalizeConfig } from '../src/core/config';
-import { errorKey, normalisePath, topFrame, parseStack } from '../src/core/stack';
+import { errorKey, normalizePath, topFrame, parseStack } from '../src/core/stack';
 import { createUrlSanitizer, createTextUrlSanitizer } from '../src/core/url';
 import { createScrubber } from '../src/core/sanitize';
 import type { Hub } from '../src/hub';
@@ -54,7 +54,7 @@ describe('raw errors', () => {
     ]);
   });
 
-  it('serialises other values, cut to 1 KB, without throwing on hostile ones', () => {
+  it('serializes other values, cut to 1 KB, without throwing on hostile ones', () => {
     expect(fromValue({ a: 1 }).message).toBe('{"a":1}');
     expect(fromValue('x'.repeat(2000)).message.length).toBe(2000);
     expect(fromValue({ big: 'y'.repeat(2000) }).message.length).toBe(1024);
@@ -161,7 +161,7 @@ describe('the pipeline', () => {
     expect(sent.map((e) => e.message)).toEqual(['third party', 'vendored']);
   });
 
-  it('matches dashboard lists against the text as sent: minimised and scrubbed', () => {
+  it('matches dashboard lists against the text as sent: minimized and scrubbed', () => {
     cfg.capture.errors.ignore = ['?token=', 'mail <email> failed'];
     cfg.capture.errors.deny_urls = ['app.js?v='];
     const p = make();
@@ -177,7 +177,7 @@ describe('the pipeline', () => {
     p.report({ ...err('x'), type: 'E'.repeat(200) });
     const [e] = sent;
     expect(e.error_type).toHaveLength(128);
-    expect(e.error_key).toBe(errorKey(String(e.error_type), String(e.message), normalisePath(topFrame(parseStack(String(e.stack)))!.file)));
+    expect(e.error_key).toBe(errorKey(String(e.error_type), String(e.message), normalizePath(topFrame(parseStack(String(e.stack)))!.file)));
   });
 
   it('turns console.error into an issue only when the app asks', () => {

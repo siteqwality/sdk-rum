@@ -147,7 +147,7 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     expect(String(fetchSpy.mock.calls[1][0])).toBe(String(fetchSpy.mock.calls[0][0]));
   });
 
-  it('honours Retry-After and holds later segments until then', async () => {
+  it('honors Retry-After and holds later segments until then', async () => {
     fetchSpy.mockImplementationOnce(() => fail(429, { 'Retry-After': '120' }));
     const t = make();
     const st = fresh();
@@ -162,7 +162,7 @@ describe('ReplayTransport v2', { timeout: 30_000 }, () => {
     expect(fetchSpy.mock.calls.map((c) => index(c).get('q'))).toEqual(['0', '0', '1']);
   });
 
-  it('honours a legacy bare 429 Retry-After through later segments and unload', async () => {
+  it('honors a legacy bare 429 Retry-After through later segments and unload', async () => {
     fetchSpy.mockImplementationOnce(() => fail(429, { 'Retry-After': '3600' }));
     const count = vi.fn();
     const t = make({ count });

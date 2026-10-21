@@ -8,7 +8,7 @@ import { BUDGET } from './budget';
 export const KEEPALIVE_MAX_BYTES = 60_000;
 export const BACKOFF_BASE_MS = 2_000;
 export const BACKOFF_MAX_MS = 5 * 60_000;
-/** Longest Retry-After honoured. */
+/** Longest Retry-After honored. */
 export const RETRY_AFTER_MAX_MS = 24 * 60 * 60_000;
 
 export type SendOutcome =
@@ -97,7 +97,7 @@ export function parseRetryAfter(value: string | null, at: number = now()): numbe
   return Number.isNaN(date) ? undefined : Math.max(0, date - at);
 }
 
-/** Exponential backoff with full jitter; Retry-After is a floor, honoured up to a day. */
+/** Exponential backoff with full jitter; Retry-After is a floor, honored up to a day. */
 export class Backoff {
   private failures = 0;
 

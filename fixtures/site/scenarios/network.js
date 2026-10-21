@@ -1,5 +1,5 @@
 // fetch and XHR outcomes: 200, 4xx, 5xx, network failure, abort, timeout, CORS. Each records
-// what the page saw, so the harness can prove an SDK wrapper never changes app behaviour.
+// what the page saw, so the harness can prove an SDK wrapper never changes app behavior.
 import { canary } from '../canaries.js';
 
 const results = () => window.fixture.results.network;

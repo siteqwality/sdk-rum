@@ -157,7 +157,7 @@ describe('DOM attributes in replay', () => {
   const text = createTextUrlSanitizer(url);
   const scrub = createScrubber(['email'], true);
 
-  it('minimises URL attributes, srcset and style urls, and scrubs other attributes', () => {
+  it('minimizes URL attributes, srcset and style urls, and scrubs other attributes', () => {
     const attrs: Record<string, unknown> = {
       href: 'https://x.test/reset?token=abc#f',
       src: '/p.svg?sig=1',

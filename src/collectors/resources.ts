@@ -137,7 +137,7 @@ export type UrlMatcher = (url: string | UrlPrefix) => boolean;
 
 /**
  * True for a URL under one of `bases`: the same origin (scheme, host and port,
- * normalised by the URL parser, so case and default ports do not matter) and a
+ * normalized by the URL parser, so case and default ports do not matter) and a
  * path equal to the base's path or below it at a segment boundary. A base with
  * a path, such as a same-origin proxy at `https://example.com/rum`, matches
  * `/rum` and `/rum/v2/batch` but not `/rumble`. A relative base resolves
@@ -207,7 +207,7 @@ function currentPageUrl(): string | undefined {
 export function parsePrefix(url: string, base?: string): UrlPrefix | null {
   try {
     const parsed = new URL(url, base);
-    // data:, blob: and the like have an opaque origin, serialised as "null".
+    // data:, blob: and the like have an opaque origin, serialized as "null".
     if (parsed.origin === 'null') return null;
     return { origin: parsed.origin, path: trimTrailingSlashes(parsed.pathname) };
   } catch {

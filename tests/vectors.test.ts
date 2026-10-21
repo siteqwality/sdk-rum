@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fnv1a32, sampledIn } from '../src/core/hash';
 import {
   parseStack,
-  normalisePath,
+  normalizePath,
   topFramePath,
   splitErrorMessage,
   errorKey,
@@ -38,8 +38,8 @@ describe('shared RUM vectors (SDK side)', () => {
     }
   });
 
-  it('normalises paths', () => {
-    for (const c of v.normalise_path) expect(normalisePath(c.input), c.input).toBe(c.output);
+  it('normalizes paths', () => {
+    for (const c of v.normalise_path) expect(normalizePath(c.input), c.input).toBe(c.output);
   });
 
   it('computes error keys', () => {

@@ -1,5 +1,5 @@
 /**
- * URL minimisation.
+ * URL minimization.
  *
  * Every URL the SDK sends is stored for as long as the account's retention
  * window allows, which for aggregate measures is 458 days. A URL is not an
@@ -8,7 +8,7 @@
  * and fragments carry the same on single-page applications. Storing those for
  * over a year is the data the customer never intended to send us.
  *
- * So one sanitiser runs on every URL before it is enqueued, and the default is
+ * So one sanitizer runs on every URL before it is enqueued, and the default is
  * to keep only the part that identifies the page:
  *
  * - The **fragment** is removed entirely. There is no allow list for it: a
@@ -38,7 +38,7 @@
  * (monitoring must never break the page). And the server repeats this logic
  * defensively in `core-rs/common/src/rum/url_privacy.rs`, because a stale SDK
  * cached on a customer's page keeps sending full URLs for as long as the cache
- * lives. Two implementations of "whatever the WHATWG URL parser normalises to"
+ * lives. Two implementations of "whatever the WHATWG URL parser normalizes to"
  * would drift; two implementations of the plain string rules below do not.
  * `core-rs/common/src/rum/url_privacy.rs` carries the same case table, for both
  * the whole-URL and the free-text form.
@@ -73,7 +73,7 @@
  * Not covered, and each for a reason:
  *
  * - **URLs inside the replay DOM snapshot**, the `src` and `href` attributes of
- *   the recorded page. rrweb's serialiser produces those and filtering them
+ *   the recorded page. rrweb's serializer produces those and filtering them
  *   needs a fork or an upstream option. They are recorded as they are.
  * - **`custom_attributes`**, the `context` argument of `addError` / `addAction`.
  *   It is whatever the customer puts there, so the SDK cannot tell a URL from a
@@ -82,13 +82,13 @@
  *   instead.
  * - **`action_target`**, up to 30 characters of element text or a CSS selector
  *   from `collectors/actions.ts`. Not URL-shaped, so nothing here applies; it is
- *   a separate minimisation question.
+ *   a separate minimization question.
  * - **`document.referrer`**, which is not captured by this SDK at all today (no
  *   collector reads it). If a referrer is ever collected it must go through this
- *   sanitiser first.
+ *   sanitizer first.
  * - **A URL with no scheme** inside free text, such as a bare
  *   `example.com/a?token=x`. {@link createTextUrlSanitizer} keys on `://` and
- *   deliberately does not recognise protocol-relative or scheme-less forms,
+ *   deliberately does not recognize protocol-relative or scheme-less forms,
  *   because `// comment` is far more common inside an error message than a
  *   protocol-relative URL. A field that is wholly a URL is handled by
  *   {@link createUrlSanitizer}, which needs no scheme.
@@ -118,7 +118,7 @@ export interface UrlSanitizerOptions {
 export type UrlSanitizer = (url: unknown) => string;
 
 /**
- * Normalise a raw query-parameter name for matching: percent-decode it, treat
+ * Normalize a raw query-parameter name for matching: percent-decode it, treat
  * `+` as a space the way form encoding does, trim, and lower-case.
  *
  * Never throws. `decodeURIComponent` rejects a malformed escape such as `%zz`,
@@ -176,7 +176,7 @@ function keepAllowedParams(
 }
 
 /**
- * Build a sanitiser bound to one set of options.
+ * Build a sanitizer bound to one set of options.
  *
  * Prefer this over calling {@link sanitizeUrl} per URL: it builds the two sets
  * once, and the SDK calls it on every view, every navigation and every
@@ -242,13 +242,13 @@ const countChar = (text: string, ch: string): number => text.split(ch).length - 
 
 /**
  * Where to cut a free-text URL candidate: everything from the returned index
- * onwards is trailing noise to re-append verbatim rather than to sanitise.
+ * onwards is trailing noise to re-append verbatim rather than to sanitize.
  *
  * Two passes, in this order. First trailing sentence punctuation (`.`, `,`,
  * `;`, `:`, `!`) and an *unbalanced* closing `)`, `]` or `}`, so
  * `at f (https://cdn/app.js?v=1:1:2)` loses its `)` before anything else looks
  * at it. Then a trailing `:line` or `:line:column`, the shape a JS stack frame
- * writes, so minimising the URL cannot take the position with it.
+ * writes, so minimizing the URL cannot take the position with it.
  *
  * Everything cut here is re-appended unchanged, so this can never lose a
  * character, and because it only ever moves past punctuation and digits it can

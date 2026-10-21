@@ -182,7 +182,7 @@ describe('failures', () => {
     expect(t.size).toBe(0);
   });
 
-  it('honours Retry-After: nothing goes on hide or pagehide until it passes', async () => {
+  it('honors Retry-After: nothing goes on hide or pagehide until it passes', async () => {
     const fail = vi.fn(async () => new Response('', { status: 429, headers: { 'Retry-After': '3600' } }));
     const t = createTransport({ url: 'https://in.test/v2/batch', token: 'ct', fetch: fail as unknown as typeof fetch, count: () => {} });
     t.push(ev(1), ctx());

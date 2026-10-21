@@ -9,7 +9,7 @@ afterEach(() => {
 });
 
 describe('normalizeConfig', () => {
-  it('has safe defaults: no rules, inputs masked, Balanced patterns, GPC honoured', () => {
+  it('has safe defaults: no rules, inputs masked, Balanced patterns, GPC honored', () => {
     const c = normalizeConfig(null, APP);
     expect(c.rules).toEqual([]);
     expect(c.status).toBe('active');

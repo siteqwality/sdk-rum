@@ -38,7 +38,7 @@ describe('sanitizeUrl: the defaults', () => {
     expect(sanitizeUrl('https://Example.COM:8443/A/b/C.js')).toBe(
       'https://Example.COM:8443/A/b/C.js',
     );
-    // No normalisation: a URL with no path keeps having no path.
+    // No normalization: a URL with no path keeps having no path.
     expect(sanitizeUrl('https://example.com')).toBe('https://example.com');
   });
 
@@ -118,7 +118,7 @@ describe('sanitizeUrl: the deny list beats the allow list', () => {
     ).toBe('https://example.com/x');
   });
 
-  it('honours an extra denied name supplied by the customer', () => {
+  it('honors an extra denied name supplied by the customer', () => {
     const sanitize = createUrlSanitizer({
       allowedQueryParams: ['plan', 'account_ref'],
       deniedQueryParams: ['account_ref'],
@@ -236,13 +236,13 @@ describe('sanitizeUrl: malformed and relative input', () => {
  * The shared case table between this file and
  * `core-rs/common/src/rum/url_privacy.rs`.
  *
- * The ingestor repeats the SDK's default behaviour, because a stale bundle
+ * The ingestor repeats the SDK's default behavior, because a stale bundle
  * cached on a customer's page keeps sending full URLs. If the two ever
  * disagree, the same page produces two different strings depending on which
  * side did the work, which splits every dashboard aggregate in two. Keep this
  * list and `equivalence_with_the_sdk_defaults` on the Rust side in step.
  */
-describe('equivalence with the server-side minimiser', () => {
+describe('equivalence with the server-side minimizer', () => {
   const cases: [string, string][] = [
     ['https://shop.example.com/cart#access_token=abc123', 'https://shop.example.com/cart'],
     ['https://example.com/#/account/reset/tok_9f2', 'https://example.com/'],
@@ -272,7 +272,7 @@ describe('equivalence with the server-side minimiser', () => {
 
   const sanitize = createUrlSanitizer();
 
-  it.each(cases)('minimises %j the same way the ingestor does', (input, expected) => {
+  it.each(cases)('minimizes %j the same way the ingestor does', (input, expected) => {
     expect(sanitize(input)).toBe(expected);
   });
 });
@@ -353,7 +353,7 @@ describe('sanitizeTextUrls: URLs inside an error message or a stack trace', () =
     ).toBe('two: https://a.example/x and https://b.example/y');
   });
 
-  it('honours the same allow and deny lists as the URL sanitiser', () => {
+  it('honors the same allow and deny lists as the URL sanitizer', () => {
     const sanitize = createTextUrlSanitizer(
       createUrlSanitizer({ allowedQueryParams: ['plan', 'token'] }),
     );
@@ -393,7 +393,7 @@ describe('sanitizeTextUrls: URLs inside an error message or a stack trace', () =
  * `text_equivalence_with_the_sdk_defaults` in
  * `core-rs/common/src/rum/url_privacy.rs`. Keep the two lists in step.
  */
-describe('text equivalence with the server-side minimiser', () => {
+describe('text equivalence with the server-side minimizer', () => {
   const cases: [string, string][] = [
     ['', ''],
     ['no url here', 'no url here'],
@@ -430,7 +430,7 @@ describe('text equivalence with the server-side minimiser', () => {
 
   const sanitize = createTextUrlSanitizer(createUrlSanitizer());
 
-  it.each(cases)('minimises %j the same way the ingestor does', (input, expected) => {
+  it.each(cases)('minimizes %j the same way the ingestor does', (input, expected) => {
     expect(sanitize(input)).toBe(expected);
   });
 });

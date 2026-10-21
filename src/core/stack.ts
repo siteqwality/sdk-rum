@@ -1,5 +1,5 @@
 // Port of core-rs `common::rum::stack` and `fingerprint` (the parts the SDK needs): frame
-// locations, the normalised path, the onerror type split and error_key. rum-vectors.json pins both.
+// locations, the normalized path, the onerror type split and error_key. rum-vectors.json pins both.
 import { fnv1a32 } from './hash';
 
 export interface Frame {
@@ -169,7 +169,7 @@ function stripHashes(segment: string): string {
 }
 
 /** The grouping path (5.7): no origin, query, fragment, `.` segments or content hashes. */
-export function normalisePath(raw: string): string {
+export function normalizePath(raw: string): string {
   const file = trim(raw);
   if (!hasLocation(file)) return file;
   const scheme = schemeOf(file);
@@ -197,7 +197,7 @@ export function normalisePath(raw: string): string {
 
 export const topFramePath = (frames: Frame[]): string => {
   const f = topFrame(frames);
-  return f ? normalisePath(f.file) : '';
+  return f ? normalizePath(f.file) : '';
 };
 
 /** `onerror` message to [type, message], as core-rs `split_error_message`. */

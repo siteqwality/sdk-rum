@@ -10,7 +10,7 @@ const BALANCED = ['email', 'card', 'digits9'];
 
 const cacheKey = (appId: string) => `_sq_cfg_${appId}`;
 
-/** Safe defaults: no Analyze or replay, inputs masked, Balanced patterns, GPC honoured. */
+/** Safe defaults: no Analyze or replay, inputs masked, Balanced patterns, GPC honored. */
 const defaults = (): Omit<SdkConfig, 'application_id' | 'rules'> => ({
   v: 2,
   status: 'active',
