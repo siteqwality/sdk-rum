@@ -388,6 +388,8 @@ SDK sends; see its README.
 
 ## Changelog
 
+- 2.3.2: XHR capture reads response headers without logging "Refused to get unsafe header"
+  console errors on cross-origin requests.
 - 2.3.1: American English spelling in internal names and comments; no behavior change.
 - 2.3.0: configurable trace sampling for network capture (`capture.network.trace_sample_rate`,
   0 to 1), kept inside the CDN bundle budget.
