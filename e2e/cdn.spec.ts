@@ -442,3 +442,46 @@ test.describe('page views and frustration in a real browser', () => {
     expect(actions[0].offset_pct).toHaveLength(2);
   });
 });
+
+test.describe('network capture in a real browser', () => {
+  test('a cross-origin XHR keeps exposed headers and logs no unsafe-header errors', async ({ page, intake }) => {
+    intake.config = ANALYZE_ALL;
+    const consoleErrors: string[] = [];
+    page.on('console', (m) => m.type() === 'error' && consoleErrors.push(m.text()));
+    await page.route('https://api.example.test/**', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        headers: {
+          'access-control-allow-origin': '*',
+          'x-request-id': 'rid-xo',
+          ...(route.request().url().endsWith('/exposed') ? { 'access-control-expose-headers': 'x-request-id' } : {}),
+        },
+        body: '{}',
+      }),
+    );
+    const url = intake.page('xhr', `<!doctype html><html><head>${snippet(intake)}</head><body><p>Orders</p></body></html>`);
+    await page.goto(url);
+    await sdkLoaded(page);
+    await page.evaluate(() =>
+      Promise.all(
+        ['hidden', 'exposed'].map(
+          (p) =>
+            new Promise((resolve) => {
+              const xhr = new XMLHttpRequest();
+              xhr.open('GET', `https://api.example.test/${p}`);
+              xhr.addEventListener('loadend', resolve);
+              xhr.send();
+            }),
+        ),
+      ),
+    );
+    await page.waitForTimeout(500);
+    await hide(page);
+    await expect.poll(() => intake.events('network').length, { timeout: 10_000 }).toBe(2);
+    const rows = intake.events<{ url: string; res_headers?: Record<string, string> }>('network');
+    expect(rows.find((r) => r.url.endsWith('/hidden'))?.res_headers).toEqual({ 'content-type': 'application/json' });
+    expect(rows.find((r) => r.url.endsWith('/exposed'))?.res_headers).toEqual({ 'content-type': 'application/json', 'x-request-id': 'rid-xo' });
+    expect(consoleErrors.filter((e) => /unsafe header/i.test(e))).toEqual([]);
+  });
+});

@@ -388,13 +388,16 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
           xhr.addEventListener('loadend', () => {
             try {
               const status = kind ? 0 : xhr.status;
+              // getResponseHeader logs a console error for each unexposed cross-origin header; this list never does.
+              const exposed = '\n' + xhr.getAllResponseHeaders().toLowerCase();
+              const header = (n: string) => (exposed.includes('\n' + n + ':') ? xhr.getResponseHeader(n) : null);
               const text = () => {
-                if (!textual(xhr.getResponseHeader('content-type'))) return undefined;
+                if (!textual(header('content-type'))) return undefined;
                 if (xhr.responseType === '' || xhr.responseType === 'text') return xhr.responseText;
                 if (xhr.responseType === 'json') return JSON.stringify(xhr.response);
                 return undefined;
               };
-              complete(req, status, status === 0 ? kind || 'network' : undefined, (n) => xhr.getResponseHeader(n), readBody(req, text));
+              complete(req, status, status === 0 ? kind || 'network' : undefined, header, readBody(req, text));
             } catch {
               // Monitoring must never break the host page.
             }

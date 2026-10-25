@@ -269,6 +269,8 @@ describe('fetch', () => {
 });
 
 describe('XMLHttpRequest', () => {
+  // Browsers log "Refused to get unsafe header" when asked for a header CORS does not expose.
+  const refused: string[] = [];
   class FakeXhr extends EventTarget {
     status = 0;
     responseType = '';
@@ -282,8 +284,16 @@ describe('XMLHttpRequest', () => {
     setRequestHeader(n: string, v: string) {
       this.headers[n.toLowerCase()] = v;
     }
+    exposed() {
+      return this.url.includes('rid') ? { 'Content-Type': 'application/json', 'X-Request-ID': 'rid-2' } : { 'Content-Type': 'application/json' };
+    }
     getResponseHeader(n: string) {
-      return n === 'content-type' ? 'application/json' : null;
+      const hit = Object.entries(this.exposed()).find(([k]) => k.toLowerCase() === n.toLowerCase());
+      if (!hit) refused.push(n);
+      return hit ? hit[1] : null;
+    }
+    getAllResponseHeaders() {
+      return Object.entries(this.exposed()).map(([k, v]) => `${k}: ${v}\r\n`).join('');
     }
     send() {
       queueMicrotask(() => {
@@ -321,6 +331,25 @@ describe('XMLHttpRequest', () => {
       ['/x/slow', 0, 'timeout', 'xhr'],
       ['/x/ok', 200, null, 'xhr'],
     ]);
+  });
+
+  it('captures exposed response headers without asking for unexposed ones', async () => {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr);
+    refused.length = 0;
+    const rows = await run(analyze(), async () => {
+      for (const path of ['/x/plain', '/x/rid']) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', path);
+        await new Promise((r) => {
+          xhr.addEventListener('loadend', r);
+          xhr.send();
+        });
+      }
+    });
+    const byPath = (p: string) => rows.find((r) => String(r.url).endsWith(p))!;
+    expect(byPath('/x/plain').res_headers).toEqual({ 'content-type': 'application/json' });
+    expect(byPath('/x/rid').res_headers).toEqual({ 'content-type': 'application/json', 'x-request-id': 'rid-2' });
+    expect(refused).toEqual([]);
   });
 });
 
