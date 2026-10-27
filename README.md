@@ -291,7 +291,6 @@ checkouts and the cap emits custom tag `sq-canvas-cap`.
 Canvas capture shipped in SDK 2.2.0 on npm and the CDN. The hosted intake, compactor and player
 support canvas playback, seeking and last-frame retention after the cap. Replay v2 is enabled for
 all applications; canvas still requires explicit opt-in and the privacy conditions above.
-See [the player contract](docs/plans/2026-10-04-canvas-opt-in.md).
 
 ## Web Vitals
 
@@ -396,7 +395,7 @@ SDK sends; see its README.
 - 2.2.1: no longer adopts sessions or storage keys left by retired SDK versions; the deprecated
   `RumConfig` type alias is removed (use `InitOptions`).
 - 2.2.0: opt-in canvas frames with bounded WebP encoding, privacy and
-  lifecycle checks, lazy loading, and a session byte cap. Requires the WP7.2 player integration.
+  lifecycle checks, lazy loading, and a session byte cap.
 - 2.1.0: replay chunk v2. Segments v2 to `POST /v2/segments` on `in-replay.siteqwality.com` (gzip,
   window and page load ids, a sequence per page load); every tab records its own window (the 2.0
   one-tab lease is gone); a replay ring from page load, so error replays start 60 to 120 s before
