@@ -36,11 +36,11 @@
  * Two reasons. `new URL()` throws on a relative or malformed URL, and this
  * function runs on data the host page controls, so throwing is not an option
  * (monitoring must never break the page). And the server repeats this logic
- * defensively in `core-rs/common/src/rum/url_privacy.rs`, because a stale SDK
+ * defensively, because a stale SDK
  * cached on a customer's page keeps sending full URLs for as long as the cache
  * lives. Two implementations of "whatever the WHATWG URL parser normalizes to"
  * would drift; two implementations of the plain string rules below do not.
- * `core-rs/common/src/rum/url_privacy.rs` carries the same case table, for both
+ * The server carries the same case table, for both
  * the whole-URL and the free-text form.
  *
  * # What `allowedQueryParams` actually preserves

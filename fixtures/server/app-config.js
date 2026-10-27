@@ -1,4 +1,4 @@
-// The config v2 the mock serves (design 6.2), from one spec:
+// The config v2 the mock serves, from one spec:
 // { capture: none|analyze|replay|replay_on_error, level: strict|balanced|relaxed, v2? overrides }.
 
 export const DEFAULT_SPEC = { capture: 'none', level: 'balanced' };

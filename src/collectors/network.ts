@@ -1,4 +1,4 @@
-// fetch and XHR (design 5.6, B11): method, minimized URL, status, error kind and timing phases
+// fetch and XHR: method, minimized URL, status, error kind and timing phases
 // from resource timing. Failures are Observe, successes Analyze; repeats of either fold per 30 s.
 import type { SqEvent } from '../types';
 import { OBSERVE, ANALYZE, type Hub } from '../hub';
@@ -60,7 +60,7 @@ export function startNetwork(h: Hub, o: NetworkOptions) {
     const net = h.cfg().capture.network;
     if (net !== cfgRef) {
       cfgRef = net;
-      // URL prefixes, never patterns (core-rs resource exclusion rules): "/api" is a same-origin
+      // URL prefixes, never patterns (the server's resource exclusion rules): "/api" is a same-origin
       // path and below, "https://api.example.com/v1" that origin and path. No rules, no matches.
       traceMatch = createExclusionMatcher(net.trace_urls);
       bodyMatch = createExclusionMatcher(net.body_urls);

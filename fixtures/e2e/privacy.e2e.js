@@ -1,4 +1,4 @@
-// Privacy canaries (design doc section 10): record a session at each privacy level with every
+// Privacy canaries: record a session at each privacy level with every
 // planted value on the page, then grep every request the SDK made for every value.
 import { test, expect } from './lib/session.js';
 import { SDK } from './lib/env.js';

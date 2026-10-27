@@ -42,7 +42,7 @@ test('a full page load keeps the session and carries replay over', async ({ sq }
 
   expect(c.sessionIds.size, 'both page loads share one session').toBe(1);
   expect(c.views.map((v) => pathOf(v.url))).toEqual(expect.arrayContaining(['/', '/mpa/second.html']));
-  // Segments number per page load (design 6.4).
+  // Segments number per page load.
   const keys = c.segments.map((x) => `${x.sessionId}|${x.windowId}|${x.pageLoadId}|${x.index}`);
   expect(new Set(keys).size, 'segment keys never repeat').toBe(keys.length);
   expect(new Set(c.segments.map((x) => x.pageLoadId)).size, 'two page loads').toBe(2);

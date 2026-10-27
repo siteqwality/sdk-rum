@@ -229,7 +229,7 @@ describe('ReplayRecorder, streaming', () => {
   });
 });
 
-describe('ReplayRecorder, buffering (design 5.4)', () => {
+describe('ReplayRecorder, buffering', () => {
   it('holds everything until go(), with a checkout every 60 s keeping the last two', async () => {
     const record = start({ buffer: true });
     expect(states).toEqual([['buffering', undefined]]);
@@ -345,7 +345,7 @@ describe('ReplayRecorder, buffering (design 5.4)', () => {
   });
 });
 
-describe('CSS references (design 5.5)', () => {
+describe('CSS references', () => {
   const sheet = '.a{color:red}'.repeat(200);
   const page = () => ({ type: 0, id: 1, childNodes: [{ type: 2, id: 2, tagName: 'style', attributes: { _cssText: sheet }, childNodes: [] }, { type: 2, id: 3, tagName: 'style', attributes: { _cssText: '.small{}' }, childNodes: [] }] });
 

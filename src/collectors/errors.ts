@@ -1,4 +1,4 @@
-// Errors (design 5.7): capture, noise rules N1 to N9, ignore and deny lists, suppressed keys,
+// Errors: capture, noise rules N1 to N9, ignore and deny lists, suppressed keys,
 // repeat folding, a burst limit per error_key, cause chains, breadcrumbs and Debug IDs.
 import type { SqEvent } from '../types';
 import { OBSERVE, type Hub } from '../hub';
@@ -19,7 +19,7 @@ export interface RawError {
   message: string;
   stack: string;
   handling: 'unhandled' | 'unhandledrejection' | 'handled' | 'console';
-  /** The message as Wave 1 read it, for the shared noise cases and ignoreErrors. */
+  /** The message as first read, for the shared noise cases and ignoreErrors. */
   raw: string;
   filename?: string;
   cause?: Cause[];
@@ -43,7 +43,7 @@ export const EXTENSION_SCHEMES = [
 ];
 const FRAME_URL = /([a-z][a-z0-9+.-]*):\/\/[^\s()]+/g;
 
-/** Trimmed, with one leading `Uncaught ` removed (Wave 1 D9). */
+/** Trimmed, with one leading `Uncaught ` removed. */
 export const normalizeMessage = (m: string): string => {
   const t = m.trim();
   return t.startsWith('Uncaught ') ? t.slice(9) : t;
@@ -62,7 +62,7 @@ const NOISE: Array<[string, RegExp]> = [
   ['n9', /^Java object is gone$/],
 ];
 
-/** The noise rule an error matches (Wave 1 D9 N1 to N3, then N4 to N9), or null. */
+/** The noise rule an error matches (N1 to N9), or null. */
 export function noiseRule(message: string, stack: string, filename = '', split = splitErrorMessage(message)[1]): string | null {
   const m = normalizeMessage(message);
   if (/^ResizeObserver loop (?:completed with undelivered notifications|limit exceeded)/.test(m)) return 'n1';
@@ -77,7 +77,7 @@ export function noiseRule(message: string, stack: string, filename = '', split =
 export const createMatcher = (patterns: unknown) => textPatterns(patterns, false);
 
 /**
- * Dashboard deny_urls match the top in-app frame (core-rs). The SDK drops only when the top frame
+ * Dashboard deny_urls match the top in-app frame (as on the server). The SDK drops only when the top frame
  * surely is that frame: same origin, relative or bundler, and not vendor or SDK code.
  */
 function surelyInApp(file: string): boolean {
@@ -256,7 +256,7 @@ export function createErrorPipeline(h: Hub, o: ErrorPipelineOptions) {
       // Dashboard lists see what the intake sees: the message as sent, minimized and scrubbed.
       const message = h.scrub(h.text(cut(raw.message, MAX_MESSAGE)));
       const msg = normalizeMessage(message);
-      // As core-rs is_ignored: the message, or type and message.
+      // As the server's is_ignored: the message, or type and message.
       if (ignore(normalizeMessage(raw.raw || raw.message)) || ignore(`${raw.type}: ${normalizeMessage(raw.message)}`) || cfgIgnore(msg) || cfgIgnore(`${type}: ${msg}`)) {
         return h.count('ignored_error');
       }

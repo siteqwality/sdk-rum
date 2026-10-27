@@ -1,4 +1,4 @@
-// Views (design 5.6): view_start on load, URL change and back-forward cache restore; view_end
+// Views: view_start on load, URL change and back-forward cache restore; view_end
 // interim on hide and every 5 min, final on the next view and pagehide, with an increasing seq.
 import type { SqEvent } from '../types';
 import { OBSERVE, type Hub } from '../hub';
@@ -288,7 +288,7 @@ export function startViews(h: Hub, o: ViewsOptions) {
     setRoute(name: string): void {
       current.startEvent.route = name;
     },
-    /** A vital of the document's initial view (design 5.6). */
+    /** A vital of the document's initial view. */
     vital(fields: Record<string, unknown>): void {
       Object.assign(initial.m, fields);
       lateUpdate(initial);

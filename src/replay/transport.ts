@@ -1,4 +1,4 @@
-// Replay segments to `POST /v2/segments` (design 6.4): index fields in x-sq-replay-index, a gzip JSON
+// Replay segments to `POST /v2/segments`: index fields in x-sq-replay-index, a gzip JSON
 // array of rrweb events as the body, one request in flight, in order, with the core's retry rules.
 import { isRefused, Backoff, gzip, KEEPALIVE_MAX_BYTES, type send as coreSend } from '../core/send';
 import { byteLength, now } from '../core/util';

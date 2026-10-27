@@ -1,4 +1,4 @@
-// Mirrors the core-rs `common::rum::patterns` tests, so both sides read a pattern list alike.
+// Mirrors the server's pattern tests, so both sides read a pattern list alike.
 import { describe, it, expect } from 'vitest';
 import { textPatterns, MAX_PATTERN_CHARS, MAX_PATTERNS } from '../src/core/patterns';
 

@@ -11,7 +11,7 @@ import {
   errorKeyInput,
 } from '../src/core/stack';
 
-// tests/fixtures/rum-vectors.json is byte-identical to core-rs common/src/rum/testdata/.
+// tests/fixtures/rum-vectors.json is byte-identical to the server's copy.
 const raw = readFileSync(join(__dirname, 'fixtures/rum-vectors.json'), 'utf8');
 const v = JSON.parse(raw);
 

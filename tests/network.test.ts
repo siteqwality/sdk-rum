@@ -172,7 +172,7 @@ describe('fetch', () => {
     expect(fail[1]).toMatchObject({ status: 500, n: 11, err_n: 11 });
   });
 
-  it('trace_urls and body_urls are URL prefixes (core-rs rules): same-origin paths or absolute URLs, never patterns', async () => {
+  it('trace_urls and body_urls are URL prefixes (server rules): same-origin paths or absolute URLs, never patterns', async () => {
     const net = analyze({
       capture: { network: { trace_urls: ['/api/', 'https://api.partner.test/v1'], body_urls: ['/api/', 'checkout', '/\\/v\\d+/'], max_body_bytes: 1000 } },
     });
@@ -195,7 +195,7 @@ describe('fetch', () => {
     expect(body('/api/orders')).toBe('{"a":1}');
     expect(body('/fr/checkout')).toBeUndefined();
     expect(body('/v2/thing')).toBeUndefined();
-    // A prefix ends at a path segment, as core-rs URL rules do.
+    // A prefix ends at a path segment, as the server's URL rules do.
     expect(body('/apix/other')).toBeUndefined();
     expect(traced('/apix/other')).toBeNull();
   });

@@ -26,7 +26,7 @@ export interface Received {
   keepalive?: boolean;
 }
 
-/** A replay segment as `POST /v2/segments` carries it (design 6.4): index fields and events. */
+/** A replay segment as `POST /v2/segments` carries it: index fields and events. */
 export interface Segment {
   s: string;
   w: string;

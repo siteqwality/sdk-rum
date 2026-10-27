@@ -1,4 +1,4 @@
-// Two tabs share one session (the cookie). Each tab records its own window (design 5.3, 6.4):
+// Two tabs share one session (the cookie). Each tab records its own window:
 // segments carry the window and page load ids, number from 0 per page load, and each stream
 // plays alone, so the player orders windows instead of one tab recording at a time.
 import { test, expect } from './lib/session.js';

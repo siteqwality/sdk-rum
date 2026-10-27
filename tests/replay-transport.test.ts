@@ -1,4 +1,4 @@
-// ReplayTransport v2 (design 6.4): query index fields, gzip bodies, one at a time, in order.
+// ReplayTransport v2: query index fields, gzip bodies, one at a time, in order.
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { gunzipSync } from 'node:zlib';
 import { ReplayTransport, MAX_BUFFERED_SEGMENTS } from '../src/replay/transport';

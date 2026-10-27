@@ -1,5 +1,5 @@
-// Actions (design 5.6): clicks, taps, input changes and submits with a name and a stable
-// selector; rage, dead and error clicks by Wave 1 F14, plus click counts and offsets.
+// Actions: clicks, taps, input changes and submits with a name and a stable
+// selector; rage, dead and error clicks, plus click counts and offsets.
 import { cut, read, perfNow as clock } from '../core/util';
 
 export type Frustration = 'rage_click' | 'dead_click' | 'error_click';

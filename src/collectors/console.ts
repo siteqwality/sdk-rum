@@ -1,4 +1,4 @@
-// Console (design 5.6): the configured levels, arguments serialized to depth 3 and 2 KB, 50
+// Console: the configured levels, arguments serialized to depth 3 and 2 KB, 50
 // entries per 10 s per level, identical consecutive lines folded. Output is never changed.
 import { ANALYZE, type Hub } from '../hub';
 import { cut, read, now, perfNow } from '../core/util';

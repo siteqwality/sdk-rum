@@ -1,4 +1,4 @@
-// Port of core-rs `common::rum::stack` and `fingerprint` (the parts the SDK needs): frame
+// Port of the server's stack parsing and fingerprint (the parts the SDK needs): frame
 // locations, the normalized path, the onerror type split and error_key. rum-vectors.json pins both.
 import { fnv1a32 } from './hash';
 
@@ -200,7 +200,7 @@ export const topFramePath = (frames: Frame[]): string => {
   return f ? normalizePath(f.file) : '';
 };
 
-/** `onerror` message to [type, message], as core-rs `split_error_message`. */
+/** `onerror` message to [type, message], as on the server. */
 export function splitErrorMessage(raw: string): [string, string] {
   let s = raw.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
   if (s.startsWith('Uncaught ')) s = s.slice(9);

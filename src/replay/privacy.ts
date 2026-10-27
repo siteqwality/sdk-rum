@@ -1,4 +1,4 @@
-// What replay may record (design 7.1): rrweb privacy options from the app's level and selectors,
+// What replay may record: rrweb privacy options from the app's level and selectors,
 // URL minimization and PII scrubbing of DOM attributes, and no content from inside iframes.
 import type { UrlSanitizer } from '../core/url';
 import type { SdkConfig } from '../types';
@@ -105,7 +105,7 @@ export function withoutFrameContent(
   return inPage(data.id) ? event : null;
 }
 
-/** Privacy options from the app's level and selectors (design 7.1). */
+/** Privacy options from the app's level and selectors. */
 export interface ReplayPrivacy {
   maskInputs: boolean;
   /** Every text node masked except `unmaskSelector` (Strict, or legacy mask_text). */
@@ -139,7 +139,7 @@ function valid(list: string[]): string | undefined {
   );
 }
 
-/** rrweb privacy from the app's level and selectors (design 7.1); block selectors always win. */
+/** rrweb privacy from the app's level and selectors; block selectors always win. */
 export function replayPrivacy(p: SdkConfig['privacy'], mask: (s: string) => string): ReplayPrivacy {
   const strict = p.level === 'strict';
   return {
@@ -168,7 +168,7 @@ export function recordOptions(p: ReplayPrivacy): RecordOptions {
   const stars = (t: string) => t.replace(/\S/g, '*');
   const masking = p.maskAllText || !!p.maskSelector || !!p.scrub;
   return {
-    // Design 5.5: input keeps the last value, media events at most every 800 ms.
+    // Input keeps the last value, media events at most every 800 ms.
     sampling: { mousemove: 50, scroll: 150, input: 'last', media: 800 },
     slimDOMOptions: 'all',
     inlineStylesheet: true,

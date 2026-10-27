@@ -24,7 +24,7 @@ export interface Net {
   fetch: ReturnType<typeof vi.fn>;
   configCalls: Array<{ url: string; init?: RequestInit }>;
   batches: Batch[];
-  /** Replay segments v2 (design 6.4): the header's index fields and the events. */
+  /** Replay segments v2: the header's index fields and the events. */
   segments: Array<{ url: string; q: Record<string, string>; events: Array<{ type: number; timestamp: number }>; gzip: boolean; keepalive?: boolean }>;
   app: Array<{ url: string; init?: RequestInit }>;
   /** Every event sent, with its batch ctx, optionally of one kind. */

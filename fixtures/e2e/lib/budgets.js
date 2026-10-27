@@ -1,4 +1,4 @@
-// Byte and request budgets, from the design doc (5.2, 5.5, 8.2) unless noted.
+// Byte and request budgets for the SDK.
 import { kb } from './ledger.js';
 
 const KB = 1024;

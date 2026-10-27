@@ -1,4 +1,4 @@
-/** Methods the CDN snippet stub queues and replays once the script loads (design 6.1). */
+/** Methods the CDN snippet stub queues and replays once the script loads. */
 export const PUBLIC_METHODS = [
   'init',
   'setUser',

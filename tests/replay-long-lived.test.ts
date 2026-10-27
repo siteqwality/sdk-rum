@@ -84,7 +84,7 @@ describe('a long-lived tab with a 1 s ticking clock', { timeout: 60_000 }, () =>
       await run(MINUTE);
       document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     }
-    // 20 s segments (design 5.5); the 3 min checkout lands where one closes. Never a request per tick.
+    // 20 s segments; the 3 min checkout lands where one closes. Never a request per tick.
     const sent = segmentCalls().length - from;
     expect(sent).toBeGreaterThanOrEqual(10);
     expect(sent).toBeLessThanOrEqual(13);
@@ -114,7 +114,7 @@ describe('a long-lived tab with a 1 s ticking clock', { timeout: 60_000 }, () =>
     expect(SiteQwalityRUM.getStatus()).toMatchObject({ recording: 'paused', reason: 'idle' });
     const firstSixMinutes = requests() - start;
     expect(firstSixMinutes).toBeLessThanOrEqual(20);
-    // Interim view updates every 5 min while the session lives (design 5.6), no replay.
+    // Interim view updates every 5 min while the session lives, no replay.
     let before = requests();
     await run(10 * MINUTE);
     expect(requests() - before).toBeLessThanOrEqual(2);

@@ -1,4 +1,4 @@
-// The recorder (design 5.4, 5.5): rrweb restarted for each snapshot, every event cleaned,
+// The recorder: rrweb restarted for each snapshot, every event cleaned,
 // throttled and serialized once, then segmented. Buffer mode holds the last two checkouts in
 // the ring until go(); stream mode hands segments out as they close.
 import type { UrlSanitizer } from '../core/url';

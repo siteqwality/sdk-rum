@@ -1,4 +1,4 @@
-// The lazy replay chunk (design 5.2, 5.4, 5.5, 6.4): rrweb, the recorder diet, the replay ring
+// The lazy replay chunk: rrweb, the recorder diet, the replay ring
 // and segments v2. Every tab records its own window; pauses while hidden, idle or on a
 // never-record page; a request budget of its own.
 import { loadCanvas } from './canvas-load';
@@ -25,7 +25,7 @@ export interface ReplaySession {
 }
 
 export interface ReplayStartOptions {
-  /** Stream at once; false holds the last two checkouts in memory until go() (design 5.4). */
+  /** Stream at once; false holds the last two checkouts in memory until go(). */
   live: boolean;
   session: ReplaySession;
   /** Where the session's counters live: shared by its tabs, this tab only, or memory. */
@@ -62,7 +62,7 @@ export interface ReplayHandle {
   go(): void;
 }
 
-/** No user input this long pauses recording (design 5.5), within these bounds. */
+/** No user input this long pauses recording, within these bounds. */
 const IDLE_DEFAULT_MS = 300_000;
 const IDLE_MIN_MS = 60_000;
 const IDLE_MAX_MS = 1_800_000;

@@ -1,8 +1,7 @@
 # RUM SDK fixtures
 
 A fixture site, a mock intake and a Playwright harness that drive the SDK in a real browser and
-assert on everything it sends. Work package 0.5 of the RUM Wave 2 design; the verification bed for
-SDK 2.x. Not part of the npm package (`files` in the root `package.json` lists `dist/` only).
+assert on everything it sends: the verification bed for SDK 2.x. Not part of the npm package (`files` in the root `package.json` lists `dist/` only).
 
 ## Run
 
@@ -37,7 +36,7 @@ later and refuses older builds.
 - `server/`: one Node process, no dependencies. `index.js` serves the site on `localhost:4310`, a
   third-party origin on `127.0.0.1:4311`, the CDN on `:4322` (SDK files under `/rum/<prefix>/`,
   config v2 under `/rum/config/v2/<app>.json`) and the mock intake on `:4320` and `:4321`.
-  `ingest.js` records every request, validates payloads against design doc 6.3 and 6.4, and answers
+  `ingest.js` records every request, validates payloads against the intake contract, and answers
   like production. `app-config.js` builds config v2 from one spec (`capture`: none, analyze, replay,
   replay_on_error; `level`: strict, balanced, relaxed).
 - `site/`: a dependency-free SPA (`/`, `/products/:id`, `/forms`, `/network`, `/errors`, `/console`,
@@ -59,7 +58,7 @@ Mock control API (`http://127.0.0.1:4320/__mock`): `POST /reset`, `PUT /apps/<to
 - **Canaries**: every planted value is grepped for in the URL, headers and decoded body of every SDK
   request, at each privacy level. A canary also needs proof its channel ran (input events recorded,
   the error captured, the fetch recorded), so absence means something.
-- **Budgets** (`e2e/lib/budgets.js`): targets from design 5.2, 5.5 and 8.2. Each target prints beside
+- **Budgets** (`e2e/lib/budgets.js`): the SDK's size and request targets. Each target prints beside
   its measurement.
 - **Clock** (`clock.e2e.js`): `/mpa/patched-date.html` patches `Date.now` and the `Date` constructor;
   RUM events and replay segments must still carry sane, monotonic times.
@@ -73,7 +72,7 @@ Mock control API (`http://127.0.0.1:4320/__mock`): `POST /reset`, `PUT /apps/<to
 - **Replay ring** (`errors.e2e.js`, `privacy.e2e.js`, `replay_on_error`): nothing leaves the page
   before the first error; then the replay starts 60 to 120 s before it (page clock), and the
   canaries hold through the ring at every privacy level.
-- **Segments v2** (`server/ingest.js`): every `/v2/segments` request is checked against design 6.4:
+- **Segments v2** (`server/ingest.js`): every `/v2/segments` request is checked against the segments contract:
   UUID `s`, `w`, `p`; a u32 `q`; `ft`, `lt` and `n` matching the events; `fs` and `fin` as `1` or
   absent; the content type matching the encoding; a page load opening with a Meta event; and the
   same key never sent twice with different events.

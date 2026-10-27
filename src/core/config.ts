@@ -1,4 +1,4 @@
-// Config v2 (design 5.8, 6.2): fetched from the CDN as a simple CORS request (no preflight),
+// Config v2: fetched from the CDN as a simple CORS request (no preflight),
 // cached in localStorage, and safe defaults until it arrives.
 import type { RecordingRule, SdkConfig } from '../types';
 import { isNum, isObj, storage, strList, now } from './util';

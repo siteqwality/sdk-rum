@@ -1,4 +1,4 @@
-// The batch queue for `POST /v2/batch` (design 6.3): gzip on the wire while the page lives, an
+// The batch queue for `POST /v2/batch`: gzip on the wire while the page lives, an
 // uncompressed keepalive tail on pagehide, one request in flight, backoff, hidden spacing.
 import type { SqEvent } from '../types';
 import { VERSION } from '../version';
@@ -6,13 +6,13 @@ import { send, gzip, isRefused, Backoff, keepaliveFits, KEEPALIVE_MAX_BYTES, typ
 import { now, isHidden, byteLength } from './util';
 
 export const FLUSH_INTERVAL_MS = 10_000;
-/** Errors reach the intake within this (design 8.1). */
+/** Errors reach the intake within this. */
 export const URGENT_FLUSH_MS = 1_000;
 export const MAX_BATCH_EVENTS = 500;
 /** Uncompressed body per request, under the intake's 1 MB wire limit even without gzip. */
 export const MAX_BATCH_CHARS = 900_000;
 export const MAX_QUEUED = 1_000;
-/** Events kept while consent is pending (design 7.2). */
+/** Events kept while consent is pending. */
 export const MAX_PENDING = 200;
 /** Sends while hidden are spaced this far apart (the 2026-10-03 hidden-tab loop). */
 export const HIDDEN_SPACING_MS = 5_000;

@@ -17,7 +17,7 @@ test('a mutation flood is bounded and recording survives it', async ({ sq }, tes
   const to = Date.now();
   await page.getByTestId('nav-forms').click();
   await page.getByTestId('in-text').fill('typed after the flood');
-  // The recorder takes an input's value when it changes (rrweb input: 'last', design 5.5).
+  // The recorder takes an input's value when it changes (rrweb input: 'last').
   await page.getByTestId('in-text').press('Tab');
   const c = await s.finish();
   s.expectHealthy(c);

@@ -1,4 +1,4 @@
-// startReplay (design 5.4, 5.5, 6.4) with the real rrweb: per-window streams, the ring and go(),
+// startReplay with the real rrweb: per-window streams, the ring and go(),
 // pauses, the request budget, pagehide and the back-forward cache.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { gunzipSync } from 'node:zlib';

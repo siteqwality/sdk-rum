@@ -55,7 +55,7 @@ test.describe('CDN core loaded by the install snippet (classic script)', () => {
     await hide(page);
     await expect.poll(() => intake.events('status').some((s) => s.state === 'recording')).toBe(true);
     const ctx = intake.batches().at(-1)!.ctx;
-    // Design 6.4: index fields in x-sq-replay-index, a gzip JSON array of rrweb events as the body.
+    // Index fields in x-sq-replay-index, a gzip JSON array of rrweb events as the body.
     expect(segment).toMatchObject({ s: ctx.session_id, w: ctx.window_id, p: ctx.page_load_id, q: 0, fs: true, fin: false, r: 'r_all', v: VERSION, gzip: true, contentType: 'application/octet-stream' });
     expect(segment.n).toBe(segment.events.length);
     expect(segment.ft).toBe(Math.min(...segment.events.map((e) => e.timestamp)));

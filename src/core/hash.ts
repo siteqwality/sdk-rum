@@ -1,4 +1,4 @@
-// FNV-1a 32 over UTF-8 (shared with core-rs `common::rum::fingerprint::fnv1a32`) and ids.
+// FNV-1a 32 over UTF-8 (shared with the server) and ids.
 import { now, utf8 } from './util';
 
 /** Over the UTF-8 bytes; a lone surrogate encodes as U+FFFD, as TextEncoder does. */
@@ -8,7 +8,7 @@ export function fnv1a32(text: string): number {
   return h;
 }
 
-/** `hash / 2^32 < rate`, as core-rs `rule_sampled_in`. */
+/** `hash / 2^32 < rate`, as on the server. */
 export const sampledIn = (key: string, rate: number): boolean => fnv1a32(key) / 4294967296 < rate;
 
 export function randomBytes(n: number): Uint8Array {

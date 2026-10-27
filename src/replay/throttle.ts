@@ -1,4 +1,4 @@
-// Mutation throttle (design 5.5). Per node: a token bucket on attribute and text changes, with
+// Mutation throttle. Per node: a token bucket on attribute and text changes, with
 // held values coalesced into one mutation a second so the final state stays exact. Globally: a
 // 5 s window of serialized mutation bytes; past it whole mutations drop and a checkout resyncs.
 

@@ -1,10 +1,10 @@
-// Public types of SDK 2.0 (design 6.1) and the config v2 shape it reads (6.2).
+// Public types of SDK 2.0 and the config v2 shape it reads (6.2).
 
 export type Consent = 'granted' | 'pending' | 'not-granted';
 
 export type SqEventKind = 'error' | 'view' | 'action' | 'custom' | 'network' | 'console';
 
-/** One event as sent to `/v2/batch` (design 6.3): `k` is its kind, `t` epoch ms. */
+/** One event as sent to `/v2/batch`: `k` is its kind, `t` epoch ms. */
 export interface SqEvent {
   k: string;
   t: number;

@@ -1,4 +1,4 @@
-// Recording rules v2 (design 5.4, 6.2): deterministic per-session sampling, ALL conditions
+// Recording rules v2: deterministic per-session sampling, ALL conditions
 // within a rule, ANY across rules, minimum duration and interaction gates on the flush.
 import type { RecordingRule, RuleCondition } from '../types';
 import type { Decision } from './session';

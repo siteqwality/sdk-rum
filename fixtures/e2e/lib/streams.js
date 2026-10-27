@@ -1,4 +1,4 @@
-// Replay segments grouped into streams: one page load of one window in one session (design 6.4).
+// Replay segments grouped into streams: one page load of one window in one session.
 import { expect } from '@playwright/test';
 import { RRWEB } from './captures.js';
 

@@ -1,4 +1,4 @@
-// Port of core-rs `common::rum::patterns` (TextPatterns): a case-sensitive substring, or a regular
+// Port of the server's TextPatterns: a case-sensitive substring, or a regular
 // expression written `/…/` (`/…/i` ignores case). Blank, over-long and invalid patterns are skipped.
 import { read } from './util';
 
@@ -20,11 +20,11 @@ export function textPatterns(list: unknown, slashes = true): TextMatcher {
         try {
           res.push(new RegExp(m[1], m[2]));
         } catch {
-          // Skipped, as core-rs skips an expression that does not compile.
+          // Skipped, as the server skips an expression that does not compile.
         }
     }
   }
-  // Expressions skip text over 4 KB (JS regexes backtrack; core-rs runs in linear time), so the
+  // Expressions skip text over 4 KB (JS regexes backtrack; the server runs in linear time), so the
   // SDK never drops what the intake would keep.
   return (t) =>
     subs.some((s) => t.includes(s)) ||

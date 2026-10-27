@@ -1,9 +1,7 @@
 {
   "_about": [
-    "Shared RUM test vectors (Wave 2 design, sections 5.4, 5.7, 5.9, 6.3, 6.6 and 10).",
-    "Byte-identical in core-rs common/src/rum/testdata/ and sdk/rum tests/fixtures/. Rust checks every",
-    "case in common/src/rum/shared_vectors.rs; regenerate expected values with",
-    "RUM_VECTORS_REGENERATE=1 cargo test -p common --lib shared_vectors, then review the diff.",
+    "Shared RUM test vectors, byte-identical in the server and SDK repositories. The server checks",
+    "every case in Rust and regenerates the expected values; review that diff, then copy the file.",
     "Strings hash as UTF-8. Generated stacks are genuine engine output with only the host renamed;",
     "production stacks are anonymised; handwritten ones follow each engine format."
   ],

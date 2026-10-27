@@ -233,8 +233,7 @@ describe('sanitizeUrl: malformed and relative input', () => {
 });
 
 /**
- * The shared case table between this file and
- * `core-rs/common/src/rum/url_privacy.rs`.
+ * The case table this file shares with the server.
  *
  * The ingestor repeats the SDK's default behavior, because a stale bundle
  * cached on a customer's page keeps sending full URLs. If the two ever
@@ -389,9 +388,8 @@ describe('sanitizeTextUrls: URLs inside an error message or a stack trace', () =
 });
 
 /**
- * The shared case table for the free-text path, matching
- * `text_equivalence_with_the_sdk_defaults` in
- * `core-rs/common/src/rum/url_privacy.rs`. Keep the two lists in step.
+ * The shared case table for the free-text path, matching the server's.
+ * Keep the two lists in step.
  */
 describe('text equivalence with the server-side minimizer', () => {
   const cases: [string, string][] = [

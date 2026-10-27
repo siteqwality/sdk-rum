@@ -1,4 +1,4 @@
-// Replay privacy (design 7.1): rrweb options per level, DOM attribute cleaning, no iframe content.
+// Replay privacy: rrweb options per level, DOM attribute cleaning, no iframe content.
 import { describe, it, expect, vi } from 'vitest';
 import { withoutFrameContent, recordOptions, cleanAttributes, cleanDomEvent, cleanCss, HIDDEN_INPUT_SELECTOR, replayPrivacy } from '../src/replay/privacy';
 import { createUrlSanitizer, createTextUrlSanitizer } from '../src/core/url';
@@ -7,7 +7,7 @@ import { normalizeConfig } from '../src/core/config';
 
 const meta = (href = 'https://example.com/', timestamp = 1) => ({ type: 4, timestamp, data: { href, width: 1, height: 1 } });
 
-describe('rrweb options (design 5.5)', () => {
+describe('rrweb options', () => {
   it('samples pointer, scroll, input and media, slims the DOM and never records canvas or other origins', () => {
     const o = recordOptions(replayPrivacy(normalizeConfig({}, 'a').privacy, (s) => s));
     expect(o.sampling).toEqual({ mousemove: 50, scroll: 150, input: 'last', media: 800 });

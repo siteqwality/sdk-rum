@@ -1,5 +1,5 @@
 // Mock RUM intake: records every request the SDK makes and answers like production.
-// Routes follow design doc 6.2 to 6.4.
+// Routes follow the intake API.
 import zlib from 'node:zlib';
 import { readBody, send } from './http.js';
 import { DEFAULT_SPEC, v2Config } from './app-config.js';
@@ -8,7 +8,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-// Event kinds of the batch (design doc 6.3).
+// Event kinds of the batch.
 const V2_KINDS = new Set([
   'view_start', 'view_end', 'error', 'custom', 'action', 'network', 'resource', 'console', 'long_frame', 'status',
 ]);
@@ -197,7 +197,7 @@ export class MockIngest {
     return 202;
   }
 
-  // Design 6.4, strictly: every index field, and each one agreeing with the body.
+  // Strictly: every index field, and each one agreeing with the body.
   checkSegmentV2(rec, raw) {
     if (raw.length > 2 * 1024 * 1024 || rec.bodyBytes > 16 * 1024 * 1024) return 413;
     const q = Object.fromEntries(new URLSearchParams(rec.headers['x-sq-replay-index'] || ''));

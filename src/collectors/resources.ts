@@ -36,7 +36,7 @@ export const timing = (e: PerformanceResourceTiming) => ({
 });
 
 /**
- * Subresources from resource timing (design 5.6): the first 150 of the initial view and the
+ * Subresources from resource timing: the first 150 of the initial view and the
  * LCP resource one by one, later ones aggregated per view and origin. Own requests and the
  * app's resource exclusions are never recorded.
  */
@@ -116,7 +116,7 @@ export function startResources(h: Hub, o: ResourcesOptions) {
 
   return {
     flush,
-    /** The LCP element's resource, always sent alone (design 5.6). */
+    /** The LCP element's resource, always sent alone. */
     lcp(url: string): void {
       if (!url || sent.has(url)) return;
       const e = read(() => performance.getEntriesByName(url, 'resource')[0]) as PerformanceResourceTiming | undefined;
@@ -166,7 +166,7 @@ export function createExclusionMatcher(
 const UNSUPPORTED_RULE_CHARS =
   /[?#\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
 
-/** Mirrors Rule::parse in core-rs, so both matchers skip the same rules. */
+/** Mirrors the server's Rule::parse, so both matchers skip the same rules. */
 function parseExclusionRule(
   rule: unknown,
   pageOrigin: string | null,

@@ -1,4 +1,4 @@
-// SDK 2.0 (design 5.2 to 5.7, 6.1): one instance per page, started synchronously by init().
+// SDK 2.0: one instance per page, started synchronously by init().
 import type { Consent, InitOptions, SdkConfig, SdkStatus, SqEvent, SqEventKind, UserContext } from './types';
 import { OBSERVE, ANALYZE, type EmitOptions, type Hub, type Tier } from './hub';
 import { VERSION } from './version';

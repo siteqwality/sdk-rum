@@ -1,4 +1,4 @@
-// One page load's recording in one session (design 6.4): `s`, `w`, `p`, a sequence from 0 and
+// One page load's recording in one session: `s`, `w`, `p`, a sequence from 0 and
 // the stylesheets the intake acknowledged. Kept for the page, so a restarted recorder continues.
 import { CssStore } from './css';
 

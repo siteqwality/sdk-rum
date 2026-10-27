@@ -1,4 +1,4 @@
-// Sessions (design 5.3): a UUIDv7 id in the first-party cookie `_sq_s`, shared by tabs, as
+// Sessions: a UUIDv7 id in the first-party cookie `_sq_s`, shared by tabs, as
 // `id|started|lastActivity|decisions`; localStorage, then memory, when cookies fail.
 import { uuid, uuid7 } from './hash';
 import { now, storage, isNum, on } from './util';

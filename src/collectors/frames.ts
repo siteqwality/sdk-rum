@@ -1,4 +1,4 @@
-// Long animation frames with script attribution (design 5.6), long tasks where LoAF is missing.
+// Long animation frames with script attribution, long tasks where LoAF is missing.
 import { ANALYZE, type Hub } from '../hub';
 import { epochOf, round, cut, read, observe } from '../core/util';
 

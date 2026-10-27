@@ -1,4 +1,4 @@
-// CSS references (design 5.5): a checkout names a stylesheet the intake already holds
+// CSS references: a checkout names a stylesheet the intake already holds
 // instead of sending it again. The player and compactor resolve `sq-css:<hash>`.
 import { utf8 } from '../core/util';
 

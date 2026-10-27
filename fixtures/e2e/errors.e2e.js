@@ -113,7 +113,7 @@ test('an errored-sessions rule replays what led up to the error', async ({ sq })
   expect(first).toBeLessThan(loadedAt + 1000);
 });
 
-// Phase 2 exit (design 9): an error replay on the fixture starts at least 60 s before the error.
+// An error replay on the fixture starts at least 60 s before the error.
 test('an error replay starts at least 60 s before the error, from the ring', async ({ sq }, testInfo) => {
   test.setTimeout(120_000);
   const s = await sq.start({ spec: { capture: 'replay_on_error' } });

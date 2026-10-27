@@ -1,4 +1,4 @@
-// One view over what the SDK sent: /v2/batch and /v2/segments (design doc 6.3 and 6.4).
+// One view over what the SDK sent: /v2/batch and /v2/segments.
 
 export const RRWEB = { FULL_SNAPSHOT: 2, INCREMENTAL: 3, META: 4, CUSTOM: 5 };
 export const RRWEB_SOURCE = { MUTATION: 0, MOUSE_MOVE: 1, INPUT: 5, CANVAS_MUTATION: 9 };

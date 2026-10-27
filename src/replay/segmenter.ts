@@ -1,4 +1,4 @@
-// Segments (design 5.5, 6.4) and the replay ring (5.4). A segment is a run of serialized rrweb
+// Segments and the replay ring. A segment is a run of serialized rrweb
 // events with the index fields `/v2/segments` takes; the ring holds the last two checkouts.
 import { byteLength } from '../core/util';
 
@@ -117,7 +117,7 @@ export class Segmenter {
 }
 
 /**
- * Buffer mode (design 5.4): closed segments grouped into checkouts. It keeps the current and
+ * Buffer mode: closed segments grouped into checkouts. It keeps the current and
  * the previous one within RING_MAX_BYTES; on a rule match they go out, oldest first.
  */
 export class Ring {

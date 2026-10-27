@@ -1,4 +1,4 @@
-// The core's side of replay (design 5.4): when the ring buffers, when it streams, and what the
+// The core's side of replay: when the ring buffers, when it streams, and what the
 // chunk is told. The chunk itself is stubbed; replay-chunk.test.ts runs the real one.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ReplayStartOptions } from '../src/replay/chunk';
