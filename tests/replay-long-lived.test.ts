@@ -1,4 +1,4 @@
-// A long-lived tab whose page ticks a clock every second (the thesecretsproject shape): replay
+// A long-lived tab whose page ticks a clock every second: replay
 // must pause while hidden or idle, never outlive its session, and send a bounded number of requests.
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { SiteQwalityRUM } from '../src/sdk';

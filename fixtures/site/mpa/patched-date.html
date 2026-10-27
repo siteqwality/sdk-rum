@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>RUM fixture: patched Date</title>
   <script>
-    // Like thesecretsproject.com: the page replaces Date (constructor and Date.now) before any
+    // Like some real sites, the page replaces Date (constructor and Date.now) before any
     // other script, so it reads Wednesday, October 4, 2000, ticking from there.
     (function () {
       var RealDate = Date;

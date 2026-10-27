@@ -1,5 +1,5 @@
-// A tab left open on a page that ticks a clock every second (thesecretsproject, 2026-10-03, about
-// 190 replay requests per tab per hour). A simulated hour hidden, or visible with no input, must
+// A tab left open on a page that ticks a clock every second (about 190 replay requests per tab
+// per hour before this fix). A simulated hour hidden, or visible with no input, must
 // cost a bounded number of requests; the tab resumes with a full snapshot.
 import { test, expect } from './lib/session.js';
 import { SDK } from './lib/env.js';
